@@ -1,5 +1,9 @@
 {
- "at_least": {},
+ "at_least": {
+  "coverage client %": 78.3,
+  "coverage collector %": 50.0,
+  "coverage hub %": 79.1
+ },
  "at_most": {
   "pyright client": 141,
   "pyright collector": 9,
