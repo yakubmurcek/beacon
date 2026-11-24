@@ -295,18 +295,22 @@ def describe_tool(name, inp):
     return short(_describe_tool(name, inp))
 
 
+def _describe_shell(inp):
+    # Claude Code's shell calls carry the agent's own plain words for what the command does
+    if isinstance(inp.get('description'), str) and inp['description'].strip():
+        return inp['description'].strip()
+    cmd = inp.get('command') or inp.get('cmd') or ''
+    if isinstance(cmd, list):
+        cmd = ' '.join(str(x) for x in cmd)
+        cmd = re.sub(r'^(bash|zsh|sh) -lc ', '', cmd)
+    return '$ ' + str(cmd) if cmd else 'Running a command'
+
+
 def _describe_tool(name, inp):
     inp = inp if isinstance(inp, dict) else {}
     name = str(name or '')
     if name in ('Bash', 'shell', 'exec_command', 'local_shell', 'run_terminal_cmd'):
-        # Claude Code's shell calls carry the agent's own plain words for what the command does
-        if isinstance(inp.get('description'), str) and inp['description'].strip():
-            return inp['description'].strip()
-        cmd = inp.get('command') or inp.get('cmd') or ''
-        if isinstance(cmd, list):
-            cmd = ' '.join(str(x) for x in cmd)
-            cmd = re.sub(r'^(bash|zsh|sh) -lc ', '', cmd)
-        return '$ ' + str(cmd) if cmd else 'Running a command'
+        return _describe_shell(inp)
     if name in ('Edit', 'MultiEdit', 'NotebookEdit', 'str_replace', 'edit'):
         return f'Editing {_path_name(inp.get("file_path") or inp.get("path") or inp.get("notebook_path")) or "a file"}'
     if name in ('Write', 'write', 'create_file'):
@@ -351,6 +355,16 @@ def stamp(o):
         return None
 
 
+def add_step(r, at, said):
+    """Keep this turn's last few steps, so a run nobody watches can be followed on its task page."""
+    if not r['doing']:
+        return
+    step = {'at': at, 'text': r['doing']}
+    if said:
+        step['said'] = True  # the agent's own words, not a tool call
+    r['steps'] = (r['steps'] + [step])[-STEPS:]
+
+
 def parse_claude(path, size):
     r = {'title': None, 'cwd': None, 'branch': None, 'model': None, 'turn_ended': False,
          'doing': None, 'prompt': None, 'at': None, 'steps': []}
@@ -384,12 +398,7 @@ def parse_claude(path, size):
                     reply = b['text']
                 else:
                     continue
-                # this turn's last few steps, so a run nobody watches can be followed on its task page
-                if r['doing']:
-                    step = {'at': stamp(o), 'text': r['doing']}
-                    if said:
-                        step['said'] = True  # the agent's own words, not a tool call
-                    r['steps'] = (r['steps'] + [step])[-STEPS:]
+                add_step(r, stamp(o), said)
         if kind == 'user' and interrupted(o):
             # Esc mid-turn writes no turn-end marker; the session is back with the human.
             r['turn_ended'] = True
