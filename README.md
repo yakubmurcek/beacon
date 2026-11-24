@@ -60,9 +60,16 @@ the Actions current.
 ### Quality baseline (2026-11-24)
 
 The strict rules arrived after 36k lines were written, so the old findings are held by the ratchet rather
-than fixed in one big rewrite: 2,696 findings across 63 rules on day one. The biggest debts are long
-functions (the `client/tasks` CLI's `main` has complexity 108, `hub/server.py`'s `do_GET` 48).
-Each fix lowers the baseline for good.
+than fixed in one big rewrite: 2,696 findings across 63 rules on day one, 2,286 across 62 by the evening.
+The same day's refactors, each proven byte-for-byte on a copy of the live database or pinned by a test first:
+`do_GET` became a route table (complexity 79 → 17), `AIJobs.build` named steps (114 → 17), `aggregate` a
+`Period` accumulator (58 → under 15), `Questions.create` validate-then-write (56 → 19), the task agent's
+`finish` five steps (71 → 15). Errors go through `logging`; broad excepts are narrowed where the failure is
+known and log why where they stay. The biggest debts left: `client/tasks`' `main` (187), the collectors'
+`collect_claude` / `collect_opencode` (~65), `Machines.machine` (64). Each fix lowers the baseline for good.
+
+The privacy test (`tests/test_no_personal_data.py`) runs everywhere: the deployment's names are committed only as
+salted hashes (`tests/fixtures/personal-words.json`) and every word in the tracked files is checked against them.
 
 ## Configure
 
@@ -75,6 +82,7 @@ project names, accounts) lives in a settings file, never in the code:
 - A machine marked `"manual": true` in `machines` is outside the loop: the owner explores there by hand. Its
   sessions post no ending cards, file no decisions (`tasks ask` refuses there), are never held by the Stop hook,
   and the nightly backstop skips them; their first prompt is told so once.
+- `timezone` sets the hub's days and clock times everywhere (store, collectors, pages); `USAGE_TZ` overrides it.
 - Pages get the part they need from `/config.js`. Secrets stay in the environment: `USAGE_TOKEN` (collectors),
   `TASKS_TOKEN` (agents), `TASKS_OWNER` (the tailnet login allowed to write from a browser).
 
