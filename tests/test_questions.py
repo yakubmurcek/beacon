@@ -608,6 +608,35 @@ class QuestionsCliTest(LiveHub, unittest.TestCase):
                          [('pricing', '$19 (Recommended)', True, 'chat'), ('stripe', 'New', False, 'chat')])
         self.assertEqual(rows[0]['session_id'], 'Claude Code:sess-1')
 
+    def test_chat_buttons_are_on_the_page_while_shown_and_the_chat_answer_settles_that_card(self):
+        q = {'question': 'Which app carries the pings?', 'header': 'Channel',
+             'options': [{'label': 'Beacon app', 'description': 'free'}, {'label': 'Pushover'}]}
+        ev = {'session_id': 'sess-2', 'tool_use_id': 'tu-9', 'cwd': '/nonexistent', 'tool_name': 'AskUserQuestion',
+              'tool_input': {'questions': [q]}}
+        self.run_cli('hook-ask', stdin=json.dumps({**ev, 'hook_event_name': 'PreToolUse'}))
+        self.run_cli('hook-ask', stdin=json.dumps({**ev, 'hook_event_name': 'PreToolUse'}))  # retried: one card
+        shown = self.server.Handler.questions.list('open')
+        self.assertEqual([(c['question'], c['session_id']) for c in shown],
+                         [('Which app carries the pings?', 'Claude Code:sess-2')])
+        done = {**ev, 'hook_event_name': 'PostToolUse', 'tool_response': {'answers': {q['question']: 'Pushover'}}}
+        self.run_cli('hook-ask', stdin=json.dumps(done))
+        self.run_cli('hook-ask', stdin=json.dumps(done))  # retried: nothing logged twice
+        rows = self.server.Handler.questions.list('answered')
+        self.assertEqual([(c['id'], c['answer'], c['answered_via']) for c in rows], [(shown[0]['id'], 'Pushover', 'chat')])
+        self.assertEqual(self.server.Handler.questions.list('open'), [])
+
+    def test_chat_buttons_reuse_the_card_a_tasks_ask_filed(self):
+        os.environ['CLAUDE_CODE_SESSION_ID'] = 'sess-3'
+        try:
+            self.run_cli('ask', 'Ship it today?', '-o', 'Yes', '-o', 'No', '-k', 'release', '--no-see', 'a backend release')
+        finally:
+            os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+        ev = {'session_id': 'sess-3', 'tool_use_id': 'tu-1', 'cwd': '/nonexistent', 'tool_name': 'AskUserQuestion',
+              'hook_event_name': 'PreToolUse',
+              'tool_input': {'questions': [{'question': 'Ship it today?', 'options': [{'label': 'Yes'}, {'label': 'No'}]}]}}
+        self.run_cli('hook-ask', stdin=json.dumps(ev))
+        self.assertEqual(len(self.server.Handler.questions.list('open')), 1)
+
     def test_the_hook_reads_a_text_result_and_never_fails(self):
         ev = {'session_id': 's', 'tool_input': {'questions': [{'question': 'Go?', 'options': [{'label': 'Yes'}]}]},
               'tool_response': 'Your questions have been answered: "Go?"="Yes". You can now continue.'}

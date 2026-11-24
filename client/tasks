@@ -1498,9 +1498,42 @@ def own_answers(sid):
     return '\n\n'.join(lines)
 
 
+def chat_questions(ev):
+    """The questions of an AskUserQuestion call, each with its button labels."""
+    out = []
+    for q in (ev.get('tool_input') or {}).get('questions') or []:
+        labels = [str(o.get('label', ''))[:200] for o in q.get('options') or [] if o.get('label')][:8]
+        if q.get('question'):
+            out.append((q, labels))
+    return out
+
+
+def chat_card_source(ev, i):
+    return f"chat:{ev.get('session_id')}:{ev.get('tool_use_id') or ''}:{i}"
+
+
+def hook_ask_shown(ev):
+    """PreToolUse on AskUserQuestion: the buttons he sees in the chat are on http://beacon/decisions at the same moment,
+    so he can answer in either place (he said so 2026-11-24: buttons in the app, and the page, both). A card a
+    `tasks ask` already filed for the same question is reused, never doubled."""
+    sid = ev.get('session_id')
+    if not sid or hooks_off():
+        return
+    for i, (q, labels) in enumerate(chat_questions(ev)):
+        if open_question_for_box(sid, q['question'], labels):
+            continue
+        quick('/api/questions', {
+            'question': q['question'][:400], 'kind': q.get('header') or 'chat', 'project': project_of(ev.get('cwd')),
+            'options': [{'label': o.get('label', '')[:200], 'detail': (o.get('description') or '')[:1000]}
+                        for o in q.get('options') or [] if o.get('label')][:8],
+            'context': "_Asked with buttons in the chat; answer here or there._",
+            'session_id': f'Claude Code:{sid}', 'asked_by': f'Claude Code {sid[:8]}',
+            'source': chat_card_source(ev, i)})
+
+
 def hook_ask(stdin):
-    """PostToolUse on AskUserQuestion: log what he answered in the chat. On the next-step box: file its
-    question (hook_box). Never fails the tool."""
+    """AskUserQuestion: shown (PreToolUse) files its card; answered (PostToolUse) answers that card, or logs a new
+    answered one when none was filed. On the next-step box: file its question (hook_box). Never fails the tool."""
     try:
         ev = json.load(stdin)
         if manual_here():
@@ -1508,28 +1541,36 @@ def hook_ask(stdin):
         if ev.get('tool_name') == BOX_TOOL:
             hook_box(ev)
             return
+        if ev.get('hook_event_name') == 'PreToolUse':
+            hook_ask_shown(ev)
+            return
         res = ev.get('tool_response') or {}
         if isinstance(res, str):
             res = {'answers': dict(re.findall(r'"([^"]+)"="([^"]*)"', res))}
         answers = res.get('answers') or {}
         notes = res.get('annotations') or {}
-        questions = (ev.get('tool_input') or {}).get('questions') or res.get('questions') or []
         project = project_of(ev.get('cwd'))
         sid = ev.get('session_id')
-        for i, q in enumerate(questions):
-            text = q.get('question')
-            if not text or not answers.get(text):
+        for i, (q, labels) in enumerate(chat_questions(ev)):
+            text = q['question']
+            if not answers.get(text):
                 continue
             note = notes.get(text) if isinstance(notes, dict) else None
+            note = (note or {}).get('notes') if isinstance(note, dict) else None
+            card = open_question_for_box(sid, text, labels) if sid else None
+            if card:  # the card the buttons were mirrored to: the chat answer settles it
+                quick(f"/api/questions/{card['id']}/answer",
+                      {'answer': answers[text], 'note': note, 'via': 'chat'}, timeout=5)
+                continue
             call('/api/questions', {
                 'question': text[:400], 'kind': q.get('header') or 'chat',
                 'options': [{'label': o.get('label', '')[:200], 'detail': (o.get('description') or '')[:1000]}
                             for o in q.get('options') or [] if o.get('label')][:8],
-                'answer': answers[text], 'note': (note or {}).get('notes') if isinstance(note, dict) else None,
+                'answer': answers[text], 'note': note,
                 'via': 'chat', 'project': project,
                 'session_id': f'Claude Code:{sid}' if sid else None,
                 'asked_by': f'Claude Code {sid[:8]}' if sid else 'chat',
-                'source': f"chat:{sid}:{ev.get('tool_use_id') or ''}:{i}" if sid else None,
+                'source': chat_card_source(ev, i) if sid else None,
             })
     except SystemExit:
         pass
