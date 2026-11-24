@@ -14,6 +14,9 @@ uvx ruff@0.17.6 check --quiet
 step "quality ratchet: strict rules for new code, old code may not get worse"
 python3 scripts/ratchet.py
 
+step "type errors: pyright (pyrightconfig.json), count per area may only go down"
+python3 scripts/scores.py types
+
 step "copy-paste (jscpd, .jscpd.json)"
 if ! command -v npx >/dev/null; then
   echo "warning: no Node here, copy-paste not checked (CI checks it)"
@@ -32,10 +35,16 @@ if git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
   problems=()
   [ -n "$(git diff --diff-filter=D --name-only "$BASE" -- tests/)" ] && problems+=("deletes a test file")
   git diff "$BASE" -- tests/ | grep -qE '^\+.*(unittest\.skip|skipTest\(|expectedFailure)' && problems+=("skips a test")
-  git diff "$BASE" -- '*.py' '*.js' 'client/*' ':!scripts/check' | grep -qE '^\+.*(# *noqa|biome-ignore|# *type: *ignore)' && problems+=("adds a lint suppression")
-  [ -n "$(git diff --name-only "$BASE" -- ruff.toml ruff.strict.toml biome.json .jscpd.json scripts/ratchet.py scripts/check .githooks)" ] \
+  git diff "$BASE" -- '*.py' '*.js' 'client/*' ':!scripts/check' | grep -qE '^\+.*(# *noqa|biome-ignore|# *type: *ignore|# *pyright: *(ignore|basic|standard))' && problems+=("adds a lint suppression")
+  # A new Python module starts strict: `# pyright: strict` near its top, so it adds no type errors to carry.
+  for f in $(git diff --diff-filter=A --name-only "$BASE" -- 'hub/*.py' 'collector/*.py' 'scripts/*.py' 'client/*'); do
+    head -c 40 "$f" | grep -q python3 || [[ "$f" == *.py ]] || continue
+    head -n 5 "$f" | grep -q '^# pyright: strict' || problems+=("adds $f without '# pyright: strict' in its first 5 lines")
+  done
+  [ -n "$(git diff --name-only "$BASE" -- ruff.toml ruff.strict.toml biome.json .jscpd.json \
+      pyrightconfig.json .coveragerc requirements-dev.txt scripts/ratchet.py scripts/scores.py scripts/check .githooks)" ] \
     && problems+=("changes a check's configuration")
-  python3 scripts/ratchet.py --raised-since "$BASE" || problems+=("raises a count in quality-baseline.json")
+  python3 scripts/ratchet.py --raised-since "$BASE" || problems+=("loosens quality-baseline.json")
   if [ ${#problems[@]} -gt 0 ] && ! git log --format=%B "$BASE..HEAD" 2>/dev/null | grep -q '^Quality-exception: .\+'; then
     printf 'This change %s.\nFix the code instead, or add a commit line "Quality-exception: <why>".\n' "$(IFS=,; echo "${problems[*]}")"
     exit 1
@@ -44,7 +53,10 @@ fi
 
 if [ "$FAST" = "--fast" ]; then printf '\n✓ fast check passed (CI runs the tests)\n'; exit 0; fi
 
-step "tests"
-python3 -m unittest discover -s tests -q
+step "tests, with coverage (.coveragerc): coverage per area may only go up"
+# A throwaway env with the pinned tools (requirements-dev.txt) on this machine's Python.
+dev() { uv run -q --no-project --python python3 --with-requirements requirements-dev.txt "$@"; }
+dev python -m coverage run -m unittest discover -s tests -q
+dev python scripts/scores.py coverage
 
 printf '\n✓ check passed\n'

@@ -1,0 +1,3 @@
+# Tools scripts/check runs in a throwaway env (uv run --with-requirements); pinned so the numbers don't drift.
+coverage==7.17.5
+cryptography  # hub/webpush.py, which the tests import

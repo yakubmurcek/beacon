@@ -1,0 +1,7 @@
+{
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "include": ["hub", "collector", "scripts", "tests"],
+  "extraPaths": ["hub", "collector"],
+  "reportMissingModuleSource": "none"
+}

@@ -6,3 +6,4 @@ data/
 .playwright-mcp/
 config.json
 CLAUDE.local.md
+.coverage

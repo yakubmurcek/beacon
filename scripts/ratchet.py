@@ -103,13 +103,35 @@ def compare(found: Findings, baseline: dict[str, int], skipped: str = "") -> tup
     return worse, {rule: n for rule, n in lowered.items() if n}
 
 
+def sections(data: dict) -> dict[str, dict]:
+    """The baseline's sections; a file from before scores.py was all lint counts."""
+    if "lint" not in data:
+        return {"lint": data, "at_least": {}, "at_most": {}}
+    return {key: data.get(key, {}) for key in ("lint", "at_least", "at_most")}
+
+
+def load_lint() -> dict[str, int]:
+    return sections(json.loads(BASELINE.read_text()))["lint"]
+
+
+def save_lint(lint: dict[str, int]) -> None:
+    data = sections(json.loads(BASELINE.read_text()))
+    data["lint"] = lint
+    BASELINE.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n")
+
+
 def baseline_raised(rev: str) -> bool:
-    """Whether quality-baseline.json allows more of any rule than it did at `rev`."""
+    """Whether quality-baseline.json allows worse numbers than it did at `rev`: more of a lint rule or a type
+    error count (`at_most`), less coverage or mutation score (`at_least`), or a score dropped altogether."""
     old = subprocess.run(["git", "-C", str(ROOT), "show", f"{rev}:{BASELINE.name}"], capture_output=True, text=True, check=False)
     if old.returncode:
         return False  # no baseline at that commit yet: nothing to compare
-    before = json.loads(old.stdout)
-    return any(n > before.get(rule, 0) for rule, n in json.loads(BASELINE.read_text()).items())
+    before, now = sections(json.loads(old.stdout)), sections(json.loads(BASELINE.read_text()))
+    if any(n > before["lint"].get(rule, 0) for rule, n in now["lint"].items()):
+        return True
+    if any(key not in now["at_most"] or now["at_most"][key] > n for key, n in before["at_most"].items()):
+        return True
+    return any(key not in now["at_least"] or now["at_least"][key] < n for key, n in before["at_least"].items())
 
 
 def main() -> int:
@@ -126,11 +148,11 @@ def main() -> int:
     if js is None and args.init:
         sys.exit("--init needs Node for the JS rules")
     if args.init:
-        BASELINE.write_text(json.dumps(totals(found), indent=1) + "\n")
+        save_lint(totals(found))
         print(f"baseline written: {sum(totals(found).values())} findings across {len(found)} rules")
         return 0
 
-    baseline = json.loads(BASELINE.read_text())
+    baseline = load_lint()
     worse, lowered = compare(found, baseline, skipped="lint/" if js is None else "")
     if worse:
         print("Quality ratchet: this change adds lint findings. Fix the code, don't raise the baseline:")
@@ -139,7 +161,7 @@ def main() -> int:
         return 1
     gained = sum(baseline.values()) - sum(lowered.values())
     if args.update and gained:
-        BASELINE.write_text(json.dumps(dict(sorted(lowered.items())), indent=1) + "\n")
+        save_lint(dict(sorted(lowered.items())))
         print(f"baseline lowered by {gained} findings")
     elif gained:
         print(f"ratchet ok; {gained} findings fixed: run scripts/ratchet.py --update and commit the baseline")

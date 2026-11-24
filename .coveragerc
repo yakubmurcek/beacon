@@ -1,0 +1,5 @@
+# Test coverage per area (scripts/scores.py coverage): lines and branches of the hub, collectors and agent CLIs.
+[run]
+branch = True
+source = hub, collector, client
+data_file = .coverage
