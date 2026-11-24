@@ -50,9 +50,10 @@ git config core.hooksPath .githooks # once per clone: every push runs `scripts/c
 |---|---|---|
 | Lint | `ruff check` (`ruff.toml`) | zero findings: syntax errors, undefined and unused names |
 | Quality ratchet | `scripts/ratchet.py`: ruff with `ruff.strict.toml` (complexity 15, size limits, bugbear, security, imports, modern syntax) and Biome on `web/` (`biome.json`) | new code meets the strict rules; old code may not get worse. Findings are counted per rule in `quality-baseline.json`; a fix lowers the count with `scripts/ratchet.py --update`, nothing ever raises it |
+| Type errors | `scripts/scores.py types`: pyright, basic mode (`pyrightconfig.json`) | errors counted per area (hub, collector, client, scripts) in `quality-baseline.json` `at_most`, may only go down; a new module starts with `# pyright: strict` |
 | Copy-paste | `jscpd` (`.jscpd.json`) | under 1% duplicated lines (0.27% on 2026-11-24) |
-| Checks not loosened | git diff against `origin/main` | a change may not delete or skip tests, add `noqa` / `biome-ignore` / `type: ignore`, edit a check's config or raise the baseline, unless a commit line `Quality-exception: <why>` puts the reason on record |
-| Tests | `python3 -m unittest discover -s tests` | runs on `config.example.json` only |
+| Checks not loosened | git diff against `origin/main` | a change may not delete or skip tests, add `noqa` / `biome-ignore` / `type: ignore` / `pyright: ignore`, edit a check's config or loosen the baseline (a count up, a score down), unless a commit line `Quality-exception: <why>` puts the reason on record |
+| Tests and coverage | `coverage run -m unittest discover -s tests` (`.coveragerc`, pinned in `requirements-dev.txt`), then `scripts/scores.py coverage` | runs on `config.example.json` only; line and branch coverage per area (hub, collector, client) in `quality-baseline.json` `at_least`, may only go up |
 
 CI runs the same `scripts/check` on every push and pull request (`.github/workflows/ci.yml`); Dependabot keeps
 the Actions current.
@@ -67,6 +68,12 @@ The same day's refactors, each proven byte-for-byte on a copy of the live databa
 `finish` five steps (71 → 29). Errors go through `logging`; broad excepts are narrowed where the failure is
 known and log why where they stay. The biggest debts left: `client/tasks`' `main` (187), the collectors'
 `collect_claude` / `collect_opencode` (~65), `Machines.machine` (64). Each fix lowers the baseline for good.
+
+Coverage and type errors joined the ratchet the same day. First measures (CI, Python 3.12): coverage hub
+79.1%, client 78.3%, collector 50.0% (the collectors probe the machine they run on, so a box with more tools
+covers more of them); pyright errors hub 266, client 141, collector 9, scripts 4. A better number is written
+back with `scripts/scores.py types --update`; coverage, after `scripts/check` left its data:
+`uv run --no-project --with-requirements requirements-dev.txt python scripts/scores.py coverage --update`.
 
 The privacy test (`tests/test_no_personal_data.py`) runs everywhere: the deployment's names are committed only as
 salted hashes (`tests/fixtures/personal-words.json`) and every word in the tracked files is checked against them.
