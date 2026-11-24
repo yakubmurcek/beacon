@@ -43,6 +43,15 @@
 .mv-note { width: 100%; box-sizing: border-box; resize: vertical; padding: 8px 10px; border-radius: var(--r-md); border: 1px solid var(--line);
   background: var(--panel); color: var(--text); font: 14px/1.4 var(--sans); }
 .mv-row { display: flex; gap: 6px; }
+.mv-hint { align-self: center; font-size: 12.5px; color: var(--muted); }
+.mv-quote { margin: 0; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--panel); border-radius: 0 var(--r-md) var(--r-md) 0;
+  font-size: 13px; line-height: 1.45; color: var(--text); white-space: pre-wrap; max-height: 8.5em; overflow: auto; }
+.mail-edit { margin-top: 8px; }
+.mail-edit .mv { border-style: dashed; }
+.sel-chip { position: fixed; z-index: 60; display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px 0 11px;
+  border-radius: var(--r-pill); border: 0; background: var(--text); color: var(--panel); font: 700 13px/1 var(--sans);
+  box-shadow: var(--shadow-2); cursor: pointer; animation: pop-in var(--t-fast) var(--ease); }
+.sel-chip .ic { width: 15px; height: 15px; }
 .agent { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: var(--r-lg); text-decoration: none; color: var(--text);
   font-size: 13px; line-height: 1.35; background: var(--panel-2); border: 1px solid var(--line); }
 .agent span { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; color: var(--muted); overflow-wrap: anywhere; }

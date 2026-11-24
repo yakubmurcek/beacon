@@ -361,7 +361,7 @@ function leadCard(r) {
     r.know ? h('p', { class: 'know' }, r.know) : null,
     movesFor(r, 'card'),
     // the move buttons are the answer to 'Next', so a card with them drops the line (the detail keeps it)
-    mail || r.ad === 'closed' || ((r.moves || []).length && !r.agent) ? null : h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
+    mail || r.ad === 'closed' || (r.moves || []).length || (r.agent && r.agent.status !== 'done') ? null : h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
     h('div', { class: 'foot' }, h('span', { class: 'links' }, links), r.touched ? h('span', { class: 'when', title: r.touched }, fmtDate(r.touched)) : null));
 }
 
@@ -428,7 +428,7 @@ function openLead(r, quiet) {
     h('div', { class: 'ld-moves' }, movesFor(r, 'detail')),
     h('div', { class: 'ld-next' + (r.next ? '' : ' none') }, ic('send'), h('div', null, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet'))),
     r.ai && r.ai_why ? h('div', { class: 'ld-why ld-ai' }, ic('spark'), h('div', null, h('b', null, `AI in this job: ${AI[r.ai][1]}`), h('p', null, r.ai_why))) : null,
-    ...det.filter((x) => x.mail).map((sec) => mailBlock(sec.title, sec.mail)),
+    ...det.filter((x) => x.mail).map((sec) => mailBlock(sec.title, sec.mail, r)),
     r.chance_why ? h('div', { class: 'ld-why' }, ic('target'), h('div', null, h('b', null, `Why the chance is ${(CHANCE[r.chance] || [r.chance])[0].toLowerCase()}`), h('p', null, r.chance_why))) : null,
     r.know && !det.length ? h('p', { class: 'know' }, r.know) : null,
     h('div', { class: 'ld-grid' }, det.filter((x) => !x.mail && (x.rows || []).length).map(section)),
@@ -441,7 +441,7 @@ function openLead(r, quiet) {
 }
 
 // a mail ready to go: who, subject, the text as he will send it, and one tap to send or copy it
-function mailBlock(title, m) {
+function mailBlock(title, m, r) {
   const text = (m.body || '').replace(/\*\*([^*]+)\*\*/g, '$1');
   const formUrl = ((m.where || '').match(/https?:\/\/\S+/) || [])[0];
   const copy = h('button', { type: 'button' }, ic('copy'), 'Copy text');
@@ -460,7 +460,8 @@ function mailBlock(title, m) {
     h('div', { class: 'mail-acts' },
       mailto ? h('button', { type: 'button', class: 'primary', onclick: () => { location.href = mailto; } }, ic('send'), 'Open in Mail') : null,
       formUrl ? h('button', { type: 'button', class: 'primary', onclick: () => open(formUrl, '_blank', 'noopener') }, ic('send'), 'Open the form') : null,
-      copy));
+      copy),
+    r ? h('div', { class: 'mail-edit' }, movesFor(r, 'mail')) : null);
 }
 
 function closeLead(keepHash) {
@@ -533,7 +534,7 @@ function agentLine(a) {
   if (a.status === 'doing') {
     const sx = a.session;
     return h('a', { class: 'agent live', href: link }, h('i', { class: 'pulse' }), h('span', null, h('b', null, 'Agent working'),
-      sx ? (sx.doing || 'on ' + a.title.toLowerCase()) + (sx.machine ? ` · ${sx.machine}` : '') : a.title), ic('arrow'));
+      sx ? (sx.doing && !/^\$|^[\w-]+\(/.test(sx.doing) ? sx.doing : a.title) + (sx.machine ? ` · on ${sx.machine}` : '') : a.title), ic('arrow'));
   }
   if (a.handed) return h('a', { class: 'agent queued', href: link }, ic('bot'), h('span', null, h('b', null, 'Queued'), 'the agent starts within a minute'), ic('arrow'));
   return h('a', { class: 'agent wait', href: link }, ic('bot'), h('span', null, h('b', null, 'Back with you'), a.note || a.title), ic('arrow'));
@@ -541,7 +542,8 @@ function agentLine(a) {
 function movesFor(r, where) {
   if (r.agent && r.agent.status !== 'done') return agentLine(r.agent);
   // a move the agent just finished stays hidden until the lead's files show its result
-  const moves = (r.moves || []).filter((m) => !(r.agent && r.agent.fresh && r.agent.move === m.id));
+  const moves = (r.moves || []).filter((m) => !(r.agent && r.agent.fresh && r.agent.move === m.id) && (where !== 'mail' || m.id === 'rewrite')
+    && !(where === 'detail' && m.id === 'rewrite' && (r.detail || []).some((x) => x.mail)));  // the draft's own box offers it
   const done = r.agent ? agentLine(r.agent) : null;
   if (!moves.length) return done;
   const open = st.moving && st.moving.key === leadKey(r) && st.moving.where === where ? moves.find((m) => m.id === st.moving.move) : null;
@@ -554,27 +556,53 @@ function movesFor(r, where) {
       e.stopPropagation(); go.disabled = true; go.lastChild.textContent = 'Handing over…';
       try {
         const res = await fetch('/api/outreach/move', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ project: r.project, name: r.name, move: open.id, note: note.value }) });
+          body: JSON.stringify({ project: r.project, name: r.name, move: open.id,
+            note: (st.moving.quote ? `Change this part of the draft:\n> ${st.moving.quote.replace(/\n/g, '\n> ')}\n\n` : '') + note.value }) });
         const out = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(out.error || 'The hub answered ' + res.status);
         st.moving = null; painted = ''; await load(); rerender();
       } catch (err) { go.disabled = false; go.lastChild.textContent = 'Try again'; go.title = err.message; showError(err); }
     };
     return h('div', { class: 'mv-ask', onclick: (e) => e.stopPropagation() },
-      h('div', { class: 'mv-q' }, ic(open.icon || 'bot'), h('b', null, open.label), h('span', null, 'An agent does it now and shows here; nothing is sent.')),
+      h('div', { class: 'mv-q' }, ic(open.icon || 'bot'), h('b', null, st.moving.quote ? 'Change this part' : open.label), h('span', null, 'An agent does it now and shows here; nothing is sent.')),
+      st.moving.quote ? h('blockquote', { class: 'mv-quote' }, st.moving.quote) : null,
       note, h('div', { class: 'mv-row' }, go, h('button', { type: 'button', class: 'mv ghost', onclick: () => { st.moving = null; rerender(); } }, 'Cancel')));
   }
   return h('div', { class: 'moves', onclick: (e) => e.stopPropagation() }, done,
     moves.map((m) => h('button', { type: 'button', class: 'mv' + (m.primary ? ' go' : ''),
-      onclick: () => { st.moving = { key: leadKey(r), move: m.id, where }; rerender(); } }, ic(m.icon || 'bot'), m.label)));
+      onclick: () => { st.moving = { key: leadKey(r), move: m.id, where }; rerender(); } }, ic(m.icon || 'bot'),
+      where === 'mail' ? 'Change something…' : m.label)),
+    where === 'mail' ? h('span', { class: 'mv-hint' }, 'or select a part of the text') : null);
 }
 function rerender() {
   renderList();
   const d = document.getElementById('lead-drawer');
   const r = d && st.lead && data.leads.find((x) => leadId(x) === st.lead);
-  const slot = d && d.querySelector('.ld-moves');
-  if (r && slot) slot.replaceChildren(movesFor(r, 'detail') || '');
+  if (!r) return;
+  const slot = d.querySelector('.ld-moves');
+  if (slot) slot.replaceChildren(movesFor(r, 'detail') || '');
+  d.querySelectorAll('.mail-edit').forEach((x) => x.replaceChildren(movesFor(r, 'mail') || ''));
+  const ask = d.querySelector('.mail-edit .mv-note');
+  if (ask && st.moving && st.moving.where === 'mail' && st.moving.focus) { st.moving.focus = false; ask.focus(); ask.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
 }
+// select a part of a draft: a chip offers to have the agent change just that part
+let selChip = null;
+function hideSelChip() { if (selChip) { selChip.remove(); selChip = null; } }
+document.addEventListener('selectionchange', () => {
+  const sel = document.getSelection();
+  const text = sel && !sel.isCollapsed ? sel.toString().trim() : '';
+  const body = text && sel.anchorNode && sel.anchorNode.parentElement && sel.anchorNode.parentElement.closest('.mail-body');
+  const r = body && st.lead && data && data.leads.find((x) => leadId(x) === st.lead);
+  if (!r || !(r.moves || []).some((m) => m.id === 'rewrite') || (r.agent && r.agent.status !== 'done')) { hideSelChip(); return; }
+  const box = sel.getRangeAt(0).getBoundingClientRect();
+  hideSelChip();
+  selChip = h('button', { type: 'button', class: 'sel-chip', style: `left:${Math.max(12, Math.min(innerWidth - 190, box.left + box.width / 2 - 85))}px;top:${Math.max(8, box.top - 46)}px`,
+    onmousedown: (e) => e.preventDefault(),
+    onclick: () => { st.moving = { key: leadKey(r), move: 'rewrite', where: 'mail', quote: text.slice(0, 1200), focus: true }; hideSelChip(); rerender(); } },
+  ic('pen'), 'Change this part');
+  document.body.append(selChip);
+});
+addEventListener('scroll', hideSelChip, true);
 let polling = 0;
 function keepWatching() {  // while an agent works a lead, the page refreshes itself
   const busy = (data.leads || []).some((r) => r.agent && r.agent.status !== 'done');
