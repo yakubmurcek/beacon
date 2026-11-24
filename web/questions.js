@@ -295,6 +295,15 @@ function deckAnswer(q, text, el) {
   fly(el, 'up', () => { deck.cur = next ? next.id : null; render(); });
 }
 
+// Sent back with a 👎 and his words (already answered by the flag call): the card just leaves.
+function deckGone(q, el) {
+  settle();
+  const next = nextAfter(q);
+  deck.done += 1;
+  dropOpen(q.id);
+  fly(el, 'up', () => { deck.cur = next ? next.id : null; render(); });
+}
+
 function deckDismiss(q, el) {
   settle();
   if (sent.has(q.id)) return;
@@ -386,7 +395,7 @@ function viewOpen() {
     fresh.length === 1 ? `New: ${fresh[0].question}` : `${fresh.length} new decisions · show the newest`);
   const chip = (key, label, n) => h('button', { class: `chip${deck.filter === key ? ' on' : ''}`,
     onclick: () => { deck.filter = key; deck.cur = null; render(); } }, label, h('span', { class: 'n' }, String(n)));
-  const c = qCard(q, { onChange: load, foot: false, onAnswer: (text) => deckAnswer(q, text, c) });
+  const c = qCard(q, { onChange: load, foot: false, onAnswer: (text) => deckAnswer(q, text, c), onGone: () => deckGone(q, c) });
   c.classList.add('deck-card');
   if (deck.shown !== q.id) c.classList.add('deal');  // the same card repainted stays still
   deck.shown = q.id;

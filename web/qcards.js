@@ -275,7 +275,7 @@ async function dismissQuestion(q, onChange) {
 // shown (2026-11-22), and opens a box right under it for what is wrong (2026-11-23: "ať tam můžu něco připsat").
 // The why goes to the asking session's task and teaches every later card a rule (hub/cardrules.py, task 1903). The
 // button says so in words: a bare 👎 was never tapped (0 flags in 282 cards). A second tap takes the flag back.
-function flagButton(q) {
+function flagButton(q, gone) {
   const b = h('button', { class: `qflag${q.flagged_at ? ' on' : ''}`,
     title: 'Makes no sense: its agent asks again, and every later card learns from it',
     'aria-label': 'Makes no sense', 'aria-pressed': String(!!q.flagged_at) },
@@ -290,7 +290,7 @@ function flagButton(q) {
       b.setAttribute('aria-pressed', String(!!q.flagged_at));
       card?.querySelectorAll('.qflag-note, .qflag-said').forEach((x) => x.remove());
       if (q.flagged_at && card) {
-        const box = flagNote(q);
+        const box = flagNote(q, gone);
         card.querySelector('.qtop')?.after(box);
         box.querySelector('input').focus();
       }
@@ -300,7 +300,7 @@ function flagButton(q) {
   return b;
 }
 
-function flagNote(q) {
+function flagNote(q, gone) {
   const input = h('input', { placeholder: 'What is wrong? No later card repeats it', 'aria-label': 'What is wrong',
     enterkeyhint: 'send', maxlength: '500' });
   const send = h('button', { type: 'submit', class: 'send', 'aria-label': 'Send', disabled: true }, '→');
@@ -316,14 +316,16 @@ function flagNote(q) {
       const out = await api(`/api/questions/${q.id}/flag`, { note });
       q.flagged_at = out.flagged_at; q.flag = out.flag;
       form.replaceWith(h('p', { class: 'qflag-said' }, `👎 ${note}`));
-      toast('Sent: its agent asks again, and later cards learn the rule');
+      toast('Sent back: its agent asks again as a new card');
+      gone();  // his words answered the card (hub flag()): it leaves the feed
     } catch (err) { send.disabled = false; showError(err); }
   };
   return form;
 }
 
-// The deck (questions.js) passes `onAnswer` to animate the card away first and `foot: false` (it has its own buttons).
-export function qCard(q, { focus = false, onChange = () => {}, href = `#/q/${q.id}`, onAnswer = null, foot = true } = {}) {
+// The deck (questions.js) passes `onAnswer` and `onGone` (sent back with a 👎) to animate the card away first and
+// `foot: false` (it has its own buttons).
+export function qCard(q, { focus = false, onChange = () => {}, href = `#/q/${q.id}`, onAnswer = null, onGone = null, foot = true } = {}) {
   const el = h('article', { class: `qcard${q.steps?.length ? ' todo' : ''}${q.blocking ? ' blocking' : ''}${focus ? ' focus' : ''}`, id: `q${q.id}` });
   const answer = (text) => (onAnswer ? onAnswer(text) : answerQuestion(q, text, el, onChange));
   // A card with steps is a job for his hands, not a question (2026-11-22): it reads as a to-do, and its
@@ -355,7 +357,7 @@ export function qCard(q, { focus = false, onChange = () => {}, href = `#/q/${q.i
   // look at | what to pick), so a card fits without scrolling; elsewhere the card reads top to bottom.
   const main = h('div', { class: 'qmain' }, ...[
     h('div', { class: 'qtop' }, projChip(q.project, sub), h('span', {}, ago(q.created_at)),
-      q.blocking && h('span', { class: 'wait' }, 'Agent is waiting'), flagButton(q)),
+      q.blocking && h('span', { class: 'wait' }, 'Agent is waiting'), flagButton(q, onGone || (() => { el.classList.add('answered'); onChange(); }))),
     q.flagged_at && q.flag && h('p', { class: 'qflag-said' }, `👎 ${q.flag}`),
     h('h3', { class: `qtext${long ? ' long' : ''}` }, h('a', { href }, todo ? title.replace(/\s*\?\s*$/, '') : title)),
     task && h('p', { class: 'qtask' }, `📋 ${task}`),

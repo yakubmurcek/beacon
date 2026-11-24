@@ -320,7 +320,8 @@ class Rules:
             return self.decide_proposal(q)
         if q.get('standing'):  # his own words via the CLI's --always
             return self.add_his_words(q, q['answer'])
-        if q['answered_via'] in ('rule',) or q['kind'] in NOT_COUNTED:  # never a rule about rule proposals
+        # never a rule about rule proposals; a 👎 teaches cardrules instead
+        if q['answered_via'] in ('rule',) or q['kind'] in NOT_COUNTED or q.get('flagged_at'):
             return None
         self.run(self.propose_from, q)
 

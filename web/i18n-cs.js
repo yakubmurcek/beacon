@@ -141,7 +141,7 @@ window.HUB_CS = {
     '🌙 The nightly review runs at 23:00: it reads your answers from the last 30 days. Its first run shows here.':
       '🌙 Noční kontrola běží ve 23:00 a čte tvoje odpovědi za posledních 30 dní. Její první běh se ukáže tady.',
     'Done, it works': 'Hotovo, funguje to', 'Flag taken back': 'Označení vzato zpátky', 'For the agent': 'Pro agenta', 'Listen': 'Poslechnout',
-    'Makes no sense': 'Nedává smysl', 'Makes no sense: its agent asks again, and every later card learns from it': 'Nedává smysl: agent se zeptá znovu a další karty se z toho poučí',
+    'Makes no sense': 'Nedává smysl', 'Sent back: its agent asks again as a new card': 'Posláno zpět: agent se zeptá znovu novou kartou', 'Makes no sense: its agent asks again, and every later card learns from it': 'Nedává smysl: agent se zeptá znovu a další karty se z toho poučí',
     'More details': 'Víc podrobností', 'Not needed': 'Není potřeba', 'Or write your own answer': 'Nebo napiš vlastní odpověď', 'Play': 'Přehrát',
     'Removed': 'Odebráno', 'Sent: its agent asks again, and later cards learn the rule': 'Odesláno: agent se zeptá znovu a další karty se pravidlo naučí',
     'Suggested': 'Navrženo', 'What is wrong': 'Co je špatně', 'What is wrong? No later card repeats it': 'Co je špatně? Žádná další karta to nezopakuje',

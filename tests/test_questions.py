@@ -1146,11 +1146,17 @@ class BadQuestionsTest(LiveHub, unittest.TestCase):
         _, t = self.call('/api/tasks', {'title': 'Pick a plan', 'body': '## Goal\nx\n## Done-test\npicked\n## Steps\n1. z'}, self.AGENT)
         _, q = self.call('/api/questions', {'question': 'Plan?', 'options': ['A', 'B'], 'context': '- x', 'task_id': t['id']}, self.AGENT)
         self.assertEqual(self.call(f"/api/questions/{q['id']}/flag", {}, self.AGENT)[0], 403)
-        code, f = self.call(f"/api/questions/{q['id']}/flag", {'note': 'which plan?'}, self.me())
-        self.assertEqual((code, f['flag'], bool(f['flagged_at'])), (200, 'which plan?', True))
+        _, f = self.call(f"/api/questions/{q['id']}/flag", {}, self.me())  # the tap alone: flagged, still open
+        self.assertEqual((f['status'], bool(f['flagged_at'])), ('open', True))
         notes = self.call(f"/api/tasks/{t['id']}")[1]['comments']
         self.assertIn('👎 He flagged card', notes[-1]['text'])
-        self.assertEqual(self.call('/api/questions/bad')[1]['questions'][0]['flag'], 'which plan?')
         _, f = self.call(f"/api/questions/{q['id']}/flag", {}, self.me())  # a second tap takes it back
         self.assertIsNone(f['flagged_at'])
         self.assertEqual(self.call('/api/questions/bad')[1]['questions'], [])
+        code, f = self.call(f"/api/questions/{q['id']}/flag", {'note': 'which plan?'}, self.me())
+        self.assertEqual((code, f['flag'], bool(f['flagged_at'])), (200, 'which plan?', True))
+        # his words leave the feed as the card's answer, so its agent wakes and asks again
+        self.assertEqual(f['status'], 'answered')
+        self.assertIn('which plan?', f['answer'])
+        self.assertEqual(self.call('/api/questions?status=open')[1]['questions'], [])
+        self.assertEqual(self.call('/api/questions/bad')[1]['questions'][0]['flag'], 'which plan?')

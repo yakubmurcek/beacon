@@ -103,6 +103,7 @@ AUDIO_TYPES = {'mp3': 'audio/mpeg', 'm4a': 'audio/mp4', 'wav': 'audio/wav', 'ogg
 AUDIO_URL = re.compile(r'\.(mp3|m4a|wav|ogg)(\?.*)?$', re.I)
 FEEDBACK_KIND = 'feedback'  # his marked-up screenshot from a page's feedback button: work to start, not a decision
 DECISION_TAG = 'decision'  # the small task filed for a question asked outside any task (task 1776)
+FLAG_ANSWER = '👎 Makes no sense, ask again as a new card with what I need:'
 DISPATCHER = 'answer-dispatcher'  # client/answer-dispatcher: its run works the task and closes it itself
 ANSWER_AUTHOR = 'decisions'  # his page answer, copied onto the task as a note: not the owner's id, which would answer again
 APPROVAL_VIA = ('page', 'task')  # his own hands: the questions page, a task note (Telegram). An agent logs cli and chat.
@@ -435,6 +436,11 @@ class Questions:
                         (note if on else None, time.time() if on else None, time.time(), qid))
         if self.cardrules is not None:  # his 👎 teaches the rules every agent's cards are written under
             (self.cardrules.flagged(q, note) if on else self.cardrules.taken_back(q))
+        if on and note and q['status'] == 'open':
+            # His words close the card (2026-11-24: "the card doesn't disappear"): they go back as its answer, so the
+            # asker or answer-dispatcher wakes and asks again as a new card. The task comment below says how.
+            self.answer(qid, {'answer': f'{FLAG_ANSWER} {note}'}, via='page')
+            return self.get(qid)
         if on and q.get('task_id') and self.tasks is not None:  # the asking session's task hears it: ask it again, better
             self.tasks.comment(q['task_id'], f"👎 He flagged card ?{qid} as a bad question" + (f': {note}' if note else '')
                                + '. Ask it again with what he needs to answer it (what it is about, what each answer does).',
