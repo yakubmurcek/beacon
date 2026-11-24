@@ -37,6 +37,13 @@ const ICONS = {
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.7 1.8L21.5 17.5l-1.8.7L19 20l-.7-1.8-1.8-.7 1.8-.7z"/>',
+  laptop: '<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/>',
+  chart: '<path d="M4 20V4"/><path d="M4 20h16"/><path d="m7 15 4-4 3 3 5-6"/>',
+  home: '<path d="m3 11 9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>',
+  map: '<path d="m3 6 6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/>',
+  shapes: '<circle cx="7" cy="7" r="3.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><path d="m7 13.5 4 7H3z"/><circle cx="17" cy="17" r="3.5"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 };
 const ic = (name, cls) => h('span', { class: 'ic' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true',
   html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>` });
@@ -71,6 +78,22 @@ const aiChip = (level) => {
   return h('span', { class: 'aichip lv' + n }, ic('spark'),
     h('span', { class: 'meter', style: '--cc:var(--cyan)' }, [1, 2, 3].map((i) => h('i', { class: i <= n ? 'on' : '' }))), word);
 };
+// a picture for each filter value and the card's own lines: a pin for a place, a laptop for IT, a graph for business
+const fieldIc = (v) => /\bIT\b|software|dev/i.test(v || '') ? 'laptop' : /econom|business|financ|sales/i.test(v || '') ? 'chart'
+  : /engineer|tech|research|science/i.test(v || '') ? 'gear' : 'shapes';
+const placeIc = (v) => /remote|home/i.test(v || '') ? 'home' : /elsewhere|abroad|other/i.test(v || '') ? 'map' : 'pin';
+function valueGlyph(k, v) {
+  if (k === 'Chance') { const lv = { High: 'high', Medium: 'mid', Low: 'low' }[v.split(' ')[0]]; return lv ? meter(lv) : null; }
+  if (k === 'AI') {
+    const lv = Object.keys(AI).find((x) => AI[x][1] === v);
+    return lv ? h('span', { class: 'aiglyph' }, ic('spark'), h('span', { class: 'meter', style: '--cc:var(--cyan)' }, [1, 2, 3].map((i) => h('i', { class: i <= AI[lv][0] ? 'on' : '' })))) : ic('spark');
+  }
+  if (k === 'Field') return ic(fieldIc(v));
+  if (k === 'Where' || k === 'Town') return ic(placeIc(v));
+  if (k === 'Posted' || k === 'Age') return ic('clock', /today|week/i.test(v) ? 'fresh' : '');
+  if (k === 'Open role') return ic(/no /i.test(v) ? 'x' : 'briefcase');
+  return ic(FACET_IC[k] || 'target');
+}
 const chanceChip = (level) => h('span', { class: 'chance' }, meter(level), (CHANCE[level] || [level])[0] + ' chance');
 
 const KIND = { research: 'Research', plan: 'Plan', draft: 'Draft', notes: 'Notes', other: 'Page' };
@@ -156,22 +179,40 @@ function more(total, key) {
 
 const SRANK = Object.fromEntries(STATUS.map(([k], i) => [k, i]));
 // filters: what a list's reader tags each lead with (r.facets), plus chance, type and town where they split the group
-const FACET_IC = { AI: 'spark', Where: 'pin', Field: 'briefcase', 'Open role': 'briefcase', Chance: 'target', Type: 'building', Town: 'pin' };
+const FACET_IC = { Posted: 'clock', Age: 'clock', AI: 'spark', Where: 'pin', Field: 'briefcase', 'Open role': 'briefcase', Chance: 'target', Type: 'building', Town: 'pin' };
 function facetsOf(r) {
   const f = { ...(r.facets || {}) };
   if (r.chance && !f.Chance) f.Chance = [(CHANCE[r.chance] || [r.chance])[0] + ' chance'];
   if (r.segment && !f.Type) f.Type = [r.segment];
   const town = (r.town || '').split(/[·,]/)[0].trim();
   if (town && !f.Where && !f.Town) f.Town = [town];
+  if ('posted' in r) { if (r.posted) f.Posted = [r.posted === 'unknown' ? 'Date unknown' : postedAge(r.posted)]; }
+  else if (r.touched && !f.Age) f.Age = [ageOf(r.touched)];
   return f;
 }
+// a job's ad: how long ago it went up
+const POSTED = ['This week', 'This month', '1-3 months', 'Older', 'Date unknown'];
+function postedAge(when) {
+  const days = (Date.now() - new Date(when)) / 864e5;
+  return POSTED[days < 7 ? 0 : days < 31 ? 1 : days < 92 ? 2 : 3];
+}
+// how long since anything happened on the lead (found, posted, written): newest first in the filter
+const AGES = ['Today', 'This week', 'This month', 'Older'];
+function ageOf(when) {
+  const days = (Date.now() - new Date(when)) / 864e5;
+  return AGES[days < 1 ? 0 : days < 7 ? 1 : days < 31 ? 2 : 3];
+}
+// filters with a natural order show it (best or newest first); the rest go by how many leads they hold
+const ORDER = {
+  get Age() { return AGES; }, get Posted() { return POSTED; },
+  get AI() { return [...Object.values(AI).map((x) => x[1]), 'Not rated']; }, Chance: ['High chance', 'Medium chance', 'Low chance'] };
 function facetList(rows) {  // [name, [[value, count]...]] for filters that split these rows into 2-14 useful parts
   const out = {};
   for (const r of rows) for (const [k, vs] of Object.entries(facetsOf(r))) for (const v of [].concat(vs)) {
     out[k] = out[k] || {};
     out[k][v] = (out[k][v] || 0) + 1;
   }
-  return Object.entries(out).map(([k, m]) => [k, Object.entries(m).sort((a, b) => b[1] - a[1])])
+  return Object.entries(out).map(([k, m]) => [k, Object.entries(m).sort((a, b) => ORDER[k] ? ORDER[k].indexOf(a[0]) - ORDER[k].indexOf(b[0]) : b[1] - a[1])])
     .filter(([k, vals]) => st.facets[k] || (vals.length >= 2 && vals.length <= 14 && vals[0][1] < rows.length));
 }
 const facetOk = (r, skip) => Object.entries(st.facets).every(([k, v]) => k === skip || !v || [].concat(facetsOf(r)[k] || []).includes(v));
@@ -200,7 +241,7 @@ function facetBar() {
         const n = here.filter((r) => [].concat(facetsOf(r)[k] || []).includes(v)).length;
         return h('button', { type: 'button', class: 'chip' + (st.facets[k] === v ? ' on' : ''), disabled: !n && st.facets[k] !== v,
           onclick: () => { st.facets = { ...st.facets, [k]: st.facets[k] === v ? '' : v }; st.shown = { ...STEP }; renderList(); refreshFacets(); } },
-          v, ' ', h('b', null, String(n)));
+          valueGlyph(k, v), v, h('b', null, String(n)));
       })));
   }));
 }
@@ -240,14 +281,18 @@ function leadCard(r) {
       avatar(r.name, r.web),
       h('div', { class: 'lead-id' },
         h('h3', null, r.name),
-        h('div', { class: 'where' }, [st.project ? null : pname(r.project), segment, r.town].filter(Boolean).join(' · '))),
+        h('div', { class: 'where' },
+          st.project ? null : h('span', null, ic('building'), pname(r.project)),
+          segment ? h('span', null, ic((r.facets || {}).Field ? fieldIc((openRoles(r).find((x) => x.text.startsWith(segment)) || matching[0] || {}).field || ((r.facets || {}).Field || [])[0]) : 'briefcase'), segment) : null,
+          r.town ? h('span', null, ic(placeIc(r.town)), r.town) : null)),
       h('span', { class: 'st', style: `--sc:${SCOLOR[r.status] || 'var(--dim)'}` }, SWORD[r.status] || r.status)),
-    r.chance || r.person || roles || mail || r.ai ? h('div', { class: 'badges' },
+    r.chance || r.person || roles || mail || r.ai || r.posted ? h('div', { class: 'badges' },
       r.chance ? chanceChip(r.chance) : null,
       ai ? aiChip(ai) : null,
       mail ? h('span', { class: 'bdg mailready' }, ic('mail'), 'Mail ready') : null,
       roles ? h('span', { class: 'bdg' }, ic('briefcase'), (roles === 1 ? '1 open role' : roles + ' open roles') + (filtered ? ' that match' : '')) : null,
-      r.person ? h('span', { class: 'bdg' }, ic('user'), r.person) : null) : null,
+      r.person && !/^not found$/i.test(r.person) ? h('span', { class: 'bdg' }, ic('user'), r.person) : null,
+      r.posted && r.posted !== 'unknown' ? h('span', { class: 'bdg' + (postedAge(r.posted) === POSTED[0] ? ' fresh' : ''), title: r.posted }, ic('clock'), 'Posted ' + fmtDate(r.posted)) : null) : null,
     r.know ? h('p', { class: 'know' }, r.know) : null,
     h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
     h('div', { class: 'foot' }, h('span', { class: 'links' }, links), r.touched ? h('span', { class: 'when', title: r.touched }, fmtDate(r.touched)) : null));
@@ -283,7 +328,8 @@ function openLead(r, quiet) {
       const sorted = [...sec.rows].sort((a, b) => keep.has(b) - keep.has(a) || ((AI[b.ai] || [0])[0] - (AI[a.ai] || [0])[0]));
       return h('section', { class: 'ld-sec' }, head, h('div', { class: 'roles' }, sorted.map((x) => h(x.url ? 'a' : 'div', { class: 'role' + (keep.has(x) ? '' : ' other'), ...(x.url ? { href: x.url, ...ext(x.url) } : {}) },
         h('span', { class: 'role-t' }, x.text),
-        h('span', { class: 'role-m' }, x.field ? h('span', { class: 'fld' }, x.field) : null, x.ai ? aiChip(x.ai) : null, x.fit ? meter(x.fit) : null, x.note || ''),
+        h('span', { class: 'role-m' }, x.field ? h('span', { class: 'fld' }, x.field) : null, x.ai ? aiChip(x.ai) : null, x.fit ? h('span', { class: 'fitm' }, meter(x.fit), 'fit') : null,
+          x.posted ? h('span', { class: 'posted' + (postedAge(x.posted) === POSTED[0] ? ' fresh' : ''), title: x.posted }, ic('clock'), 'Posted ' + fmtDate(x.posted)) : null, x.note || ''),
         x.ai_quote ? h('span', { class: 'role-q' }, x.ai_quote) : null,
         x.url ? ic('arrow', 'go') : null))));
     }

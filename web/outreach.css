@@ -62,7 +62,12 @@
 .facet .fk { display: inline-flex; align-items: center; gap: 6px; padding-top: 7px; font: 700 12px/1 var(--sans); color: var(--muted); }
 .facet .fk .ic { width: 15px; height: 15px; color: var(--accent-ink); }
 .facet .fv { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
-.facet .chip { padding: 6px 12px; font-size: 13px; cursor: pointer; }
+.facet .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px 6px 9px; font-size: 13px; cursor: pointer; }
+.facet .chip .ic { width: 15px; height: 15px; color: var(--accent-ink); }
+.facet .chip.on .ic { color: inherit; }
+.facet .chip .ic.fresh, .bdg.fresh .ic { color: var(--good); }
+.aiglyph { display: inline-flex; align-items: center; gap: 3px; }
+.aiglyph .ic { color: var(--cyan) !important; width: 13px; height: 13px; }
 .facet .chip b { font-weight: 700; font-variant-numeric: tabular-nums; opacity: .7; }
 @media (max-width: 560px) {
   .facet { grid-template-columns: minmax(0, 1fr); gap: 4px; }
@@ -113,6 +118,10 @@
 .aichip.lv0 .ic { color: var(--dim); }
 .ld-why.ld-ai { background: color-mix(in srgb, var(--cyan) 10%, var(--panel)); }
 .ld-why.ld-ai .ic { color: var(--cyan) }
+.role .posted { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; color: var(--text); }
+.role .posted .ic { width: 13px; height: 13px; }
+.role .posted.fresh .ic { color: var(--good); }
+.role .fitm { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
 .role-q { font-size: 12.5px; line-height: 1.4; color: var(--muted); font-style: italic; }
 .meter { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
 .meter i { width: 4px; border-radius: 2px; background: color-mix(in srgb, var(--dim) 45%, transparent); }
@@ -196,7 +205,9 @@ a.role:hover { border-color: var(--pop-line); }
 .ld-links { display: flex; flex-wrap: wrap; gap: 14px; font-weight: 600; padding-top: 4px; }
 @media (max-width: 560px) { .ld-row { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
 
-.lead .where { color: var(--muted); font-size: 13px; }
+.lead .where { color: var(--muted); font-size: 13px; display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+.lead .where > span { display: flex; align-items: flex-start; gap: 6px; line-height: 1.3; }
+.lead .where .ic { flex: none; width: 14px; height: 14px; margin-top: 1px; color: var(--accent-ink); }
 .lead .know { margin: 2px 0; font-size: 14px; line-height: 1.45; }
 .lead .next { font-size: 14px; font-weight: 600; }
 .lead .next span { font: 700 11px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--accent-ink); margin-right: 8px; }
