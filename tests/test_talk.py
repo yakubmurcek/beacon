@@ -27,6 +27,8 @@ class FakeHTTP:
 
 class TalkTest(unittest.TestCase):
     def setUp(self):
+        saved = os.environ.pop('GATE_MODE', None)  # test_questions turns the gate on at import: here it is in shadow
+        self.addCleanup(lambda: saved is not None and os.environ.update(GATE_MODE=saved))
         self.dir = tempfile.TemporaryDirectory()
         self.store = Store(os.path.join(self.dir.name, 't.db'), 'Europe/Prague')
         self.tasks = Tasks(self.store)

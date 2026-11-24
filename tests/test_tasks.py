@@ -281,7 +281,7 @@ class TasksServerTest(LiveHub, unittest.TestCase):
                                 ('beacon', '/decisions', 'questions.html'), ('beacon', '/team', 'team.html')):
             _, page = self.call(path, headers={'Host': host})
             with open(os.path.join(web, rel), 'rb') as f:  # as they are, apart from the versions on their CSS and JS links
-                self.assertEqual(re.sub(rb'\?v=\w+"', b'"', page), f.read(), f'{host}{path}')
+                self.assertEqual(re.sub(rb'\?v=\w+"', b'"', page), re.sub(rb'\?v=\w+"', b'"', f.read()), f'{host}{path}')
 
 
 class TasksCliTest(LiveHub, unittest.TestCase):
