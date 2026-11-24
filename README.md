@@ -54,6 +54,7 @@ git config core.hooksPath .githooks # once per clone: every push runs `scripts/c
 | Copy-paste | `jscpd` (`.jscpd.json`) | under 1% duplicated lines (0.27% on 2026-11-24) |
 | Checks not loosened | git diff against `origin/main` | a change may not delete or skip tests, add `noqa` / `biome-ignore` / `type: ignore` / `pyright: ignore`, edit a check's config or loosen the baseline (a count up, a score down), unless a commit line `Quality-exception: <why>` puts the reason on record |
 | Tests and coverage | `coverage run -m unittest discover -s tests` (`.coveragerc`, pinned in `requirements-dev.txt`), then `scripts/scores.py coverage` | runs on `config.example.json` only; line and branch coverage per area (hub, collector, client) in `quality-baseline.json` `at_least`, may only go up |
+| Layout | `scripts/layout_check.py`: a throwaway hub with `scripts/demo.py` data, every page drawn in Chrome (`playwright-core`, pinned in `package.json`) at 390 px and 1280 px, Paper + English and Night + Czech, with the shell's run-time states forced (a three-digit Decisions count, its pulse) | the shared header has the same boxes on every page; no header pill wider than its text; no sideways scroll; no text in a system font (it differs per device, so wrapping does too). `tests/test_shell_isolation.py` adds the static half: a page's own sheet may not style the shared header's classes by accident |
 
 CI runs the same `scripts/check` on every push and pull request (`.github/workflows/ci.yml`); Dependabot keeps
 the Actions current.

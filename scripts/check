@@ -82,4 +82,14 @@ step "tests, with coverage (.coveragerc): coverage per area may only go up"
 python -m coverage run -m unittest discover -s tests -q
 python scripts/scores.py coverage
 
+step "layout: every page drawn in Chrome, phone + desktop, both looks (scripts/layout_check.py)"
+# What no static test sees: a stretched header pill, the header moving between pages, sideways scroll, text in a
+# per-device system font. The driver is pinned in package.json; the browser is the machine's Google Chrome.
+if [ -z "${CHROME:-}" ] && ! command -v google-chrome >/dev/null; then
+  if [ -n "${CI:-}" ]; then echo "error: CI has no Google Chrome"; exit 1; fi
+  echo "warning: no Google Chrome here (or \$CHROME), layout not checked (CI checks it)"
+else
+  python3 scripts/layout_check.py
+fi
+
 printf '\n✓ check passed\n'

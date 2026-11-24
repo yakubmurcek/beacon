@@ -13,7 +13,7 @@ concurrency:
 # Every action is pinned to a commit SHA (a tag can be moved to other code; a SHA cannot). Dependabot bumps them.
 jobs:
   check:
-    name: check (tools, lint, ratchets, types, copy-paste, tests, coverage)
+    name: check (tools, lint, ratchets, types, copy-paste, tests, coverage, layout)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

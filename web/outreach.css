@@ -347,7 +347,7 @@ a.role:hover { border-color: var(--pop-line); }
 .doc a { color: var(--accent-ink); }
 .doc code { font: 13.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel-2); padding: 1px 4px; border-radius: var(--r-xs); }
 .doc pre { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px 14px; overflow-x: auto;
-  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+  font: 13px/1.5 var(--mono); white-space: pre-wrap; }
 .doc blockquote { margin: 10px 0; padding: 6px 14px; border-left: 4px solid var(--accent); background: var(--panel); border-radius: 0 var(--r-md) var(--r-md) 0; }
 .doc .tw { overflow-x: auto; margin: 12px 0; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); }
 .doc table { border-collapse: collapse; font-size: 14px; min-width: 100%; }

@@ -323,4 +323,4 @@ html.fb-open, html.fb-open body { overflow: hidden; }
   text-align: left; cursor: pointer; box-shadow: var(--shadow-3); animation: fade-in var(--t-slow) var(--ease);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .new-here .dot { display: inline-block; margin-right: var(--sp-2); vertical-align: middle; }
-.apps .badge.ping { animation: pop-in var(--t-slow) var(--ease) 3; }
+.apps .badge.hub-ping { animation: pop-in var(--t-slow) var(--ease) 3; }

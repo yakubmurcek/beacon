@@ -1,6 +1,5 @@
 /* Tasks (and the shared task pieces Decisions uses): on top of tokens.css and app.css. */
 .tasks-page { --page-w: var(--page-narrow); }
-.brand { text-decoration: none; }
 
 /* capture: one line, the words do the fields' job, chips show what they did */
 #capture { margin-top: 0; }

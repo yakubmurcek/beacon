@@ -35,7 +35,7 @@
     x.addEventListener('click', () => { put(SEEN, top); hide(); });
     pill.append(a, x);
     document.body.append(pill);
-    badge.classList.remove('ping'); void badge.offsetWidth; badge.classList.add('ping');
+    badge.classList.remove('hub-ping'); void badge.offsetWidth; badge.classList.add('hub-ping');
   }
   async function refresh() {
     try {

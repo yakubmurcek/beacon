@@ -163,4 +163,4 @@
 @media (min-width: 761px) {
   .lab-view-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
-.labs-page .apps::after { display: none; }
+.labs-page .top .apps::after { display: none; }
