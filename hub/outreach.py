@@ -508,18 +508,23 @@ def _fetch_logo(domain):
 
 # ------------------------------------------------------------ a small Markdown renderer (no dependency)
 
+SAFE_SCHEMES = ('http:', 'https:', 'mailto:')
+
+
 def _inline(s, base):
     s = html.escape(s, quote=False)
     s = re.sub(r'`([^`]+)`', r'<code>\1</code>', s)
 
     def link(m):
         text, href = m.group(1), m.group(2).strip()
+        if re.match(r'[a-z][a-z0-9+.-]*:', href, re.I) and not href.lower().startswith(SAFE_SCHEMES):
+            return text  # javascript:, data: and friends would run on the hub's origin: the words only
         if not re.match(r'[a-z]+:|#|/', href):  # a file next to this one: open it through the same viewer
             target = os.path.normpath(os.path.join(base, urllib.parse.unquote(href.split('#')[0])))
             href = '/outreach/doc?p=' + urllib.parse.quote(target)
         return f'<a href="{html.escape(href)}">{text}</a>'
     s = re.sub(r'\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)', link, s)
-    s = re.sub(r'(?<!["=])(https?://[^\s<)]+)', r'<a href="\1">\1</a>', s)
+    s = re.sub(r'(?<!["=])(https?://[^\s<)"\']+)', r'<a href="\1">\1</a>', s)  # a quote ends the URL: no way out of href
     s = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', s)
     s = re.sub(r'(?<![\w*])\*([^*\n]+)\*(?![\w*])', r'<em>\1</em>', s)
     s = re.sub(r'\[\[([^\]]+)\]\]', r'<span class="wiki">\1</span>', s)

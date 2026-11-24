@@ -206,6 +206,15 @@ class OutreachTest(unittest.TestCase):
         self.assertIn("<table>", out)
         self.assertIn("&lt;b&gt;", out)
 
+    def test_markdown_links_cannot_run_script(self):
+        # research notes come from the web: a link in one must never run code on the hub's own origin
+        out = render_md('[click](javascript:alert(1)) and https://a.example/x"onmouseover="alert(1)')
+        self.assertNotIn("javascript:", out)
+        self.assertNotRegex(out, r"<a [^>]*onmouseover")  # left as plain words after the link, never an attribute
+        self.assertIn('<a href="https://a.example/x">', out)
+        self.assertIn('<a href="https://b.example/y">site</a>', render_md("[site](https://b.example/y)"))
+        self.assertIn('<a href="mailto:a@b.example">mail</a>', render_md("[mail](mailto:a@b.example)"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -700,7 +700,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == '/api/questions':
                 author = str(body.get('author') or (OWNER_ID if who == 'owner' else 'agent'))[:80]
-                return self.send_json(201, self.questions.create(body, author))
+                return self.send_json(201, self.questions.create(body, author, hands=who == 'owner'))
             m = QUESTION_PATH.match(path)
             if not m or not m.group(2):
                 return self.send_json(404, {'error': 'not found'})

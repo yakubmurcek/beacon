@@ -106,6 +106,17 @@ APPROVAL_VIA = ('page', 'task')  # his own hands: the questions page, a task not
 APPROVAL_SECONDS = 24 * 3600
 
 
+def answered_via(requested, default, hands):
+    """The channel an answer came through. A caller picks among the agent channels freely, but only his
+    own login (`hands`) may say page or task: those count as his approval for risky actions."""
+    via = requested or default
+    if via not in VIA:
+        raise ValueError('via: expected one of ' + ', '.join(VIA))
+    if via in APPROVAL_VIA and not hands:
+        raise ValueError(f'via: {via} is his own hands; an agent logs cli or chat')
+    return via
+
+
 def text(v, name, limit, required=False):
     if v is None or v == '':
         if required:
@@ -418,7 +429,9 @@ class Questions:
 
     # ------------------------------------------------------------ writes
 
-    def create(self, fields, author='agent'):
+    def create(self, fields, author='agent', hands=True):
+        """File a question. `hands`: the caller is his own login (an HTTP request with the token is not; code
+        inside the hub is), which alone may file it born answered through page or task."""
         if not isinstance(fields, dict):
             raise ValueError('body: expected a JSON object')
         question = text(fields.get('question'), 'question', QUESTION_MAX, required=True)
@@ -508,9 +521,7 @@ class Questions:
             'updated_at': now,
         }
         if answer:
-            via = fields.get('via') or 'chat'
-            if via not in VIA:
-                raise ValueError('via: expected one of ' + ', '.join(VIA))
+            via = answered_via(fields.get('via'), 'chat', hands)
             cols.update(answer=answer, answer_note=text(fields.get('note'), 'note', TEXT_MAX),
                         standing=int(bool(fields.get('standing'))), answered_via=via, answered_at=now,
                         # his feedback (hub/feedback.py) is born answered and still waits for the dispatcher's run
@@ -640,9 +651,7 @@ class Questions:
         if q['status'] != 'open':
             raise ValueError(f'status: this question is already {q["status"]}')
         answer = text(fields.get('answer'), 'answer', TEXT_MAX, required=True)
-        via = fields.get('via') or via
-        if via not in VIA:
-            raise ValueError('via: expected one of ' + ', '.join(VIA))
+        via = answered_via(fields.get('via'), via, via in APPROVAL_VIA)
         now = time.time()
         # Taken at once only when he answered in the asking session's own chat (it carries on); every other
         # answer, his note on the task too, waits for the asker or the dispatcher to claim it (task 1776).

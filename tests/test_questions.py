@@ -279,6 +279,17 @@ class QuestionsApiTest(LiveHub, unittest.TestCase):
         q = self.call('/api/questions?status=withdrawn')[1]['questions'][0]
         self.assertEqual((q['task_id'], q['answer_note']), (t['id'], 'task closed'))
 
+    def test_an_agent_cannot_claim_his_hands(self):
+        # his own hands (the page, a task note) count as approval for risky actions; the token may not say so itself
+        _, q = self.call('/api/questions', {'question': 'Push live?', 'options': ['Yes']}, self.AGENT)
+        code, out = self.call(f"/api/questions/{q['id']}/answer", {'answer': 'Yes', 'via': 'page'}, self.AGENT)
+        self.assertEqual(code, 400, out)
+        self.assertEqual(self.call(f"/api/questions/{q['id']}")[1]['status'], 'open')
+        code, out = self.call('/api/questions', {'question': 'Deploy?', 'answer': 'Yes', 'via': 'task'}, self.AGENT)
+        self.assertEqual(code, 400, out)
+        code, q = self.call(f"/api/questions/{q['id']}/answer", {'answer': 'Yes', 'via': 'chat'}, self.AGENT)
+        self.assertEqual((code, q['answered_via']), (200, 'chat'))  # the asking session's own chat stays the agent's to log
+
     def test_another_site_cannot_answer_with_his_login(self):
         _, q = self.call('/api/questions', {'question': 'x?', 'options': ['a']}, self.AGENT)
         code, _ = self.call(f"/api/questions/{q['id']}/answer", {'answer': 'a'}, dict(self.me(), **{'Sec-Fetch-Site': 'cross-site'}))
