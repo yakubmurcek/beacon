@@ -48,6 +48,7 @@ function foldSeries(buckets) {
   const key = cost ? 'cost_by_project' : 'active_by_project';
   const colored = Object.keys(state.colors).sort((a, b) => state.colors[a] - state.colors[b])
     .filter((p) => buckets.some((x) => x[key][p]));
+  /** @type {{label: string, color: string, values: number[], detail?: (i: number) => string}[]} */
   const series = colored.map((p) => ({ label: pname(p), color: projectColor(p), values: buckets.map((x) => x[key][p] || 0) }));
   const rest = buckets.map((x) => Object.entries(x[key]).filter(([p]) => !state.colors[p] && x[key][p] > 0).sort((a, b) => b[1] - a[1]));
   const other = rest.map((r) => sum(r.map(([, v]) => v)));

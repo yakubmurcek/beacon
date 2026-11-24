@@ -126,6 +126,7 @@ export function markdown(src) {
 // ------------------------------------------------------------------ api
 
 export async function api(path, body) {
+  /** @type {RequestInit} */
   const opts = body === undefined ? { cache: 'no-store' } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
   // A deploy restarts the hub for a few seconds and the proxy answers 502 meanwhile: reads wait it out quietly.
   let r;

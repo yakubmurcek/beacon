@@ -29,7 +29,7 @@ async function load() {
     showError(e);
   }
   const n = state.open.length;
-  $('open-count').textContent = n || '';
+  $('open-count').textContent = n ? String(n) : '';
   if (state.loaded) setDecisionsBadge(n);
   document.title = n ? `(${n}) Beacon · Decisions` : 'Beacon · Decisions';
   // Never rebuild under a half-typed answer; the log only changes when he answers.
@@ -38,7 +38,7 @@ async function load() {
   const changed = sig !== state.sig;
   state.sig = sig;
   if (!changed || !['open', 'finished'].includes(current().view)) return;
-  if (deck.dragging || deck.busy || (document.activeElement?.matches('.answer-own input') && document.activeElement.value)) { state.sig = null; return; }
+  if (deck.dragging || deck.busy || (document.activeElement?.matches('.answer-own input') && /** @type {HTMLInputElement} */ (document.activeElement).value)) { state.sig = null; return; }
   render();
 }
 // What the deck shows of each question: a new one, a reworded one or a new screenshot repaints, nothing else.
@@ -665,13 +665,14 @@ function current() {
 }
 
 let renderSeq = 0;
+let renderWasInLog = false;
 async function render() {
   const { view, arg } = current();
   for (const a of $('tabs').querySelectorAll('a')) a.classList.toggle('on', a.dataset.view === ({ q: 'open', search: 'log', rules: 'learned' }[view] || view));
   const seq = ++renderSeq;
   const inLog = ['log', 'search'].includes(view);
-  if (inLog && !render.inLog) logCache = null;  // coming back to the log: fresh rows, then every key filters those
-  render.inLog = inLog;
+  if (inLog && !renderWasInLog) logCache = null;  // coming back to the log: fresh rows, then every key filters those
+  renderWasInLog = inLog;
   let out;
   if (view === 'q') out = await viewOne(Number(arg));
   else if (view === 'log') out = await viewLog(arg, null);
@@ -690,21 +691,21 @@ async function render() {
 const keyboard = matchMedia('(hover: hover) and (pointer: fine)');
 function focusOwn() {
   if (!keyboard.matches || document.activeElement?.matches('input:not(.answer-own input), textarea')) return;
-  document.querySelector('.deck-card .answer-own input')?.focus({ preventScroll: true });
+  /** @type {HTMLElement | null} */ (document.querySelector('.deck-card .answer-own input'))?.focus({ preventScroll: true });
 }
 
 // A computer screen shows the whole card without scrolling (2026-11-22: "I still have to scroll, super
 // bad"): the pictures' column is as tall as the taller of the words and the answers, so it never makes the card longer.
 const wide = matchMedia('(min-width: 1000px)');
 function fitDeck() {
-  const c = document.querySelector('.deck-card'), pics = c?.querySelector('.see-pics');
+  const c = /** @type {HTMLElement | null} */ (document.querySelector('.deck-card')), pics = /** @type {HTMLElement | null | undefined} */ (c?.querySelector('.see-pics'));
   if (!pics || !wide.matches) { c?.style.removeProperty('--pic-h'); return; }
-  const tall = Math.max(c.querySelector('.qmain').offsetHeight, c.querySelector('.qside').offsetHeight);
-  const extra = pics.offsetHeight - (pics.querySelector('.see-pic')?.offsetHeight || 0);  // the slideshow dots
+  const tall = Math.max(/** @type {HTMLElement} */ (c.querySelector('.qmain')).offsetHeight, /** @type {HTMLElement} */ (c.querySelector('.qside')).offsetHeight);
+  const extra = pics.offsetHeight - (/** @type {HTMLElement | null} */ (pics.querySelector('.see-pic'))?.offsetHeight || 0);  // the slideshow dots
   c.style.setProperty('--pic-h', `${Math.round(Math.min(620, Math.max(240, tall - extra)))}px`);
 }
 addEventListener('resize', fitDeck);
-document.addEventListener('load', (e) => { if (e.target.closest?.('.deck-card')) fitDeck(); }, true);
+document.addEventListener('load', (e) => { if (/** @type {Element} */ (e.target).closest?.('.deck-card')) fitDeck(); }, true);
 
 // ------------------------------------------------------------------ boot
 
@@ -712,7 +713,7 @@ document.addEventListener('load', (e) => { if (e.target.closest?.('.deck-card'))
 let searchT = 0;
 function searchNow() {
   clearTimeout(searchT);
-  const v = $('search').value.trim();
+  const v = /** @type {HTMLInputElement} */ ($('search')).value.trim();
   const hash = v ? `#/search/${encodeURIComponent(v)}` : '#/log';
   if (location.hash === hash) return;
   const { view, arg } = current();
@@ -725,8 +726,8 @@ $('search').addEventListener('input', () => { clearTimeout(searchT); searchT = s
 $('search').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchNow(); });
 document.addEventListener('keydown', (e) => {
   // His own-answer box is focused on a computer (focusOwn): while it is empty, the deck keys still work there.
-  const ownEmpty = e.target.matches('.deck-card .answer-own input') && !e.target.value;
-  if (e.target.matches('input, textarea') && !ownEmpty) { if (e.key === 'Escape') e.target.blur(); return; }
+  const ownEmpty = /** @type {HTMLInputElement} */ (e.target).matches('.deck-card .answer-own input') && !/** @type {HTMLInputElement} */ (e.target).value;
+  if (/** @type {HTMLInputElement} */ (e.target).matches('input, textarea') && !ownEmpty) { if (e.key === 'Escape') /** @type {HTMLInputElement} */ (e.target).blur(); return; }
   if (e.key === '/') { e.preventDefault(); $('search').focus(); }
   // The deck by keyboard: ← → move between cards, ↓ later, 1-9 picks that answer (2026-11-22: "number
   // shortcuts", to clear the deck fast). Arrows never answer; a number is as deliberate as a tap.
@@ -735,7 +736,7 @@ document.addEventListener('keydown', (e) => {
   if (nav) { e.preventDefault(); return deckAct(nav); }
   if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
     settle();  // a number pressed while the last card flies off picks on the card now shown
-    const opt = document.querySelectorAll('.deck-card .opts .opt')[Number(e.key) - 1];
+    const opt = /** @type {HTMLElement} */ (document.querySelectorAll('.deck-card .opts .opt')[Number(e.key) - 1]);
     if (!opt) return;
     // In his empty answer box a number waits a moment (2026-11-23: "if I continue typing, it counts as actual
     // answer"): the digit is typed, and only when nothing follows within NUMBER_WAIT does it pick that option.
@@ -761,15 +762,15 @@ function armNumber(input, key, opt) {
     if (go) { input.value = ''; opt.click(); }
   }, NUMBER_WAIT) };
 }
-document.addEventListener('input', (e) => { if (armed && e.target.matches('.deck-card .answer-own input') && e.target.value.length !== 1) disarm(); });
+document.addEventListener('input', (e) => { if (armed && /** @type {HTMLInputElement} */ (e.target).matches('.deck-card .answer-own input') && /** @type {HTMLInputElement} */ (e.target).value.length !== 1) disarm(); });
 window.addEventListener('hashchange', render);
 // paint the last snapshot at once, then the fresh list
 const last = snap.get('decisions');
 const lastEnds = snap.get('endings');
 if (Array.isArray(lastEnds)) state.endings = lastEnds;
-if (Array.isArray(last)) { state.open = last; state.loaded = true; state.sig = fullSig(); $('open-count').textContent = last.length || ''; render(); }
+if (Array.isArray(last)) { state.open = last; state.loaded = true; state.sig = fullSig(); $('open-count').textContent = last.length ? String(last.length) : ''; render(); }
 load();
 // the log loads its own rows; one card's own page fetches its card (blank on a phone with no snapshot yet, 2026-11-23)
 if (current().view !== 'open' && !(current().view === 'q' && Array.isArray(last))) render();
 // Fresh questions arrive on their own; not while he types an answer.
-setInterval(() => { if (!document.hidden && !document.activeElement?.value) load(); }, 15000);
+setInterval(() => { if (!document.hidden && !/** @type {HTMLInputElement | null} */ (document.activeElement)?.value) load(); }, 15000);

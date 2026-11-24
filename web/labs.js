@@ -2,7 +2,7 @@
 // Everything the model wrote goes in through textContent, never as markup.
 (function () {
   const $ = (id) => document.getElementById(id);
-  const thread = $('thread'), hello = $('hello'), form = $('composer'), input = $('q'), mic = $('mic'),
+  const thread = $('thread'), hello = $('hello'), form = $('composer'), input = /** @type {HTMLInputElement} */ ($('q')), mic = $('mic'),
     heard = $('heard'), viewsEl = $('views'), startersEl = $('starters');
   const params = new URLSearchParams(location.search);
   const HTTPS = window.BEACON.hub.https;  // the hub's HTTPS name (the mic needs a secure page), '' when it has none
@@ -453,7 +453,7 @@
   orb.appendChild(orbWord);
   document.body.appendChild(orb);
   const T = { on: false, wake: false, stream: null, ctx: null, an: null, audio: new Audio(), pending: null, stop: null, armed: false, cut: null };
-  T.audio.playsInline = true;
+  /** @type {HTMLVideoElement} */ (T.audio).playsInline = true;
   // 0.1 s of real silence (8 kHz, 8 bit): playing it inside the tap lets this audio element speak later on iOS and
   // Safari. An empty clip does not count as playing, and then every later line is refused without a sound.
   const SILENT = (() => {
@@ -797,7 +797,7 @@
     else startTalk();
   });
   addEventListener('keydown', (e) => {
-    if (e.code !== 'Space' || e.repeat || e.target.closest('input, textarea, button, a')) return;
+    if (e.code !== 'Space' || e.repeat || /** @type {Element} */ (e.target).closest('input, textarea, button, a')) return;
     e.preventDefault();
     if (T.on) endTalk(); else startTalk();
   });

@@ -23,7 +23,16 @@ interface Window {
   /** Re-reads the Decisions badge after an answer (hub.js). */
   hubRefreshBadge?: () => void;
   hubFeedback?: boolean;
+  /** Safari's prefix (older iPhones). */
+  webkitAudioContext?: typeof AudioContext;
   modernScreenshot?: { domToPng: (node: Node, options?: object) => Promise<string> };
+}
+
+interface Navigator {
+  /** iOS Safari: true when opened from the home screen. */
+  standalone?: boolean;
+  /** Safari 16.4+: how audio mixes with other apps (Labs' voice). */
+  audioSession?: { type: string };
 }
 
 /** force-graph (vendor/force-graph.min.js) and d3-force (vendor/d3-*.min.js), classic scripts on Knowledge. */

@@ -35,7 +35,7 @@
     return describe(hit) + (words(said, 60) ? ' “' + words(said, 60) + '”' : '');
   }
   document.addEventListener('click', (e) => {
-    if (e.target.closest && e.target.closest('.fb, .fb-toggle')) return;
+    if (/** @type {Element} */ (e.target).closest && /** @type {Element} */ (e.target).closest('.fb, .fb-toggle')) return;
     push(TAPS, { at: now(), page: location.pathname + location.hash, what: label(e.target) }, 25);
   }, true);
   const err = (what) => push(ERRORS, { at: now(), page: location.pathname, what: words(what, 300) }, 15);
@@ -48,7 +48,7 @@
   };
   const realFetch = window.fetch;
   window.fetch = async function (input, init) {
-    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    const url = typeof input === 'string' ? input : (input && /** @type {Request} */ (input).url) || '';
     const method = (init && init.method) || 'GET';
     try {
       const r = await realFetch.apply(this, arguments);
@@ -87,7 +87,7 @@
     const w = innerWidth, h = innerHeight, x = scrollX, y = scrollY;
     // what he sees: the page moved up by the scroll and cut to the window. Moved, the clone has no scroll and its
     // root is the frame, so fixed and sticky parts (the header, the phone's tab bar) are put back where he sees them.
-    const pinned = [...document.querySelectorAll('body *')].filter((el) => {
+    const pinned = [.../** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('body *'))].filter((el) => {
       const p = getComputedStyle(el).position;
       return (p === 'fixed' || p === 'sticky') && !el.closest('.fb-toggle,.fb,.fb-toast');
     }).filter((el, _, all) => !all.some((o) => o !== el && o.contains(el)));  // one inside another moves with it
@@ -132,7 +132,7 @@
   function oneLineText(h) {  // marks each element whose text on screen sits on a single line
     const one = new Map(), range = document.createRange();
     const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT,
-      { acceptNode: (t) => (t.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) });
+      { acceptNode: (t) => (/** @type {Text} */ (t).data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) });
     for (let t; (t = walk.nextNode());) {
       const el = t.parentElement;
       if (!el || el.closest('.fb-toggle,.fb,.fb-toast')) continue;
@@ -173,10 +173,10 @@
       <p class="fb-error" hidden></p>`;
     document.body.appendChild(root);
     document.documentElement.classList.add('fb-open');
-    const stage = root.querySelector('.fb-stage'), ink = root.querySelector('.fb-ink');
-    const note = root.querySelector('textarea'), undo = root.querySelector('.fb-undo');
-    const hint = root.querySelector('.fb-hint'), error = root.querySelector('.fb-error');
-    const send = root.querySelector('.fb-send'), file = root.querySelector('input[type=file]');
+    const stage = /** @type {HTMLElement} */ (root.querySelector('.fb-stage')), ink = /** @type {HTMLCanvasElement} */ (root.querySelector('.fb-ink'));
+    const note = /** @type {HTMLTextAreaElement} */ (root.querySelector('textarea')), undo = /** @type {HTMLButtonElement} */ (root.querySelector('.fb-undo'));
+    const hint = /** @type {HTMLElement} */ (root.querySelector('.fb-hint')), error = /** @type {HTMLElement} */ (root.querySelector('.fb-error'));
+    const send = /** @type {HTMLButtonElement} */ (root.querySelector('.fb-send')), file = /** @type {HTMLInputElement} */ (root.querySelector('input[type=file]'));
     note.value = sessionStorage.getItem(DRAFT) || '';
     const W = innerWidth, H = innerHeight, dpr = Math.min(window.devicePixelRatio || 1, 2);
     let base = shot;  // the picture under the ink: his screen, or one he attached
@@ -213,11 +213,11 @@
     }
     paint();
 
-    ink.addEventListener('pointerdown', (e) => {
+    ink.addEventListener('pointerdown', (/** @type {PointerEvent} */ e) => {
       ink.setPointerCapture(e.pointerId);
       current = [[e.clientX, e.clientY]]; strokes.push(current); paint();
     });
-    ink.addEventListener('pointermove', (e) => {
+    ink.addEventListener('pointermove', (/** @type {PointerEvent} */ e) => {
       if (!current) return;
       for (const p of (e.getCoalescedEvents ? e.getCoalescedEvents() : [e])) current.push([p.clientX, p.clientY]);
       paint();
@@ -253,10 +253,10 @@
         for (const s of strokes) {
           const xs = s.map((p) => p[0]), ys = s.map((p) => p[1]);
           const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-          const el = document.elementsFromPoint(cx, cy).find((x) => !x.closest('.fb') && x !== document.body && x !== document.documentElement);
+          const el = /** @type {HTMLElement | undefined} */ (document.elementsFromPoint(cx, cy).find((x) => !x.closest('.fb') && x !== document.body && x !== document.documentElement));
           if (!el) continue;
           const box = el.closest('[class*="card"],article,section,li,tr,header,nav') || el;
-          const head = box.querySelector && box.querySelector('h1,h2,h3,h4,.title,[class*="title"]');
+          const head = /** @type {HTMLElement | null} */ (box.querySelector && box.querySelector('h1,h2,h3,h4,.title,[class*="title"]'));
           out.push({ what: label(el) + (box !== el ? ' in ' + describe(box) : '') + (head && head !== el ? ` (titled “${words(head.innerText, 60)}”)` : ''),
             text: words(el.innerText || el.textContent, 160),
             box: [Math.round(Math.min(...xs)), Math.round(Math.min(...ys)), Math.round(Math.max(...xs)), Math.round(Math.max(...ys))] });

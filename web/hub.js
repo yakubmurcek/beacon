@@ -59,7 +59,7 @@
 (function () {
   const KEY = 'hub.theme';
   const root = document.documentElement;
-  const META = document.querySelector('meta[name="theme-color"]');
+  const META = /** @type {HTMLMetaElement | null} */ (document.querySelector('meta[name="theme-color"]'));
   const plainColor = META ? (META.dataset.plain || META.content) : '';
   const reduce = matchMedia('(prefers-reduced-motion: reduce)');
   let canvas = null, ctx = null, raf = 0, last = 0, w = 0, h = 0, dpr = 1, nodes = [], colors = [];
@@ -194,7 +194,7 @@
 // The tab icon is the Beacon tower: its windows glow. Browsers show only a still
 // frame of an animated SVG icon, so the frames are built from favicon.svg once and cycled.
 (function () {
-  const link = document.querySelector('link[rel="icon"]');
+  const link = /** @type {HTMLLinkElement | null} */ (document.querySelector('link[rel="icon"]'));
   if (!link || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const FRAMES = 24, STEP = 100;  // one 2.4 s loop
   fetch(link.href).then((r) => (r.ok ? r.text() : null)).then((svg) => {

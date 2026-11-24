@@ -974,7 +974,7 @@ function docView(d, r, kind) {
   if (ws.length) {  // mark the search words inside the rendered note, text nodes only
     const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
     const nodes = []; while (walk.nextNode()) nodes.push(walk.currentNode);
-    for (const t of nodes) { const parts = marked(t.nodeValue, ws); if (parts.length > 1) t.replaceWith(...parts); }
+    for (const t of nodes) { const parts = marked(t.nodeValue, ws); if (parts.length > 1) /** @type {Text} */ (t).replaceWith(...parts); }
   }
   return [h('section', { class: 'doc' },
     h('div', { class: 'doc-head' }, back(kind === 'note' ? 'Notes' : 'Back'),
@@ -1004,11 +1004,11 @@ let lastView = null;
 function render() {
   const r = route();
   const tab = ['t', 'call', 'n', 'g'].includes(r.view) ? (r.view === 'call' ? 'calls' : r.view === 'n' ? 'notes' : 'search') : r.view;
-  for (const a of document.querySelectorAll('#views a')) a.classList.toggle('on', a.dataset.view === tab);
+  for (const a of document.querySelectorAll('#views a')) a.classList.toggle('on', /** @type {HTMLElement} */ (a).dataset.view === tab);
   $('notes-count').textContent = notes && notes.notes ? String(notes.notes.length) : '';
   $('calls-count').textContent = calls && calls.calls ? String(calls.calls.length) : '';
   if (r.view !== lastView) { more = 1; lastView = r.view; }
-  const q = $('q');
+  const q = /** @type {HTMLInputElement} */ ($('q'));
   if (tab === 'search' && r.view === 'search' && document.activeElement !== q) q.value = r.q;
   q.placeholder = tab === 'notes' ? 'Filter notes, Enter searches inside them' : tab === 'calls' ? 'Filter calls by name or topic' : r.q ? 'Search mail, messages, chats, calls, notes' : 'Find a note, Enter searches everything';
   showGraph(r.view === 'search' && !r.q && !r.source);  // the one graph: shown or hidden, never rebuilt
@@ -1052,7 +1052,7 @@ async function load() {
 
 $('form').addEventListener('submit', (e) => {
   e.preventDefault();
-  const q = $('q').value.trim();
+  const q = /** @type {HTMLInputElement} */ ($('q')).value.trim();
   const r = route();
   filter = '';
   if (!q) return go('#/');
@@ -1062,8 +1062,8 @@ $('form').addEventListener('submit', (e) => {
 });
 $('q').addEventListener('input', () => {
   const r = route();
-  if (r.view === 'notes' || r.view === 'calls') { filter = $('q').value.trim(); more = 1; render(); }
-  else if (r.view === 'search' && !r.q && !r.source) graphFind($('q').value);
+  if (r.view === 'notes' || r.view === 'calls') { filter = /** @type {HTMLInputElement} */ ($('q')).value.trim(); more = 1; render(); }
+  else if (r.view === 'search' && !r.q && !r.source) graphFind(/** @type {HTMLInputElement} */ ($('q')).value);
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === '/' && document.activeElement !== $('q')) { e.preventDefault(); $('q').focus(); }
@@ -1071,13 +1071,13 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('hashchange', () => {
   const r = route();
   if (r.view !== 'notes' && r.view !== 'calls' && filter) { filter = ''; }
-  if ((r.view === 'notes' || r.view === 'calls') && !filter) $('q').value = '';
+  if ((r.view === 'notes' || r.view === 'calls') && !filter) /** @type {HTMLInputElement} */ ($('q')).value = '';
   if (matches) { matches = null; }  // a search's lit dots don't follow him to another page
   render();
 });
 
 // phones: the Home row scrolls sideways, so bring the lit Knowledge tab into view
-{ const on = document.querySelector('.top .tabs .on'); if (on) on.parentElement.scrollLeft = on.offsetLeft + on.offsetWidth - on.parentElement.clientWidth; }
+{ const on = /** @type {HTMLElement | null} */ (document.querySelector('.top .tabs .on')); if (on) /** @type {HTMLElement} */ (on.parentElement).scrollLeft = on.offsetLeft + on.offsetWidth - /** @type {HTMLElement} */ (on.parentElement).clientWidth; }
 render();  // the last data first, no blank page
 setGraph(graph);
 load();

@@ -27,10 +27,10 @@ export function renderHeader() {
       : `${shortDate(from)} – ${shortDate(state.date)}`;
   const t = state.data.totals;
   document.title = `Beacon · Usage · ${$('date-label').textContent} · ${costText(t)}`;
-  $('next').disabled = state.date >= state.meta.today;
+  /** @type {HTMLButtonElement} */ ($('next')).disabled = state.date >= state.meta.today;
   // Nothing older than the first tracked day exists; stepping further back only shows empties.
-  $('prev').disabled = !!state.meta.first_date && from <= state.meta.first_date;
-  $('today').disabled = state.date === state.meta.today;
+  /** @type {HTMLButtonElement} */ ($('prev')).disabled = !!state.meta.first_date && from <= state.meta.first_date;
+  /** @type {HTMLButtonElement} */ ($('today')).disabled = state.date === state.meta.today;
 
   $('machines').replaceChildren(...state.meta.machines.map((m) => {
     const age = Date.now() / 1000 - m.last_seen;

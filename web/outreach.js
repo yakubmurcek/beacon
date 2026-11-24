@@ -67,8 +67,10 @@ const ICONS = {
 };
 const ic = (name, cls) => h('span', { class: 'ic' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true',
   html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>` });
+/** @type {[RegExp, string][]} */
 const SECTION_IC = [[/mail/i, 'mail'], [/application/i, 'file'], [/found/i, 'target'], [/role/i, 'briefcase'], [/contact/i, 'user'], [/source/i, 'link'],
   [/website/i, 'globe'], [/review/i, 'star'], [/ads/i, 'megaphone'], [/walk/i, 'door'], [/./, 'building']];
+/** @type {[RegExp, string][]} */
 const LABEL_IC = [[/^(person|decision maker|contact)/i, 'user'], [/mail/i, 'mail'], [/phone|tel/i, 'phone'], [/found on|source/i, 'link'],
   [/web|site|domain/i, 'globe'], [/career|role|hiring/i, 'briefcase'], [/where|address|seat|town|branch/i, 'pin'],
   [/rating|review|google|maps/i, 'star'], [/ads?\b|meta/i, 'megaphone'], [/what|kind|legal|name|form|founded|size|employ|revenue|profit|ico/i, 'building'],
@@ -131,7 +133,7 @@ const CHIPS = 8;  // project chips shown before "+ N more"
 const fmtDate = (d) => {
   if (!d) return '';
   const t = new Date(d + 'T12:00');
-  const days = Math.round((Date.now() - t) / 864e5);
+  const days = Math.round((Date.now() - +t) / 864e5);
   if (days <= 0) return 'today';
   if (days === 1) return 'yesterday';
   if (days < 7) return days + ' days ago';
@@ -220,13 +222,13 @@ function facetsOf(r) {
 // a job's ad: how long ago it went up
 const POSTED = ['This week', 'This month', '1-3 months', 'Older', 'Date unknown'];
 function postedAge(when) {
-  const days = (Date.now() - new Date(when)) / 864e5;
+  const days = (Date.now() - +new Date(when)) / 864e5;
   return POSTED[days < 7 ? 0 : days < 31 ? 1 : days < 92 ? 2 : 3];
 }
 // how long since anything happened on the lead (found, posted, written): newest first in the filter
 const AGES = ['Today', 'This week', 'This month', 'Older'];
 function ageOf(when) {
-  const days = (Date.now() - new Date(when)) / 864e5;
+  const days = (Date.now() - +new Date(when)) / 864e5;
   return AGES[days < 1 ? 0 : days < 7 ? 1 : days < 31 ? 2 : 3];
 }
 // filters with a natural order show it (best or newest first); the rest go by how many leads they hold
@@ -240,7 +242,7 @@ function facetList(rows) {  // [name, [[value, count]...]] for filters that spli
     out[k] = out[k] || {};
     out[k][v] = (out[k][v] || 0) + 1;
   }
-  return Object.entries(out).map(([k, m]) => [k, Object.entries(m).sort((a, b) => ORDER[k] ? ORDER[k].indexOf(a[0]) - ORDER[k].indexOf(b[0]) : b[1] - a[1])])
+  return Object.entries(out).map(/** @returns {[string, [string, number][]]} */ ([k, m]) => [k, Object.entries(m).sort((a, b) => ORDER[k] ? ORDER[k].indexOf(a[0]) - ORDER[k].indexOf(b[0]) : b[1] - a[1])])
     .filter(([k, vals]) => st.facets[k] || (vals.length >= 2 && vals.length <= 14 && vals[0][1] < rows.length));
 }
 const facetOk = (r, skip) => Object.entries(st.facets).every(([k, v]) => k === skip || !v || [].concat(facetsOf(r)[k] || []).includes(v));
@@ -261,6 +263,7 @@ function leadRows() {
 // how a list can be ordered; a choice shows only when some row has what it sorts by
 const dated = (x) => (x && x !== 'unknown' ? x : '');
 const CRANK = (r) => ({ high: 3, mid: 2, low: 1 })[r.chance] || 0;
+/** @type {[string, string, ((a: any, b: any) => number) | null, (rows: any[]) => boolean][]} */  // rows are free-form JSON from /api/outreach
 const SORTS = [
   ['', 'Next move first', null, () => true],
   ['new', 'Newest ad', (a, b) => dated(b.posted).localeCompare(dated(a.posted)), (rows) => rows.some((r) => dated(r.posted))],
@@ -392,7 +395,7 @@ function openLead(r, quiet) {
     const head = h('h4', null, ic(icon), sec.title);
     if (/open roles/i.test(sec.title || '')) {  // open roles: one card each, with how well it fits
       const keep = new Set(openRoles(r));
-      const sorted = [...sec.rows].sort((a, b) => keep.has(b) - keep.has(a) || ((AI[b.ai] || [0])[0] - (AI[a.ai] || [0])[0]));
+      const sorted = [...sec.rows].sort((a, b) => Number(keep.has(b)) - Number(keep.has(a)) || ((AI[b.ai] || [0])[0] - (AI[a.ai] || [0])[0]));
       return h('section', { class: 'ld-sec' }, head, h('div', { class: 'roles' }, sorted.map((x) => h(x.url ? 'a' : 'div', { class: 'role' + (keep.has(x) ? '' : ' other'), ...(x.url ? { href: x.url, ...ext(x.url) } : {}) },
         h('span', { class: 'role-t' }, x.text),
         h('span', { class: 'role-m' }, x.field ? h('span', { class: 'fld' }, x.field) : null, x.ai ? aiChip(x.ai) : null, x.fit ? h('span', { class: 'fitm' }, meter(x.fit), 'fit') : null,
@@ -500,8 +503,8 @@ const when = (t, ahead) => {
   if (!t) return ahead ? 'not scheduled' : 'never seen';
   const d = new Date(t * 1000), now = new Date();
   const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const day = Math.round((new Date(d.toDateString()) - new Date(now.toDateString())) / 864e5);
-  const mins = Math.round(Math.abs(now - d) / 6e4);
+  const day = Math.round((+new Date(d.toDateString()) - +new Date(now.toDateString())) / 864e5);
+  const mins = Math.round(Math.abs(+now - +d) / 6e4);
   if (mins < 60) return ahead ? `in ${mins} min` : `${mins} min ago`;
   return day === 0 ? `today ${hm}` : day === 1 ? `tomorrow ${hm}` : day === -1 ? `yesterday ${hm}` : fmtDate(d.toISOString());
 };
@@ -583,7 +586,7 @@ function rerender() {
   const slot = d.querySelector('.ld-moves');
   if (slot) slot.replaceChildren(movesFor(r, 'detail') || '');
   d.querySelectorAll('.mail-edit').forEach((x) => x.replaceChildren(movesFor(r, 'mail') || ''));
-  const ask = d.querySelector('.mail-edit .mv-note');
+  const ask = /** @type {HTMLElement | null} */ (d.querySelector('.mail-edit .mv-note'));
   if (ask && st.moving && st.moving.where === 'mail' && st.moving.focus) { st.moving.focus = false; ask.focus(); ask.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
 }
 // select a part of a draft: a chip offers to have the agent change just that part
@@ -657,7 +660,7 @@ function renderResearch(v) {
   const byP = {};
   for (const r of all) byP[r.project] = (byP[r.project] || 0) + 1;
   const arts = all.filter((r) => r.where === 'artifact').length;
-  const month = all.filter((r) => r.date && Date.now() - new Date(r.date + 'T12:00') < 30 * 864e5).length;
+  const month = all.filter((r) => r.date && Date.now() - +new Date(r.date + 'T12:00') < 30 * 864e5).length;
   v.append(
     h('section', { class: 'hero' },
       h('div', { class: 'kpis' },
@@ -698,12 +701,12 @@ function render() {
   writeHash();
   $('n-leads').textContent = data.leads.length;
   $('n-research').textContent = data.research.length;
-  document.querySelectorAll('.views a').forEach((a) => a.classList.toggle('on', a.dataset.v === st.view));
+  document.querySelectorAll('.views a').forEach((a) => a.classList.toggle('on', /** @type {HTMLElement} */ (a).dataset.v === st.view));
   const v = $('view');
   const keepFocus = document.activeElement && document.activeElement.id === 'q';
   v.replaceChildren();
   (st.view === 'leads' ? renderLeads : renderResearch)(v);
-  if (keepFocus) { const q = $('q'); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+  if (keepFocus) { const q = /** @type {HTMLInputElement} */ ($('q')); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
   const want = st.lead && data.leads.find((r) => leadId(r) === st.lead);
   if (want && !document.getElementById('lead-drawer')) openLead(want, true);
   else if (!want) closeLead(true);
@@ -735,7 +738,7 @@ data = snap.get('outreach');
 if (!data) try { data = JSON.parse(localStorage.getItem('outreach.snap')); } catch { data = null; }
 try { render(); painted = data ? JSON.stringify(data) : ''; } catch { data = null; painted = ''; }  // a snapshot that no longer fits waits for fresh data
 load();
-document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
+document.querySelectorAll('.views a').forEach((/** @type {HTMLElement} */ a) => a.addEventListener('click', (e) => {
   e.preventDefault();
   if (st.view === a.dataset.v) return;
   st.view = a.dataset.v; st.project = ''; st.status = ''; st.q = ''; st.shown = { ...STEP };

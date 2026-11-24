@@ -348,7 +348,7 @@ function viewBacklog(project) {
     .filter((x) => x.live.length || x.p === project);
   // Blocks follow the sort (a project's best row decides its place); "Yours first" puts the most of his first.
   const blocks = [...projects].sort((a, b) => sortKey === 'whose' ? b.mine - a.mine || b.live.length - a.live.length
-    : !a.live.length - !b.live.length || (a.live.length && b.live.length ? cmp(a.live[0], b.live[0]) : 0));
+    : Number(!a.live.length) - Number(!b.live.length) || (a.live.length && b.live.length ? cmp(a.live[0], b.live[0]) : 0));
   projects.sort((a, b) => b.live.length - a.live.length);
   const chips = h('div', { class: 'chips', role: 'list' },
     h('a', { class: `pchip${project ? '' : ' on'}`, href: '#/backlog' }, 'All ', h('span', {}, projects.reduce((n, x) => n + x.live.length, 0))),
@@ -420,6 +420,7 @@ function viewTriage(pile) {
   const seen = () => { triageSeen.add(t.id); };
   const act = (fn) => async () => { if (await fn() !== undefined) seen(); render(); };
   const due = dueLabel(t.due);
+  /** @type {[string, string, () => Promise<void>, string?][]} */
   const actions = kind === 'late' ? [
     ['Today', 't', act(() => save(t.id, { due: pragueToday() }, { text: 'Moved to today', fields: { due: t.due } })), 'primary'],
     ['In a week', 'w', act(() => save(t.id, { due: pragueToday(7) }, { text: 'Back in a week', fields: { due: t.due } }))],
@@ -644,10 +645,10 @@ function current() {
 let renderSeq = 0;
 async function render() {
   const { view, arg } = current();
-  for (const a of document.querySelectorAll('#tabs a')) a.classList.toggle('on', a.dataset.view === view);
+  for (const a of document.querySelectorAll('#tabs a')) a.classList.toggle('on', /** @type {HTMLElement} */ (a).dataset.view === view);
   document.body.classList.toggle('on-task', view === 'task' || view === 'triage');
   const stale = state.tasks.filter((t) => isStale(t) && !withAgent(t) && !agentAsks(t)).length;
-  $('stale-count').textContent = stale || '';
+  $('stale-count').textContent = stale ? String(stale) : '';
   document.title = 'Beacon · Tasks';
   if (view !== 'triage') triageKeys = {};
   if (!state.loaded && !['task', 'search'].includes(view)) return;
@@ -671,8 +672,8 @@ function route() {
   }
   const { view, arg } = current();
   if (view === 'search') {
-    if (document.activeElement !== $('search')) $('search').value = arg;
-  } else $('search').value = '';
+    if (document.activeElement !== $('search')) /** @type {HTMLInputElement} */ ($('search')).value = arg;
+  } else /** @type {HTMLInputElement} */ ($('search')).value = '';
   if (view === 'new') { history.replaceState(null, '', '#/now'); $('capture-text').focus(); }
   window.scrollTo(0, 0);
   render();
@@ -749,7 +750,7 @@ function parseCapture(text) {
 }
 
 function renderParsed() {
-  const text = $('capture-text').value;
+  const text = /** @type {HTMLInputElement} */ ($('capture-text')).value;
   const p = parseCapture(text);
   const due = p.day && dueLabel(p.day + (p.time ? 'T' + p.time : ''));
   $('capture-chips').replaceChildren(...(text.trim() ? [
@@ -761,7 +762,7 @@ function renderParsed() {
 
 async function capture(e) {
   e.preventDefault();
-  const p = parseCapture($('capture-text').value.trim());
+  const p = parseCapture(/** @type {HTMLInputElement} */ ($('capture-text')).value.trim());
   if (!p.text) return;
   const body = { body: p.text, project: p.project || undefined };
   if (p.priority) body.priority = p.priority;
@@ -770,7 +771,7 @@ async function capture(e) {
   btn.disabled = true;
   try {
     const t = listed(await api('/api/tasks', body));
-    $('capture-text').value = '';
+    /** @type {HTMLInputElement} */ ($('capture-text')).value = '';
     autoGrow($('capture-text'));
     renderParsed();
     state.tasks.unshift(t);
@@ -793,25 +794,25 @@ async function capture(e) {
 $('capture').addEventListener('submit', capture);
 $('capture-text').addEventListener('input', (e) => { autoGrow(e.target); renderParsed(); });
 $('capture-text').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('capture').requestSubmit(); }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); /** @type {HTMLFormElement} */ ($('capture')).requestSubmit(); }
 });
 renderParsed();
 
 let searchTimer;
 $('search').addEventListener('input', (e) => {
   clearTimeout(searchTimer);
-  const q = e.target.value.trim();
+  const q = /** @type {HTMLInputElement} */ (e.target).value.trim();
   searchTimer = setTimeout(() => {
     const hash = q ? `#/search/${encodeURIComponent(q)}` : '#/now';
     if (location.hash === hash) render(); else location.hash = hash;
   }, 250);
 });
 $('search').addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && $('search').value) { e.stopPropagation(); $('search').value = ''; location.hash = '#/now'; }
+  if (e.key === 'Escape' && /** @type {HTMLInputElement} */ ($('search')).value) { e.stopPropagation(); /** @type {HTMLInputElement} */ ($('search')).value = ''; location.hash = '#/now'; }
 });
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
-  if (e.key === 'Escape') { closeMenu(); if (typing) document.activeElement.blur(); return; }
+  if (e.key === 'Escape') { closeMenu(); if (typing) /** @type {HTMLElement} */ (document.activeElement).blur(); return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); $('search').focus(); }
   if (e.key === 'n' && current().view !== 'triage') { e.preventDefault(); $('capture-text').focus(); return; }

@@ -205,14 +205,14 @@ function visibleOnCard() {
 }
 
 document.addEventListener('click', (e) => {
-  const a = e.target.closest?.(MEDIA_LINK);
+  const a = /** @type {Element} */ (e.target).closest?.(MEDIA_LINK);
   if (!a || e.defaultPrevented || e.button > 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !itemOf(a)) return;
   e.preventDefault();
   open(galleryFor(a));
 });
 // Capture phase, before the deck's own keys: an arrow in here must never answer the decision under it.
 window.addEventListener('keydown', (e) => {
-  const typing = e.target.matches?.('input, textarea, select, [contenteditable]');
+  const typing = /** @type {Element} */ (e.target).matches?.('input, textarea, select, [contenteditable]');
   if (!box?.classList.contains('on')) {
     if (typing || e.metaKey || e.ctrlKey || e.altKey || e.key.toLowerCase() !== 'f') return;
     const a = visibleOnCard();

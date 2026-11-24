@@ -1,12 +1,14 @@
 // Beacon's service worker: only for pings (hub/webpush.py). A push shows one notification; a tap opens the card
 // it is about, in the Beacon window already open when there is one. No caching: pages load fresh as before.
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+const sw = /** @type {ServiceWorkerGlobalScope} */ (/** @type {unknown} */ (self));
 
-self.addEventListener('push', (e) => {
+sw.addEventListener('install', () => sw.skipWaiting());
+sw.addEventListener('activate', (e) => e.waitUntil(sw.clients.claim()));
+
+sw.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { title: e.data ? e.data.text() : 'Beacon' }; }
-  e.waitUntil(self.registration.showNotification(d.title || 'Beacon', {
+  e.waitUntil(sw.registration.showNotification(d.title || 'Beacon', {
     body: d.body || '',
     tag: d.tag || 'beacon',
     data: { url: d.url || '/inbox' },
@@ -17,13 +19,13 @@ self.addEventListener('push', (e) => {
   }));
 });
 
-self.addEventListener('notificationclick', (e) => {
+sw.addEventListener('notificationclick', (e) => {
   e.notification.close();
-  const url = new URL(e.notification.data?.url || '/inbox', self.location.origin).href;
+  const url = new URL(e.notification.data?.url || '/inbox', sw.location.origin).href;
   e.waitUntil((async () => {
-    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    const same = wins.find((w) => new URL(w.url).origin === self.location.origin);
+    const wins = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const same = wins.find((w) => new URL(w.url).origin === sw.location.origin);
     if (same) { await same.focus(); return same.navigate(url); }
-    return self.clients.openWindow(url);
+    return sw.clients.openWindow(url);
   })());
 });

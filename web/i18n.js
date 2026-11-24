@@ -84,8 +84,9 @@
       if (m.type === 'childList') m.addedNodes.forEach(walk);
       else if (m.type === 'characterData') text(m.target);
       else if (m.type === 'attributes') {
-        const out = tr((m.target.getAttribute(m.attributeName) || '').trim());
-        if (out !== null && out !== m.target.getAttribute(m.attributeName)) m.target.setAttribute(m.attributeName, out);
+        const el = /** @type {Element} */ (m.target);
+        const out = tr((el.getAttribute(m.attributeName) || '').trim());
+        if (out !== null && out !== el.getAttribute(m.attributeName)) el.setAttribute(m.attributeName, out);
       }
     }
   }).observe(root, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTRS });

@@ -13,7 +13,7 @@ function step(dir) {
 }
 function segToggle(id, key, pref = key) {
   $(id).addEventListener('click', (e) => {
-    const v = e.target.closest('button')?.dataset.v;
+    const v = /** @type {HTMLElement} */ (e.target).closest('button')?.dataset.v;
     if (!v || state[key] === v) return;
     state[key] = v;
     prefs.set(pref, v);
@@ -22,7 +22,7 @@ function segToggle(id, key, pref = key) {
 }
 
 $('view-tabs').addEventListener('click', (e) => {
-  const v = e.target.closest('button')?.dataset.view;
+  const v = /** @type {HTMLElement} */ (e.target).closest('button')?.dataset.view;
   if (v && v !== state.view) go({ view: v });
 });
 $('prev').onclick = () => step(-1);
@@ -30,14 +30,15 @@ $('next').onclick = () => step(1);
 $('today').onclick = () => go({ date: state.meta.today });
 // The date opens the browser's date picker: jump anywhere without stepping day by day.
 $('date-label').onclick = () => {
-  const input = $('date-input');
+  const input = /** @type {HTMLInputElement} */ ($('date-input'));
   input.max = state.meta.today;
   input.min = state.meta.first_date || '';
   input.value = state.date;
   try { input.showPicker(); } catch { input.focus(); }
 };
 $('date-input').addEventListener('change', (e) => {
-  if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) go({ date: e.target.value });
+  const { value } = /** @type {HTMLInputElement} */ (e.target);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) go({ date: value });
 });
 segToggle('lanes-toggle', 'lanes', 'lanes2');
 segToggle('trend-toggle', 'trend');
@@ -71,22 +72,23 @@ $('export-projects').addEventListener('click', () => {
     : d.by_project.map((p) => [state.date, p.name, p.active_min, p.cost.toFixed(2)]);
   downloadCsv('projects', ['date', 'project', 'active_min', 'api_value_usd'], rows);
 });
-$('search').addEventListener('input', (e) => { state.query = fold(e.target.value.trim()); runSearch(); });
-$('drawer').addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeDrawer(); });
+$('search').addEventListener('input', (e) => { state.query = fold(/** @type {HTMLInputElement} */ (e.target).value.trim()); runSearch(); });
+$('drawer').addEventListener('click', (e) => { if (/** @type {HTMLElement} */ (e.target).closest('[data-close]')) closeDrawer(); });
 document.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.target.matches('input, select, textarea')) {
-    if (e.key === 'Escape' && e.target.id === 'search' && e.target.value) {
-      e.target.value = '';
+  const field = /** @type {HTMLInputElement} */ (e.target);
+  if (field.matches('input, select, textarea')) {
+    if (e.key === 'Escape' && field.id === 'search' && field.value) {
+      field.value = '';
       state.query = '';
       runSearch();
-    } else if (e.key === 'Escape') e.target.blur();
+    } else if (e.key === 'Escape') field.blur();
     return;
   }
   if (e.key === 'Escape') return closeDrawer();
   if (!$('drawer').hidden || !state.meta) return;
   const views = { 1: 'day', 2: '7', 3: '30', 4: '365' };
-  if (e.key === 'ArrowLeft' && !$('prev').disabled) step(-1);
+  if (e.key === 'ArrowLeft' && !/** @type {HTMLButtonElement} */ ($('prev')).disabled) step(-1);
   else if (e.key === 'ArrowRight' && state.date < state.meta.today) step(1);
   else if (e.key === 't' || e.key === 'T') go({ date: state.meta.today });
   else if (views[e.key]) go({ view: views[e.key] });
@@ -102,7 +104,8 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(() => { if (state.data) render(); }, 150);
 });
 
-if (CLICK === 'tap') $('search').placeholder = $('search').placeholder.replace(/\s+\/$/, '');  // no keyboard, no shortcut
+const search = /** @type {HTMLInputElement} */ ($('search'));
+if (CLICK === 'tap') search.placeholder = search.placeholder.replace(/\s+\/$/, '');  // no keyboard, no shortcut
 document.querySelectorAll('.note.inline').forEach((n) => { n.textContent = n.textContent.replace('click', CLICK); });
 readHash();
 // Today's view paints from the last visit at once and refreshes behind it (snap, shared.js).

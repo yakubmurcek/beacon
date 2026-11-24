@@ -73,7 +73,7 @@ function plugTable(j) {
   const sum = (ds, f) => ds.reduce((a, d) => a + f(d), 0);
   const tot = { now: 0, d: 0, w: 0, m: 0, mk: 0, mn: 0 };
   const rows = j.plugs.map((p) => {
-    const age = (Date.now() - new Date(p.t)) / 60e3;
+    const age = (Date.now() - new Date(p.t).getTime()) / 60e3;
     const d = sum(p.daily.filter((x) => x.day === today), (x) => x.czk);
     const w = sum(p.daily.filter((x) => x.day >= wk), (x) => x.czk);
     const mo = p.daily.filter((x) => x.day.startsWith(ym));
@@ -102,7 +102,7 @@ function render(j) {
   const t = j.tariff;
   $('tariff').textContent = `Prices: day ${fmt(t.vt, 2)} Kč/kWh, night ${fmt(t.nt, 2)} Kč/kWh (${ranges(t.nt_hours)} h), plus about ${fmt(t.fixed_month, 0)} Kč a month in fixed fees whatever you use. Plugs are read every 2 min through the PC; while it sleeps, the gap is spread over the hours. Name a plug in its own web page (Settings → Device name).`;
   if (j.now) {
-    const age = (Date.now() - new Date(j.now.t)) / 60e3;
+    const age = (Date.now() - new Date(j.now.t).getTime()) / 60e3;
     $('now').textContent = fmt(j.now.wall, 0) + ' W';
     $('nowparts').textContent = age > 12 ? `asleep or off · last ${Math.round(age)} min ago` : `CPU ${fmt(j.now.cpu, 0)} W · GPU ${fmt(j.now.gpu, 0)} W`;
   }
@@ -153,7 +153,7 @@ async function load() {
 }
 
 $('seg').onclick = (e) => {
-  const b = e.target.closest('button'); if (!b) return;
+  const b = /** @type {Element} */ (e.target).closest('button'); if (!b) return;
   hours = +b.dataset.h;
   for (const x of $('seg').children) x.classList.toggle('on', x === b);
   load();

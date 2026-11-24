@@ -25,7 +25,8 @@ function dayAxis(d) {
     if (last && a - last[1] < IDLE_MIN_S) last[1] = Math.max(last[1], b); else merged.push([a, b]);
   }
   if (!merged.length) merged.push([lo, end]);
-  // Pieces in order: idle (fixed sliver) and active (share of the rest by duration).
+  // Pieces in order: idle (fixed sliver) and active (share of the rest by duration); x and w (%) come after.
+  /** @type {{idle: boolean, a: number, b: number, future?: boolean, x?: number, w?: number}[]} */
   const pieces = [];
   let t = lo;
   for (const [a, b] of merged) {
@@ -80,7 +81,7 @@ function renderZoomChips(d) {
   let start = null, box = null;
   const xPct = (e) => Math.min(100, Math.max(0, ((e.clientX - box.left) / box.width) * 100));
   root.addEventListener('pointerdown', (e) => {
-    const track = e.target.closest('.lane-track, .conc svg');
+    const track = /** @type {Element} */ (e.target).closest('.lane-track, .conc svg');
     if (!track || e.button !== 0 || !timelineAxis) return;
     box = track.getBoundingClientRect();
     start = { x: e.clientX, p: xPct(e), moved: false };
@@ -174,6 +175,7 @@ export function renderTimeline(d) {
     // "×5" when five agents ran at once. Hovering shows each of them and what it was asked.
     const blocks = [];
     const parts = lane.sessions.flatMap((sess) => sess.bursts.map(([a, b]) => ({ a, b, sess }))).sort((x, y) => x.a - y.a);
+    /** @type {{a: number, b: number, parts: typeof parts, peak?: number}[]} */
     const merged = [];
     for (const p of parts) {
       const last = merged[merged.length - 1];

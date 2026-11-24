@@ -11,6 +11,6 @@
     "moduleDetection": "force",
     "types": []
   },
-  "include": ["*.js", "*.d.ts"],
+  "include": ["*.js", "globals.d.ts"],
   "exclude": ["vendor", "sw.js", "knowledge-layout.js"]
 }

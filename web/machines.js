@@ -358,6 +358,7 @@ function versions(m) {
 const JOB_ORDER = { failed: 0, overdue: 1, gone: 2, running: 3, ok: 4, never: 5, unknown: 6 };
 const COMMAND = /^["']|\\|\.exe\b|^(conhost|powershell|pwsh|\/usr|\/opt|\/bin)/i;  // a Windows task's "description" is often its command line
 const SCHEDULE = /^(every (\d+) s|always on|calendar|on demand)$/;  // a launchd agent's "description" is its schedule
+/** @type {[string, string, (j: any, text: string) => boolean][]} */
 const PURPOSE = [  // first match wins; checked against the live job list so "Other" stays small
   ['always', 'Apps and servers', (j) => j.kind === 'daemon' || j.desc === 'always on' || (j.kind === 'schtask' && j.status === 'running' && !j.next_run)],
   ['chore', 'Cleanup', (j) => /sweep|reaper|archiv|clean|follow-main|organiz|brake|guard/i.test(j.name)],
@@ -613,7 +614,7 @@ const openMore = new Set();  // folds he opened (id) or closed (-id) stay so acr
 
 function render(scroll) {
   const r = route();
-  for (const a of document.querySelectorAll('#tabs a')) a.classList.toggle('on', a.dataset.view === r.view);
+  for (const a of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#tabs a'))) a.classList.toggle('on', a.dataset.view === r.view);
   if (!data) return;
   const list = data.machines || [];
   const bad = list.reduce((sum, m) => sum + badJobs(m).length, 0);
@@ -662,7 +663,7 @@ window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => render(), 150);
 });
-$('search').addEventListener('input', (e) => { query = e.target.value.trim().toLowerCase(); render(); });
+$('search').addEventListener('input', (e) => { query = /** @type {HTMLInputElement} */ (e.target).value.trim().toLowerCase(); render(); });
 document.addEventListener('keydown', (e) => {
   if (e.key === '/' && document.activeElement !== $('search')) { e.preventDefault(); $('search').focus(); }
   if (e.key === 'Escape' && selected) select(null);

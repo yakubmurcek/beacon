@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "lib": ["es2023", "webworker"] },
+  "include": ["sw.js", "knowledge-layout.js", "workers.d.ts"],
+  "exclude": []
+}

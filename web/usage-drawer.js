@@ -15,7 +15,7 @@ export async function openSession(ref) {
   hideTip();
   drawerTitle = ref.title || null;
   if ($('drawer').hidden) drawerOpener = document.activeElement;
-  for (const el of document.querySelectorAll('header.top, main')) el.inert = true;
+  for (const el of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('header.top, main'))) el.inert = true;
   const body = $('drawer-body');
   body.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
   $('drawer').hidden = false;
@@ -27,7 +27,7 @@ export async function openSession(ref) {
     return;
   }
   renderDrawer();
-  $('drawer').querySelector('.drawer-close').focus();
+  /** @type {HTMLElement} */ ($('drawer').querySelector('.drawer-close')).focus();
   // Opened from a search: bring the first prompt that matched into view.
   $('drawer-body').querySelector('.turn .text.hit')?.closest('.turn').scrollIntoView({ block: 'center' });
 }
@@ -149,7 +149,7 @@ function renderDrawer() {
       h('a', { class: 'sd-tasks', href: `/tasks#/backlog/${encodeURIComponent(full.project)}` }, `All ${pname(full.project)} tasks →`)),
   ].filter(Boolean));
   for (const text of $('drawer-body').querySelectorAll('.turn .text:not(.none)')) {
-    if (text.scrollHeight > text.clientHeight + 2) text.nextElementSibling.hidden = false;
+    if (text.scrollHeight > text.clientHeight + 2) /** @type {HTMLElement} */ (text.nextElementSibling).hidden = false;
   }
 }
 // The tasks this session took or filed and the decisions it asked for, each a link to its page.
@@ -176,7 +176,7 @@ export function closeDrawer() {
   if ($('drawer').hidden) return;
   $('drawer').hidden = true;
   drawerSession = null;
-  for (const el of document.querySelectorAll('header.top, main')) el.inert = false;
+  for (const el of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('header.top, main'))) el.inert = false;
   if (drawerOpener?.isConnected) drawerOpener.focus();
   drawerOpener = null;
 }

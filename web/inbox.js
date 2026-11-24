@@ -11,6 +11,7 @@ const STATE = {
   resolved: ['🟢', 'Fixed before it went out'],
 };
 const LEVEL = { urgent: ['🔴', 'Urgent'], normal: ['🔔', 'Normal'], inbox: ['🗂️', 'Inbox only'] };
+/** @type {[string, string, (notice: any) => boolean][]} */
 const FILTERS = [
   ['all', 'All', () => true],
   ['unread', 'Unread', (x) => !x.read_at],
