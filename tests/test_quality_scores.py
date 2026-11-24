@@ -64,6 +64,14 @@ class ScoreJudge(unittest.TestCase):
         code, held = self.judge({'pyright hub': 3}, 'at_most', {'pyright hub': 5}, update=True)
         self.assertEqual((code, held), (0, {'pyright hub': 3}))
 
+    def test_a_machine_dependent_floor_moves_only_in_ci(self):
+        held = {'coverage collector %': 50.0}
+        with mock.patch.dict(os.environ, {'GITHUB_ACTIONS': ''}):
+            self.assertEqual(self.judge({'coverage collector %': 52.7}, 'at_least', held, update=True), (0, held))
+        with mock.patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}):
+            self.assertEqual(self.judge({'coverage collector %': 52.7}, 'at_least', held, update=True)[1],
+                             {'coverage collector %': 52.7})
+
     def test_without_update_the_file_is_left_alone(self):
         self.assertEqual(self.judge({'pyright hub': 3}, 'at_most', {'pyright hub': 5}), (0, {'pyright hub': 5}))
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -36,6 +37,9 @@ AREAS = {
     "scripts": ["scripts"],
 }
 COVERED = ("hub", "collector", "client")  # scripts/ is tooling, mostly run by hand: no coverage floor
+# The collectors probe the machine they run on (/proc, installed tools), so a richer box covers more of them.
+# Their floor moves only on CI's measure, or a box would set one CI can't meet.
+MACHINE_DEPENDENT = ("coverage collector %",)
 
 
 Baseline = dict[str, dict[str, float]]
@@ -99,6 +103,8 @@ def judge(now: Mapping[str, float], section: str, update: bool) -> int:
             better.append(f"{key}: {value} (first measure)")
         elif (value < old) if higher else (value > old):
             worse.append(f"{key}: {value}, baseline {old}")
+        elif value != old and key in MACHINE_DEPENDENT and not os.environ.get("GITHUB_ACTIONS"):
+            print(f"  ({key} moves only on CI's measure: this machine's {value} is not written)")
         elif value != old:
             better.append(f"{key}: {old} → {value}")
             held[key] = value
