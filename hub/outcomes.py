@@ -102,94 +102,139 @@ def age_note(name, src, start, end, now, through=None):
     return ''
 
 
-def build(series, releases, sources, today, now, collected_at, robux_ever=None):
-    """robux_ever: Robux the game has earned in all (the cash-out gate); None = count every day in `series`."""
+def cashable_robux(series, sources, robux_ever):
+    """Robux the game has earned in all (the cash-out gate): the collector's total when it read one, else the days here."""
     if isinstance((sources.get('roblox') or {}).get('robux_ever'), (int, float)):
-        robux_ever = sources['roblox']['robux_ever']  # every day the game reported, not just the days kept here
+        return sources['roblox']['robux_ever']  # every day the game reported, not just the days kept here
     if robux_ever is None:
-        robux_ever = sum((v or {}).get('robux', 0) for v in series.values())
-    cashable = robux_ever >= DEVEX_MIN
-    out = {}
-    for pkey, (start, end) in periods(today).items():
-        days = day_list(start, end)
-        cards = {k: {'key': k, 'label': lab, 'icon': ic, 'unit': unit, 'value': 0, 'parts': [], 'down': 0}
-                 for k, lab, ic, unit in CARDS}
-        for card, label, key, src_name, unit in PARTS:
-            src = sources.get(src_name) or {}
-            through = (src.get('through_by') or {}).get(key) or src.get('through')
-            age = age_note(src_name, src, start, end, now, through)
-            down = (src.get('down') or {}).get(key)
-            state = 'ok'
-            if not src.get('ok') or down:
-                val, state = None, 'down'
-                if down:
-                    age = down
-            elif key == 'roblox_payers' and not any(key in v for v in series.values()):
-                val, age, state = None, 'not read yet', 'late'  # the payer rate never came in: missing, not zero buyers
-            elif isinstance(through, str) and through < start.isoformat():
-                val, state = None, 'late'  # the source's data stops before this period starts: unknown, not 0
-                late = (end - datetime.date.fromisoformat(through)).days
-                if late <= 7:
-                    age = f'{SOURCES[src_name][0]} reports {late} days late'
-                else:
-                    state = 'down'  # weeks old: something stopped (or waits for his statements), say it loudly
-            else:
-                val = sum((series.get(d) or {}).get(key, 0) for d in days)
-                val = round(val * ROBUX_SHARE if key == 'robux_kc' else val)
-                since = (src.get('since') or {}).get(key)
-                if isinstance(since, str) and since > start.isoformat():  # counting began inside the period
-                    age = f'counted since {datetime.date.fromisoformat(since).strftime("%-d %b")}'
-            part = {'label': label, 'short': SHORT.get(label, label),
-                    'value': val, 'unit': unit, 'source': SOURCES[src_name][0],
-                    'link': SOURCES[src_name][1], 'ok': val is not None, 'state': state, 'age': age}
-            if key == 'robux_kc' and part['ok'] and not cashable:
-                # shown, but not money yet: Roblox pays out only from 30,000 earned Robux (DevEx)
-                part['counted'] = False
-                part['age'] = f'not cashable yet: {round(robux_ever):,} of {DEVEX_MIN:,} R$ earned'
-            c = cards[card]
-            c['parts'].append(part)
-            if part['ok'] and part.get('counted', True):
-                c['value'] += part['value']
-            elif part['state'] == 'down':
-                c['down'] += 1
-        # shipped: App Store versions and Roblox updates from the releases, sites from Vercel's per-day list
-        sh = cards['shipped']
-        lo, hi = start.isoformat(), end.isoformat()
+        return sum((v or {}).get('robux', 0) for v in series.values())
+    return robux_ever
+
+
+class Period:
+    """One period's cards (today, this week or this month) over the same collected data."""
+
+    def __init__(self, data, key, start, end, now):
+        self.series, self.releases, self.sources, self.robux_ever = data
+        self.key, self.start, self.end, self.now = key, start, end, now
+        self.days = day_list(start, end)
+        self.lo, self.hi = start.isoformat(), end.isoformat()
+
+    def unknown(self, src, src_name, key, age, through):
+        """(None, state, age) when the part can't be summed for this period, else None."""
+        down = (src.get('down') or {}).get(key)
+        if not src.get('ok') or down:
+            return None, 'down', down or age
+        if key == 'roblox_payers' and not any(key in v for v in self.series.values()):
+            return None, 'late', 'not read yet'  # the payer rate never came in: missing, not zero buyers
+        if isinstance(through, str) and through < self.lo:
+            # the source's data stops before this period starts: unknown, not 0
+            late = (self.end - datetime.date.fromisoformat(through)).days
+            if late <= 7:
+                return None, 'late', f'{SOURCES[src_name][0]} reports {late} days late'
+            return None, 'down', age  # weeks old: something stopped (or waits for his statements), say it loudly
+        return None
+
+    def value(self, src, src_name, key, age, through):
+        """(value, state, age) of one part over the period's days; None = unknown, never shown as a 0."""
+        unknown = self.unknown(src, src_name, key, age, through)
+        if unknown:
+            return unknown
+        val = sum((self.series.get(d) or {}).get(key, 0) for d in self.days)
+        val = round(val * ROBUX_SHARE if key == 'robux_kc' else val)
+        since = (src.get('since') or {}).get(key)
+        if isinstance(since, str) and since > self.lo:  # counting began inside the period
+            age = f'counted since {datetime.date.fromisoformat(since).strftime("%-d %b")}'
+        return val, 'ok', age
+
+    def part(self, spec):
+        """One part of a number card (a row of PARTS)."""
+        _card, label, key, src_name, unit = spec
+        src = self.sources.get(src_name) or {}
+        through = (src.get('through_by') or {}).get(key) or src.get('through')
+        age = age_note(src_name, src, self.start, self.end, self.now, through)
+        val, state, age = self.value(src, src_name, key, age, through)
+        part = {'label': label, 'short': SHORT.get(label, label),
+                'value': val, 'unit': unit, 'source': SOURCES[src_name][0],
+                'link': SOURCES[src_name][1], 'ok': val is not None, 'state': state, 'age': age}
+        if key == 'robux_kc' and part['ok'] and self.robux_ever < DEVEX_MIN:
+            # shown, but not money yet: Roblox pays out only from 30,000 earned Robux (DevEx)
+            part['counted'] = False
+            part['age'] = f'not cashable yet: {round(self.robux_ever):,} of {DEVEX_MIN:,} R$ earned'
+        return part
+
+    def shipped_items(self):
+        """What went live: App Store versions and Roblox updates from the releases, sites from Vercel's days."""
         items = {}
-        for r in releases:
-            if lo <= r['day'] <= hi and r.get('kind') in ('appstore', 'roblox'):
+        for r in self.releases:
+            if self.lo <= r['day'] <= self.hi and r.get('kind') in ('appstore', 'roblox'):
                 items[r['key']] = {'what': r['what'], 'day': r['day'], 'kind': r['kind']}
-        v = sources.get('vercel') or {}
+        v = self.sources.get('vercel') or {}
         if v.get('ok') and isinstance(v.get('sites'), list):
             per = {}
             for s in v['sites']:
-                if lo <= str(s.get('day')) <= hi:
+                if self.lo <= str(s.get('day')) <= self.hi:
                     per.setdefault(s.get('name'), []).append(s['day'])
             for name, ds in per.items():
                 items['web:' + str(name)] = {'what': site_name(name) + (f' ×{len(ds)}' if len(ds) > 1 else ''),
                                              'day': max(ds), 'kind': 'web'}
+        return items
+
+    def fill_shipped(self, sh):
+        items = self.shipped_items()
         sh['items'] = sorted(items.values(), key=lambda x: x['day'], reverse=True)
         sh['value'] = len(items)
         for name, label in (('appstore', 'App Store'), ('roblox', 'Roblox'), ('vercel', 'Sites')):
-            src = sources.get(name) or {}
+            src = self.sources.get(name) or {}
             n = sum(1 for x in items.values() if x['kind'] == {'vercel': 'web'}.get(name, name))
+            age = age_note(name, {k: v for k, v in src.items() if k != 'through'}, self.end, self.end, self.now)
             sh['parts'].append({'label': label, 'value': n if src.get('ok') else None, 'unit': 'count',
                                 'source': SOURCES[name][0], 'link': SOURCES[name][1], 'ok': bool(src.get('ok')),
-                                'state': 'ok' if src.get('ok') else 'down',
-                                'age': age_note(name, {k: v for k, v in src.items() if k != 'through'}, end, end, now)})
+                                'state': 'ok' if src.get('ok') else 'down', 'age': age})
             if not src.get('ok'):
                 sh['down'] += 1
-        calls = sources.get('calls') or {}
-        cards['calls']['items'] = [{'what': c['what'], 'day': c['day']} for c in calls.get('recent') or []
-                                   if lo <= c['day'] <= hi] if calls.get('ok') else []
+
+    def recent_calls(self):
+        calls = self.sources.get('calls') or {}
+        if not calls.get('ok'):
+            return []
+        return [{'what': c['what'], 'day': c['day']} for c in calls.get('recent') or [] if self.lo <= c['day'] <= self.hi]
+
+    def cards(self):
+        """The seven cards, in CARDS order."""
+        cards = {k: {'key': k, 'label': lab, 'icon': ic, 'unit': unit, 'value': 0, 'parts': [], 'down': 0}
+                 for k, lab, ic, unit in CARDS}
+        for spec in PARTS:
+            add_part(cards[spec[0]], self.part(spec))
+        self.fill_shipped(cards['shipped'])
+        cards['calls']['items'] = self.recent_calls()
         # the burn line for this period: the month's line, or its share of the days so far
-        share = len(days) / 30 if pkey != 'month' else 1
+        share = len(self.days) / 30 if self.key != 'month' else 1
         cards['money']['burn'] = {'low': round(BURN[0] * share), 'high': round(BURN[1] * share)}
         for c in cards.values():
-            c['known'] = any(p['ok'] for p in c['parts'])
-            if not c['known']:
-                c['value'] = None
-        out[pkey] = {'from': lo, 'to': hi, 'cards': [cards[k] for k, *_ in CARDS]}
+            mark_known(c)
+        return {'from': self.lo, 'to': self.hi, 'cards': [cards[k] for k, *_ in CARDS]}
+
+
+def add_part(card, part):
+    card['parts'].append(part)
+    if part['ok'] and part.get('counted', True):
+        card['value'] += part['value']
+    elif part['state'] == 'down':
+        card['down'] += 1
+
+
+def mark_known(card):
+    """A card no source could read shows no number, not a 0."""
+    card['known'] = any(p['ok'] for p in card['parts'])
+    if not card['known']:
+        card['value'] = None
+
+
+def build(series, releases, sources, today, now, collected_at, robux_ever=None):
+    """robux_ever: Robux the game has earned in all (the cash-out gate); None = count every day in `series`."""
+    data = (series, releases, sources, cashable_robux(series, sources, robux_ever))
+    out = {pkey: Period(data, pkey, start, end, now).cards() for pkey, (start, end) in periods(today).items()}
     stale = collected_at is None or now - collected_at > STALE_SEC
     return {'at': now, 'collected_at': collected_at, 'stale': stale, 'periods': out,
             'burn': {'low': BURN[0], 'high': BURN[1]}}
