@@ -3,8 +3,8 @@
   "private": true,
   "description": "The pinned Node tools scripts/check runs (lint, types, copy-paste). Installed with npm ci --ignore-scripts.",
   "devDependencies": {
-    "@biomejs/biome": "2.2.4",
-    "jscpd": "4.0.5",
+    "@biomejs/biome": "2.6.8",
+    "jscpd": "5.4.3",
     "pyright": "1.1.414"
   }
 }
