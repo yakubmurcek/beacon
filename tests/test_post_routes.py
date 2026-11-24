@@ -62,7 +62,7 @@ class PostRoutesTest(LiveHub, unittest.TestCase):
         return [res.status, error if isinstance(error, (str, type(None))) else error.get('message')]
 
     def answers(self, services):
-        stubs = {name: Stub() if services else None for name in (*SERVICES, 'feedback', 'notify', 'webpush')}
+        stubs = {name: Stub() if services else None for name in (*SERVICES, 'feedback', 'notify', 'webpush', 'talk', 'mcp')}
         if services:
             stubs.update(talk=Talk(), mcp=Mcp())
         with mock.patch.multiple(self.server.Handler, create=True, **stubs), \
