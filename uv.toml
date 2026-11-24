@@ -1,0 +1,4 @@
+# Nothing uploaded to PyPI in the last 7 days: most hijacked releases are caught and pulled within a week.
+exclude-newer = "7 days"
+# ruff 0.17.6 (2026-11-19) was already in use when the cooldown arrived; the lint baseline counts its findings.
+exclude-newer-package = { ruff = "2026-11-20T00:00:00Z" }

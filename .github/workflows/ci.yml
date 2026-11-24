@@ -10,24 +10,36 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Every action is pinned to a commit SHA (a tag can be moved to other code; a SHA cannot). Dependabot bumps them.
 jobs:
   check:
-    name: check (lint, quality ratchet, copy-paste, tests)
+    name: check (tools, lint, ratchets, types, copy-paste, tests, coverage)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v7
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: '22'
-      - uses: astral-sh/setup-uv@v7
-      - run: pip install cryptography  # Web Push (hub/webpush.py), on the live hub's Python too
+          node-version: '24'  # npm 11: the 7-day release cooldown in .npmrc
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d  # v10.4.0
       # The same command the pre-push hook runs; compared with the commit before this push (or the PR base).
       - run: scripts/check
         env:
           CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+
+  supply-chain:
+    name: supply chain (osv-scanner on the lockfiles, gitleaks on the history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: scripts/supply-chain

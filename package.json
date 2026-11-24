@@ -1,0 +1,10 @@
+{
+  "name": "beacon-checks",
+  "private": true,
+  "description": "The pinned Node tools scripts/check runs (lint, types, copy-paste). Installed with npm ci --ignore-scripts.",
+  "devDependencies": {
+    "@biomejs/biome": "2.2.4",
+    "jscpd": "4.0.5",
+    "pyright": "1.1.414"
+  }
+}

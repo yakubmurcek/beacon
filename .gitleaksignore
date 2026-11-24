@@ -1,0 +1,2 @@
+# Checked false positives, one fingerprint each. f65ba558 tailnet_check.py:216 is a command template that reads the key from the vault at run time.
+f65ba55861b951908e080ce995b8c69fd95b2d34:scripts/tailnet_check.py:curl-auth-user:216

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -27,7 +28,6 @@ from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "quality-baseline.json"
-PYRIGHT_VERSION = "1.1.414"
 # The areas a score is kept for. client/ holds extensionless Python CLIs, so its files are listed one by one.
 AREAS = {
     "hub": ["hub"],
@@ -78,9 +78,12 @@ def coverage_scores() -> dict[str, float]:
 
 def type_errors() -> dict[str, float]:
     """Pyright's error count per area (settings in pyrightconfig.json)."""
+    pyright = shutil.which("pyright")
+    if not pyright:
+        sys.exit("pyright is not on PATH: run scripts/check, which installs the pinned tools (package-lock.json)")
     counts: dict[str, float] = {}
     for area, paths in AREAS.items():
-        proc = subprocess.run(["npx", "-y", f"pyright@{PYRIGHT_VERSION}", "--outputjson", *paths],
+        proc = subprocess.run([pyright, "--outputjson", *paths],
                               cwd=ROOT, capture_output=True, text=True, check=False)
         try:
             counts[f"pyright {area}"] = int(json.loads(proc.stdout)["summary"]["errorCount"])

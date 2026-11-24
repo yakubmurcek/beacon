@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Supply-chain scan: known vulnerabilities in every lockfile (osv-scanner) and secrets anywhere in the git
+# history (gitleaks). Both are single binaries, downloaded at a pinned version and checked against their sha256
+# before they run. CI runs this on every push; it works the same on any Linux x86-64 box.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+TOOLS=.tools
+mkdir -p "$TOOLS"
+
+fetch() {  # name url sha256 [member of a .tar.gz]
+  local name=$1 url=$2 sum=$3 member=${4:-}
+  [ -x "$TOOLS/$name" ] && echo "$sum  $TOOLS/$name.download" | sha256sum -c --status 2>/dev/null && return
+  curl -fsSL --retry 3 -o "$TOOLS/$name.download" "$url"
+  echo "$sum  $TOOLS/$name.download" | sha256sum -c --quiet || { echo "checksum mismatch for $name: not running it"; exit 1; }
+  if [ -n "$member" ]; then tar -xzf "$TOOLS/$name.download" -C "$TOOLS" "$member"; else cp "$TOOLS/$name.download" "$TOOLS/$name"; fi
+  chmod +x "$TOOLS/$name"
+}
+
+fetch osv-scanner https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_linux_amd64 \
+  fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
+fetch gitleaks https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+  551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb gitleaks
+
+printf '\n› known vulnerabilities in the lockfiles (osv-scanner)\n'
+"$TOOLS/osv-scanner" scan source --lockfile package-lock.json --lockfile requirements.txt:requirements-dev.txt
+
+printf '\n› known vulnerabilities in the vendored JS (web/vendor/MANIFEST.json, OSV API)\n'
+python3 - <<'PY'
+import json, sys, urllib.request
+files = json.load(open("web/vendor/MANIFEST.json"))["files"]
+queries = [{"package": {"name": e["package"], "ecosystem": "npm"}, "version": e["version"]} for e in files.values()]
+req = urllib.request.Request("https://api.osv.dev/v1/querybatch", json.dumps({"queries": queries}).encode(),
+                             {"Content-Type": "application/json"})
+results = json.load(urllib.request.urlopen(req, timeout=30))["results"]
+hits = [(q["package"]["name"], q["version"], v["id"]) for q, r in zip(queries, results) for v in r.get("vulns", [])]
+for name, version, vuln in hits:
+    print(f"  {name} {version}: {vuln}")
+print(f"{len(queries)} vendored packages checked, {len(hits)} known vulnerabilities")
+sys.exit(1 if hits else 0)
+PY
+
+printf '\n› secrets in the git history (gitleaks)\n'
+"$TOOLS/gitleaks" git --no-banner --redact --log-level warn .
+
+printf '\n✓ supply chain clean\n'

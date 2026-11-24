@@ -2,7 +2,7 @@
   "threshold": 1,
   "minLines": 8,
   "format": ["python", "javascript"],
-  "ignore": ["**/tests/**", "**/vendor/**", "web/i18n-cs.js", "**/__pycache__/**", "**/node_modules/**", "data/**"],
+  "ignore": ["**/tests/**", "**/vendor/**", "web/i18n-cs.js", "**/__pycache__/**", "**/node_modules/**", "**/.venv/**", "data/**"],
   "reporters": ["console"],
   "silent": true,
   "gitignore": true

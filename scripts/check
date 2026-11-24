@@ -8,20 +8,36 @@ FAST="${1:-}"                       # --fast: everything but the test suite (~3 
 
 step() { printf '\n› %s\n' "$1"; }
 
+step "tools: pinned with hashes and a 7-day cooldown, no install scripts (requirements-dev.txt, package-lock.json)"
+# Installed once into .venv and node_modules, then only when a lockfile changes. Nothing is fetched by name at run time.
+[ -x .venv/bin/python ] || uv venv -q --python python3 .venv
+if ! cmp -s requirements-dev.txt .venv/.synced 2>/dev/null; then
+  uv pip sync -q --python .venv/bin/python --require-hashes requirements-dev.txt && cp requirements-dev.txt .venv/.synced
+fi
+if ! command -v npm >/dev/null; then
+  echo "warning: no Node here, the JS rules, types and copy-paste are not checked (CI checks them)"
+elif ! cmp -s package-lock.json node_modules/.synced 2>/dev/null; then
+  npm ci --ignore-scripts --no-audit --no-fund --silent && cp package-lock.json node_modules/.synced
+fi
+export PATH="$PWD/.venv/bin:$PWD/node_modules/.bin:$PATH"
+
 step "lint: zero tolerance (ruff.toml)"
-uvx ruff@0.17.6 check --quiet
+ruff check --quiet
 
 step "quality ratchet: strict rules for new code, old code may not get worse"
-python3 scripts/ratchet.py
+python scripts/ratchet.py
 
 step "type errors: pyright (pyrightconfig.json), count per area may only go down"
-python3 scripts/scores.py types
+python scripts/scores.py types
+
+step "CI workflows audited (zizmor): pinned actions, no injectable expressions, least permissions"
+zizmor --offline --quiet --min-severity low .github/workflows
 
 step "copy-paste (jscpd, .jscpd.json)"
-if ! command -v npx >/dev/null; then
+if ! command -v jscpd >/dev/null; then
   echo "warning: no Node here, copy-paste not checked (CI checks it)"
-elif ! npx -y jscpd@4.0.5 --config .jscpd.json . >/dev/null; then
-  npx -y jscpd@4.0.5 --config .jscpd.json --reporters consoleFull .
+elif ! jscpd --config .jscpd.json . >/dev/null; then
+  jscpd --config .jscpd.json --reporters consoleFull .
   exit 1
 fi
 
@@ -50,7 +66,8 @@ if git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
     head -n 5 "$f" | grep -q '^# pyright: strict' || problems+=("adds $f without '# pyright: strict' in its first 5 lines")
   done
   [ -n "$(git diff --name-only "$BASE" -- ruff.toml ruff.strict.toml biome.json .jscpd.json \
-      pyrightconfig.json .coveragerc requirements-dev.txt scripts/ratchet.py scripts/scores.py scripts/check .githooks)" ] \
+      pyrightconfig.json .coveragerc requirements-dev.in requirements-dev.txt uv.toml package.json package-lock.json .npmrc .gitleaksignore .github \
+      scripts/ratchet.py scripts/scores.py scripts/check scripts/supply-chain .githooks)" ] \
     && problems+=("changes a check's configuration")
   python3 scripts/ratchet.py --raised-since "$BASE" || problems+=("loosens quality-baseline.json")
   if [ ${#problems[@]} -gt 0 ] && ! git log --format=%B "$BASE..HEAD" 2>/dev/null | grep -q '^Quality-exception: .\+'; then
@@ -62,9 +79,7 @@ fi
 if [ "$FAST" = "--fast" ]; then printf '\n✓ fast check passed (CI runs the tests)\n'; exit 0; fi
 
 step "tests, with coverage (.coveragerc): coverage per area may only go up"
-# A throwaway env with the pinned tools (requirements-dev.txt) on this machine's Python.
-dev() { uv run -q --no-project --python python3 --with-requirements requirements-dev.txt "$@"; }
-dev python -m coverage run -m unittest discover -s tests -q
-dev python scripts/scores.py coverage
+python -m coverage run -m unittest discover -s tests -q
+python scripts/scores.py coverage
 
 printf '\n✓ check passed\n'

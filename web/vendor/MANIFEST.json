@@ -1,0 +1,42 @@
+{
+ "about": "Every vendored file: the npm package and file it came from, and its sha256 as committed. tests/test_vendor.py checks the hashes; scripts/supply-chain asks OSV about each package.",
+ "files": {
+  "d3-dispatch.min.js": {
+   "package": "d3-dispatch",
+   "version": "3.0.1",
+   "source": "https://cdn.jsdelivr.net/npm/d3-dispatch@3.0.1/dist/d3-dispatch.min.js",
+   "sha256": "94b3bbdb6b98dc1325a15762b051013e8253999b0e0436b27d1da17b952ba0af"
+  },
+  "d3-force.min.js": {
+   "package": "d3-force",
+   "version": "3.0.0",
+   "source": "https://cdn.jsdelivr.net/npm/d3-force@3.0.0/dist/d3-force.min.js",
+   "sha256": "1e07b473241328795d5ea9ad479a7bbabd765012fa2ef95633c83b69868dff6b"
+  },
+  "d3-quadtree.min.js": {
+   "package": "d3-quadtree",
+   "version": "3.0.1",
+   "source": "https://cdn.jsdelivr.net/npm/d3-quadtree@3.0.1/dist/d3-quadtree.min.js",
+   "sha256": "57e2ad12824ed82893ba447523f2a2fb9beeb9222aafb2c778a9f5b313348b0e"
+  },
+  "d3-timer.min.js": {
+   "package": "d3-timer",
+   "version": "3.0.1",
+   "source": "https://cdn.jsdelivr.net/npm/d3-timer@3.0.1/dist/d3-timer.min.js",
+   "sha256": "911ceda305f014b6b53ca68d5c896a9a387da120cfd56a421a2c60cca2fc9b36"
+  },
+  "force-graph.min.js": {
+   "package": "force-graph",
+   "version": "1.52.0",
+   "source": "https://cdn.jsdelivr.net/npm/force-graph@1.52.0/dist/force-graph.min.js",
+   "sha256": "f59db59ba92ff5a76ed93d7a4d77a703b176260e5d9cd29f4f8eb4f6c369a629"
+  },
+  "modern-screenshot.min.js": {
+   "package": "modern-screenshot",
+   "version": "4.6.0",
+   "source": "https://cdn.jsdelivr.net/npm/modern-screenshot@4.6.0/dist/index.js",
+   "sha256": "dfa7be9695b35f7badf376dc189f41e444c1345f9e17f65d4addef3150ad903f",
+   "changed": "its licence line added on top"
+  }
+ }
+}

@@ -25,7 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "quality-baseline.json"
-# Pinned: another version finds other things, and the baseline would drift.
+# Pinned in requirements-dev.txt / package-lock.json: another version finds other things, and the baseline would drift.
 RUFF_VERSION = "0.17.6"
 BIOME_VERSION = "2.2.4"
 # Biome's GitHub reporter prints one finding per line: ::error title=lint/x/y,file=web/a.js,line=3,...
@@ -38,12 +38,19 @@ BIOME_LINE = re.compile(r"^::(?:error|warning|notice) title=(?P<rule>[^,]+),file
 Findings = dict[str, Counter[str]]  # rule -> file -> count
 
 
+def tool(name: str, version: str) -> str:
+    """The pinned tool scripts/check installed (.venv, node_modules); another version would count other findings."""
+    path = shutil.which(name)
+    found = path and subprocess.run([path, "--version"], capture_output=True, text=True, check=False).stdout.split()[-1:]
+    if found != [version]:
+        sys.exit(f"{name} {version} is not on PATH (found {found or 'none'}): run scripts/check, which installs the pinned tools")
+    return path
+
+
 def ruff_findings() -> Findings:
-    ruff = shutil.which("ruff")
-    local = ruff and subprocess.run([ruff, "--version"], capture_output=True, text=True, check=False).stdout.split()[-1:]
-    cmd = [ruff] if local == [RUFF_VERSION] else ["uvx", f"ruff@{RUFF_VERSION}"]
     out = subprocess.run(
-        [*cmd, "check", "--config", "ruff.strict.toml", "--output-format", "json", "--exit-zero", "--no-cache", "."],
+        [tool("ruff", RUFF_VERSION), "check", "--config", "ruff.strict.toml", "--output-format", "json", "--exit-zero",
+         "--no-cache", "."],
         cwd=ROOT, capture_output=True, text=True, check=True,
     ).stdout
     found: Findings = {}
@@ -57,11 +64,11 @@ def ruff_findings() -> Findings:
 
 def biome_findings() -> Findings | None:
     """Biome's findings on web/, or None on a machine without Node (CI always has it)."""
-    if not shutil.which("npx"):
+    if not shutil.which("biome"):
         print("warning: no Node here, the JS rules are not checked (CI checks them)")
         return None
     proc = subprocess.run(
-        ["npx", "-y", f"@biomejs/biome@{BIOME_VERSION}", "lint", "--reporter=github", "--max-diagnostics=none", "web"],
+        [tool("biome", BIOME_VERSION), "lint", "--reporter=github", "--max-diagnostics=none", "web"],
         cwd=ROOT, capture_output=True, text=True, check=False,
     )
     found: Findings = {}
@@ -157,7 +164,7 @@ def main() -> int:
     if worse:
         print("Quality ratchet: this change adds lint findings. Fix the code, don't raise the baseline:")
         print("\n".join(f"  {line}" for line in worse))
-        print("Details: ruff check --config ruff.strict.toml <file>  /  npx @biomejs/biome lint <file>")
+        print("Details: ruff check --config ruff.strict.toml <file>  /  biome lint <file> (in .venv/bin, node_modules/.bin)")
         return 1
     gained = sum(baseline.values()) - sum(lowered.values())
     if args.update and gained:

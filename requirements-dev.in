@@ -1,0 +1,6 @@
+# The Python tools scripts/check runs, and the hub's one third-party import. Compiled with hashes into
+# requirements-dev.txt (see its header for the command); never edit that file by hand.
+ruff==0.17.6
+coverage==7.17.3
+cryptography  # hub/webpush.py, which the tests import
+zizmor  # audits .github/workflows
