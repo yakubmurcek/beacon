@@ -815,31 +815,42 @@ def his_words_in(lines, limit=3):
     results, hook text, summaries and prompts written by another agent never do."""
     out = []
     for line in reversed(lines):
-        if '"user"' not in line:
-            continue
-        try:
-            d = json.loads(line)
-        except ValueError:
-            continue
-        if d.get('type') != 'user' or d.get('isMeta') or d.get('isSidechain') or d.get('isCompactSummary'):
-            continue
-        origin, src = d.get('turnOrigin') or (d.get('origin') or {}).get('kind'), d.get('promptSource')
-        if origin is not None and origin != 'human':
-            continue
-        if origin is None and (src in ('sdk', 'system') or d.get('entrypoint') == 'sdk-cli'):
-            continue  # an old headless or app record: no proof he typed it
-        c = (d.get('message') or {}).get('content')
-        if isinstance(c, list):
-            if any(isinstance(x, dict) and x.get('type') == 'tool_result' for x in c):
-                continue
-            c = '\n'.join(x.get('text', '') for x in c if isinstance(x, dict) and x.get('type') == 'text')
-        c = str(c or '').strip()
-        if not c or c.lower().startswith(MARKUP):
-            continue
-        out.append((c, d.get('timestamp')))
-        if len(out) >= limit:
-            break
+        turn = _his_turn(line) if '"user"' in line else None
+        if turn:
+            out.append(turn)
+            if len(out) >= limit:
+                break
     return out
+
+
+def _his_turn(line):
+    """(text, timestamp) when this transcript line is a turn he typed or dictated, else None."""
+    try:
+        d = json.loads(line)
+    except ValueError:
+        return None
+    if not _typed_by_him(d):
+        return None
+    c = (d.get('message') or {}).get('content')
+    if isinstance(c, list):
+        if any(isinstance(x, dict) and x.get('type') == 'tool_result' for x in c):
+            return None
+        c = '\n'.join(x.get('text', '') for x in c if isinstance(x, dict) and x.get('type') == 'text')
+    c = str(c or '').strip()
+    if not c or c.lower().startswith(MARKUP):
+        return None
+    return c, d.get('timestamp')
+
+
+def _typed_by_him(d):
+    """A user turn of the main thread with a human origin; with no origin recorded, an old record counts unless it
+    came headless or from the app."""
+    if d.get('type') != 'user' or d.get('isMeta') or d.get('isSidechain') or d.get('isCompactSummary'):
+        return False
+    origin = d.get('turnOrigin') or (d.get('origin') or {}).get('kind')
+    if origin is not None:
+        return origin == 'human'
+    return not (d.get('promptSource') in ('sdk', 'system') or d.get('entrypoint') == 'sdk-cli')
 
 
 def chat_yes(transcript, category, words=None):
@@ -1041,16 +1052,10 @@ def unsent(e):
 
 
 def call(path, body=None, auth=True):
-    headers = {'Accept': 'application/json'}
-    data = None
-    if body is not None:
-        headers['Content-Type'] = 'application/json'
-        data = json.dumps(body).encode()
-    if auth:
-        t = token()
-        if t:
-            headers['Authorization'] = 'Bearer ' + t
-    req = urllib.request.Request(URL + path, data=data, headers=headers, method='POST' if data is not None else 'GET')
+    """The hub's JSON answer; a gateway error or a lost connection is retried, anything else exits with why."""
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(URL + path, data=data, headers=_headers(data is not None, auth),
+                                 method='POST' if data is not None else 'GET')
     for wait in (*RETRY_WAITS, None):
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
@@ -1059,17 +1064,7 @@ def call(path, body=None, auth=True):
             if e.code in GATEWAY and wait is not None:
                 time.sleep(wait)
                 continue
-            try:
-                msg = json.load(e).get('error')
-            except ValueError:
-                msg = None
-            if e.code == 401:
-                sys.exit('tasks: not allowed to write (no or wrong TASKS_TOKEN; `secrets get TASKS_TOKEN`)')
-            if e.code == 404:
-                sys.exit('tasks: no such question' if path.startswith('/api/questions') else 'tasks: no such task')
-            if e.code >= 500:
-                sys.exit(f'tasks: hub server error {e.code} ({msg or e.reason})')
-            sys.exit(f'tasks: {msg or e}')
+            sys.exit(_http_error(e, path))
         except (OSError, http.client.HTTPException, ValueError) as e:
             # Unreachable, timed out, cut off mid-answer. A write that may have landed is not sent
             # twice (a second note, a second task); a read always is.
@@ -1077,6 +1072,31 @@ def call(path, body=None, auth=True):
                 time.sleep(wait)
                 continue
             sys.exit(f'tasks: hub unreachable at {URL} ({getattr(e, "reason", None) or e or type(e).__name__})')
+
+
+def _headers(has_body, auth):
+    headers = {'Accept': 'application/json'}
+    if has_body:
+        headers['Content-Type'] = 'application/json'
+    t = token() if auth else None
+    if t:
+        headers['Authorization'] = 'Bearer ' + t
+    return headers
+
+
+def _http_error(e, path):
+    """The line `tasks` exits with for a hub's error answer."""
+    try:
+        msg = json.load(e).get('error')
+    except ValueError:
+        msg = None
+    if e.code == 401:
+        return 'tasks: not allowed to write (no or wrong TASKS_TOKEN; `secrets get TASKS_TOKEN`)'
+    if e.code == 404:
+        return 'tasks: no such question' if path.startswith('/api/questions') else 'tasks: no such task'
+    if e.code >= 500:
+        return f'tasks: hub server error {e.code} ({msg or e.reason})'
+    return f'tasks: {msg or e}'
 
 
 def session_id():
@@ -1299,16 +1319,7 @@ def switch_line(q):
 def session_size(sid=None):
     """(context tokens of the last main-thread model call, seconds since it) of this Claude Code session, from its
     transcript; (None, None) when unknown (not in Claude Code, transcript not found)."""
-    sid = sid or os.environ.get('CLAUDE_CODE_SESSION_ID')
-    if not sid:
-        return None, None
-    base = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.join(os.path.expanduser('~'), '.claude')
-    root = os.path.join(base, 'projects')
-    try:
-        path = next((os.path.join(root, d, sid + '.jsonl') for d in os.listdir(root)
-                     if os.path.isfile(os.path.join(root, d, sid + '.jsonl'))), None)
-    except OSError:
-        path = None
+    path = _transcript_of(sid or os.environ.get('CLAUDE_CODE_SESSION_ID'))
     if not path:
         return None, None
     try:
@@ -1319,17 +1330,10 @@ def session_size(sid=None):
     except OSError:
         return None, None
     for raw in reversed(lines):
-        if '"usage"' not in raw:
-            continue
-        try:
-            ev = json.loads(raw)
-        except ValueError:
-            continue
-        if not isinstance(ev, dict) or ev.get('type') != 'assistant' or ev.get('isSidechain'):
+        ev = _main_call(raw) if '"usage"' in raw else None
+        if not ev:
             continue
         u = (ev.get('message') or {}).get('usage') or {}
-        if not isinstance(u, dict):
-            continue
         size = sum(u.get(k) or 0 for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
         if not size:
             continue
@@ -1339,6 +1343,30 @@ def session_size(sid=None):
             at = os.path.getmtime(path)
         return size, max(0.0, time.time() - at)
     return None, None
+
+
+def _transcript_of(sid):
+    """The transcript file of a Claude Code session id, or None."""
+    if not sid:
+        return None
+    base = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.join(os.path.expanduser('~'), '.claude')
+    root = os.path.join(base, 'projects')
+    try:
+        return next((os.path.join(root, d, sid + '.jsonl') for d in os.listdir(root)
+                     if os.path.isfile(os.path.join(root, d, sid + '.jsonl'))), None)
+    except OSError:
+        return None
+
+
+def _main_call(raw):
+    """A transcript line that is a main-thread model call with a usage dict, parsed; else None."""
+    try:
+        ev = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(ev, dict) or ev.get('type') != 'assistant' or ev.get('isSidechain'):
+        return None
+    return ev if isinstance((ev.get('message') or {}).get('usage') or {}, dict) else None
 
 
 def hand_off_why(q, task, size=None, idle=None):
@@ -1443,18 +1471,47 @@ def hook_box(ev):
     ask, sid = str(inp.get('ask') or '').strip(), ev.get('session_id')
     if not ask or not sid or hooks_off():
         return
-    res = ev.get('tool_response')
-    res = json.dumps(res) if res is not None and not isinstance(res, str) else (res or '')
-    if res and 'shown in the next-step box' not in res.lower():
+    if not _box_shown(ev.get('tool_response')):
         return  # the app dropped the question (an app action no longer available): he never saw it
+    labels = _box_labels(_box_actions(inp))
+    asked_now = task_touched_this_turn(ev.get('transcript_path'), ASK_CMD, unknown=False)
+    same = open_question_for_box(sid, ask, labels, asked_now)
+    if not same and asked_now:
+        return  # `tasks ask` ran this turn: it is on the page already
+    if same:  # the box shows a question already on the page: a button answers that one, nothing is filed twice
+        _write_box(sid, same['id'], labels)
+        return
+    q = quick('/api/questions', _box_card(ev, inp, ask, sid, labels))
+    old = read_box(sid)
+    if old and old.get('id') != q['id']:  # asked again before he answered: the newer box replaces it
+        try:
+            quick(f"/api/questions/{old['id']}/withdraw", {'note': 'asked again in a newer next-step box'})
+        except Exception:
+            pass  # already answered or the hub is away: leave it
+    _write_box(sid, q['id'], labels)
+
+
+def _box_shown(res):
+    """The tool's answer says the box was shown (no answer at all counts as shown)."""
+    res = json.dumps(res) if res is not None and not isinstance(res, str) else (res or '')
+    return not res or 'shown in the next-step box' in res.lower()
+
+
+def _box_actions(inp):
+    """The box's buttons as a list; a JSON string is parsed, anything else is no buttons."""
     actions = inp.get('actions') or []
     if isinstance(actions, str):
         try:
             actions = json.loads(actions)
         except ValueError:
             actions = []
+    return actions if isinstance(actions, list) else []
+
+
+def _box_labels(actions):
+    """Each button's label once (case-insensitive); an app action shows under its app name."""
     labels = []
-    for a in actions if isinstance(actions, list) else []:
+    for a in actions:
         if isinstance(a, dict):
             label = a.get('label') if not a.get('action') else APP_ACTIONS.get(a['action'], a['action'].replace('_', ' ').capitalize())
         else:
@@ -1462,15 +1519,17 @@ def hook_box(ev):
         label = str(label or '').strip()[:200]
         if label and label.lower() not in (x.lower() for x in labels):
             labels.append(label)
-    asked_now = task_touched_this_turn(ev.get('transcript_path'), ASK_CMD, unknown=False)
-    same = open_question_for_box(sid, ask, labels, asked_now)
-    if not same and asked_now:
-        return  # `tasks ask` ran this turn: it is on the page already
-    if same:  # the box shows a question already on the page: a button answers that one, nothing is filed twice
-        os.makedirs(os.path.dirname(box_file(sid)), exist_ok=True)
-        with open(box_file(sid), 'w') as f:
-            json.dump({'id': same['id'], 'labels': labels}, f)
-        return
+    return labels
+
+
+def _write_box(sid, qid, labels):
+    os.makedirs(os.path.dirname(box_file(sid)), exist_ok=True)
+    with open(box_file(sid), 'w') as f:
+        json.dump({'id': qid, 'labels': labels}, f)
+
+
+def _box_card(ev, inp, ask, sid, labels):
+    """The decision card a box question files: headed by the task this session is doing, if any."""
     linked = quick('/api/tasks?' + urllib.parse.urlencode({'session': f'Claude Code:{sid}', 'limit': 50}))['tasks']
     # the card heads with this task's title (the page drops the id); a hub-filed "Decide: …" holder names nothing
     # (2026-11-23, ?333 read "Decide: Click Yes on the Windows admin prompt…": "which project is this?")
@@ -1478,20 +1537,11 @@ def hook_box(ev):
     recap = str(inp.get('recap') or '').strip()
     context = '\n\n'.join(x for x in (recap, ('Task: ' + '; '.join(doing)) if doing else '',
                                        "_Asked in the session's next-step box._") if x)
-    q = quick('/api/questions', {
+    return {
         'question': ask[:400], 'options': labels[:8], 'kind': 'next-step', 'project': project_of(ev.get('cwd')),
         'context': context, 'see': [{'url': u} for u in links_in(ask + '\n' + recap)[:4]],
         'session_id': f'Claude Code:{sid}', 'asked_by': f'Claude Code {sid[:8]}',
-        'source': f"box:{sid}:{ev.get('tool_use_id') or ask[:80]}"})
-    old = read_box(sid)
-    if old and old.get('id') != q['id']:  # asked again before he answered: the newer box replaces it
-        try:
-            quick(f"/api/questions/{old['id']}/withdraw", {'note': 'asked again in a newer next-step box'})
-        except Exception:
-            pass  # already answered or the hub is away: leave it
-    os.makedirs(os.path.dirname(box_file(sid)), exist_ok=True)
-    with open(box_file(sid), 'w') as f:
-        json.dump({'id': q['id'], 'labels': labels}, f)
+        'source': f"box:{sid}:{ev.get('tool_use_id') or ask[:80]}"}
 
 
 def norm(text):
@@ -1589,34 +1639,51 @@ def own_answers(sid):
     for q in mine:
         if q['id'] in told:
             continue
-        if not q.get('applied_at'):
-            if q.get('project_asked') and q.get('task_id'):  # other work the asker named: the dispatcher's fresh run
-                try:
-                    if other_work(q, quick(f"/api/tasks/{q['task_id']}", timeout=2)):
-                        continue
-                except Exception:  # noqa: BLE001 - unsure: leave it to the dispatcher, which routes it
-                    continue
-            try:
-                won = quick(f"/api/questions/{q['id']}/claim", {'by': chat_claimer(sid)}, timeout=2).get('won')
-            except Exception:  # noqa: BLE001 - hub slow: what was won so far is still handed in; the rest next prompt
-                break
-            if not won:
-                continue  # the dispatcher took it this second: named on the next prompt
-            lines.append(said(q))
-        elif q.get('taken_by') == chat_claimer(sid):  # won here, but the hook died before it was handed in
-            lines.append(said(q))
-        elif q.get('taken_by') == DISPATCHER_NAME:
-            lines.append(f"?{q['id']} ({q['question'][:80]}): he answered {q['answer']!r} and answer-dispatcher already "
-                         f"carried it out in another run" + (f" (its result is a note on task #{q['task_id']})" if q.get('task_id') else '')
-                         + ": check it, do not repeat or undo it.")
-        else:
-            continue
-        told.add(q['id'])
+        try:
+            line = _answer_for_chat(q, sid)
+        except _HubSlow:
+            break  # what was won so far is still handed in; the rest next prompt
+        if line:
+            lines.append(line)
+            told.add(q['id'])
     if lines:
         os.makedirs(os.path.dirname(told_file), exist_ok=True)
         with open(told_file, 'w') as f:
             json.dump(sorted(told), f)
     return '\n\n'.join(lines)
+
+
+class _HubSlow(Exception):
+    """The hub did not answer a claim in time."""
+
+
+def _answer_for_chat(q, sid):
+    """What this chat is told about one answered question of its own, or None (nothing, or not yet)."""
+    if not q.get('applied_at'):
+        return _claim_for_chat(q, sid)
+    if q.get('taken_by') == chat_claimer(sid):  # won here, but the hook died before it was handed in
+        return said(q)
+    if q.get('taken_by') == DISPATCHER_NAME:
+        return (f"?{q['id']} ({q['question'][:80]}): he answered {q['answer']!r} and answer-dispatcher already "
+                f"carried it out in another run" + (f" (its result is a note on task #{q['task_id']})" if q.get('task_id') else '')
+                + ": check it, do not repeat or undo it.")
+    return None
+
+
+def _claim_for_chat(q, sid):
+    """An answer nobody carried out yet: claimed for this chat and handed in, unless it is other work the asker
+    named (the dispatcher's fresh run does that) or the dispatcher took it this second."""
+    if q.get('project_asked') and q.get('task_id'):
+        try:
+            if other_work(q, quick(f"/api/tasks/{q['task_id']}", timeout=2)):
+                return None
+        except Exception:  # noqa: BLE001 - unsure: leave it to the dispatcher, which routes it
+            return None
+    try:
+        won = quick(f"/api/questions/{q['id']}/claim", {'by': chat_claimer(sid)}, timeout=2).get('won')
+    except Exception as e:  # noqa: BLE001 - hub slow
+        raise _HubSlow from e
+    return said(q) if won else None
 
 
 def chat_questions(ev):
@@ -1645,11 +1712,49 @@ def hook_ask_shown(ev):
             continue
         quick('/api/questions', {
             'question': q['question'][:400], 'kind': q.get('header') or 'chat', 'project': project_of(ev.get('cwd')),
-            'options': [{'label': o.get('label', '')[:200], 'detail': (o.get('description') or '')[:1000]}
-                        for o in q.get('options') or [] if o.get('label')][:8],
+            'options': chat_options(q),
             'context': "_Asked with buttons in the chat; answer here or there._",
             'session_id': f'Claude Code:{sid}', 'asked_by': f'Claude Code {sid[:8]}',
             'source': chat_card_source(ev, i)})
+
+
+def chat_options(q):
+    return [{'label': o.get('label', '')[:200], 'detail': (o.get('description') or '')[:1000]}
+            for o in q.get('options') or [] if o.get('label')][:8]
+
+
+def _answer_note(notes, text):
+    """The note he typed with his answer to `text`, from the tool's annotations."""
+    note = notes.get(text) if isinstance(notes, dict) else None
+    return (note or {}).get('notes') if isinstance(note, dict) else None
+
+
+def hook_ask_answered(ev):
+    """PostToolUse on AskUserQuestion: each answer settles the card its buttons were mirrored to, or is logged
+    as a new answered card when none was filed."""
+    res = ev.get('tool_response') or {}
+    if isinstance(res, str):
+        res = {'answers': dict(re.findall(r'"([^"]+)"="([^"]*)"', res))}
+    answers = res.get('answers') or {}
+    notes = res.get('annotations') or {}
+    project = project_of(ev.get('cwd'))
+    sid = ev.get('session_id')
+    for i, (q, labels) in enumerate(chat_questions(ev)):
+        text = q['question']
+        if not answers.get(text):
+            continue
+        note = _answer_note(notes, text)
+        card = open_question_for_box(sid, text, labels) if sid else None
+        if card:  # the card the buttons were mirrored to: the chat answer settles it
+            quick(f"/api/questions/{card['id']}/answer", {'answer': answers[text], 'note': note, 'via': 'chat'}, timeout=5)
+            continue
+        call('/api/questions', {
+            'question': text[:400], 'kind': q.get('header') or 'chat', 'options': chat_options(q),
+            'answer': answers[text], 'note': note, 'via': 'chat', 'project': project,
+            'session_id': f'Claude Code:{sid}' if sid else None,
+            'asked_by': f'Claude Code {sid[:8]}' if sid else 'chat',
+            'source': chat_card_source(ev, i) if sid else None,
+        })
 
 
 def hook_ask(stdin):
@@ -1665,34 +1770,7 @@ def hook_ask(stdin):
         if ev.get('hook_event_name') == 'PreToolUse':
             hook_ask_shown(ev)
             return
-        res = ev.get('tool_response') or {}
-        if isinstance(res, str):
-            res = {'answers': dict(re.findall(r'"([^"]+)"="([^"]*)"', res))}
-        answers = res.get('answers') or {}
-        notes = res.get('annotations') or {}
-        project = project_of(ev.get('cwd'))
-        sid = ev.get('session_id')
-        for i, (q, labels) in enumerate(chat_questions(ev)):
-            text = q['question']
-            if not answers.get(text):
-                continue
-            note = notes.get(text) if isinstance(notes, dict) else None
-            note = (note or {}).get('notes') if isinstance(note, dict) else None
-            card = open_question_for_box(sid, text, labels) if sid else None
-            if card:  # the card the buttons were mirrored to: the chat answer settles it
-                quick(f"/api/questions/{card['id']}/answer",
-                      {'answer': answers[text], 'note': note, 'via': 'chat'}, timeout=5)
-                continue
-            call('/api/questions', {
-                'question': text[:400], 'kind': q.get('header') or 'chat',
-                'options': [{'label': o.get('label', '')[:200], 'detail': (o.get('description') or '')[:1000]}
-                            for o in q.get('options') or [] if o.get('label')][:8],
-                'answer': answers[text], 'note': note,
-                'via': 'chat', 'project': project,
-                'session_id': f'Claude Code:{sid}' if sid else None,
-                'asked_by': f'Claude Code {sid[:8]}' if sid else 'chat',
-                'source': chat_card_source(ev, i) if sid else None,
-            })
+        hook_ask_answered(ev)
     except SystemExit:
         pass
     except Exception as e:  # a broken log must never break the session
@@ -1891,25 +1969,28 @@ def last_box(path):
             m = json.loads(raw)
         except ValueError:
             continue
-        if m.get('type') != 'assistant':
-            continue
-        for c in reversed((m.get('message') or {}).get('content') or []):
-            if isinstance(c, dict) and c.get('type') == 'tool_use' and c.get('name') == BOX_TOOL:
-                try:
-                    ts = datetime.datetime.fromisoformat(str(m.get('timestamp')).replace('Z', '+00:00')).timestamp()
-                except ValueError:
-                    return None
-                inp = c.get('input') or {}
-                acts = inp.get('actions') or []
-                if isinstance(acts, str):
-                    try:
-                        acts = json.loads(acts)
-                    except ValueError:
-                        acts = []
-                labels = [str(a.get('label') or '') if isinstance(a, dict) else str(a) for a in acts
-                          if not (isinstance(a, dict) and a.get('action'))] if isinstance(acts, list) else []
-                return ts, str(inp.get('ask') or '').strip(), labels
+        use = _box_use(m) if m.get('type') == 'assistant' else None
+        if use:
+            return _box_seen(m, use)
     return None
+
+
+def _box_use(m):
+    """The last next-step box call in an assistant message, else None."""
+    return next((c for c in reversed((m.get('message') or {}).get('content') or [])
+                 if isinstance(c, dict) and c.get('type') == 'tool_use' and c.get('name') == BOX_TOOL), None)
+
+
+def _box_seen(m, use):
+    """(time, ask, labels of its own buttons) of a box call; None when its message has no readable time."""
+    try:
+        ts = datetime.datetime.fromisoformat(str(m.get('timestamp')).replace('Z', '+00:00')).timestamp()
+    except ValueError:
+        return None
+    inp = use.get('input') or {}
+    labels = [str(a.get('label') or '') if isinstance(a, dict) else str(a) for a in _box_actions(inp)
+              if not (isinstance(a, dict) and a.get('action'))]
+    return ts, str(inp.get('ask') or '').strip(), labels
 
 
 def unshown_question(path, sid):
@@ -2002,27 +2083,38 @@ def ending_of(reply, box=None):
     if not lines:
         return None
     first = plain(lines[0])
-    nxt = None
-    if len(lines) > 1:
-        last = plain(lines[-1])
-        if last and last != first and not last.startswith('|'):
-            nxt = NEXT_LEAD.sub('', last).strip() or None
+    nxt = _next_step(lines, first)
     labels = [x for x in (box or [])[:2] if x]
     if not labels and nxt:
         labels = [GO_LABEL]
     return first, nxt, labels
 
 
+def _ending_wanted(ev, reply):
+    if not ev.get('session_id') or os.environ.get('TASKS_HOOKS') == '0':  # a hook's own helper run (naming, the backstop)
+        return False
+    if ev.get('stop_hook_active') and not (reply or '').lstrip().lstrip('*_ ').startswith(('✅', '⚠', '❓')):
+        return False  # the answer to a block ("Filed."): the card keeps the reply he read
+    # an automation's `claude -p` reports its own way; answer-dispatcher's runs set BEACON_ENDINGS=1
+    return not hooks_off() or os.environ.get('BEACON_ENDINGS') == '1'
+
+
+def _next_step(lines, first):
+    """The reply's last line as its next step, unless it is the only line, repeats the first or is a table row."""
+    if len(lines) < 2:
+        return None
+    last = plain(lines[-1])
+    if not last or last == first or last.startswith('|'):
+        return None
+    return NEXT_LEAD.sub('', last).strip() or None
+
+
 def post_ending(ev, reply):
     """The Stop hook's first step, before anything may return early: this reply, as its session's card.
     One short try; a hub that is down loses one card (the nightly backstop finds it), never the session."""
     sid = ev.get('session_id')
-    if not sid or os.environ.get('TASKS_HOOKS') == '0':  # a hook's own helper run (naming, the backstop)
+    if not _ending_wanted(ev, reply):
         return
-    if ev.get('stop_hook_active') and not (reply or '').lstrip().lstrip('*_ ').startswith(('✅', '⚠', '❓')):
-        return  # the answer to a block ("Filed."): the card keeps the reply he read
-    if hooks_off() and os.environ.get('BEACON_ENDINGS') != '1':
-        return  # an automation's `claude -p` reports its own way; answer-dispatcher's runs set BEACON_ENDINGS=1
     path = ev.get('transcript_path')
     box = last_box(path)
     fresh_box = box[2] if box and time.time() - box[0] < 900 and not box[1] else None
@@ -2059,12 +2151,36 @@ def hook_stop(stdin):
             print(f'tasks hook-stop: ending not posted: {e}', file=sys.stderr)
         if ev.get('stop_hook_active') or not sid or hooks_off():
             return
-        def linked_tasks():
-            q = urllib.parse.urlencode({'session': f'Claude Code:{sid}', 'limit': 50})
-            with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
-                return json.load(r)['tasks']
+        _StopCheck(ev, sid, reply).run()
+    except Exception as e:  # a broken hub or hook must never hold a session
+        print(f'tasks hook-stop: {e}', file=sys.stderr)
+
+
+class _StopCheck:
+    """One Stop hook's checks on a reply, in order; the first that blocks ends the turn's check. A question the
+    next-step box does not show rides along with whichever block goes out (one block per turn: never lose it)."""
+
+    def __init__(self, ev, sid, reply):
+        self.sid, self.reply, self.path = sid, reply, ev.get('transcript_path')
+        self.wait_note = ''
+
+    def linked_tasks(self):
+        q = urllib.parse.urlencode({'session': f'Claude Code:{self.sid}', 'limit': 50})
+        with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
+            return json.load(r)['tasks']
+
+    def emit(self, reason):
+        if self.wait_note:
+            reason, self.wait_note = self.wait_note + '\n\n' + reason, ''
+        print(json.dumps({'decision': 'block', 'reason': reason}))
+
+    def done(self):
+        if self.wait_note:
+            self.emit('Run the command only, then end with no text: he already read your reply.')
+
+    def run(self):
         try:
-            stale = stale_box(ev.get('transcript_path'), sid)
+            stale = stale_box(self.path, self.sid)
         except Exception:
             stale = None
         if stale:
@@ -2074,61 +2190,62 @@ def hook_stop(stdin):
                 f"(wrap_up) now with a recap of what is true now and NO ask (or the next real question), then end "
                 f"with no text.")}))
             return
+        # No waiter reminder any more (task 1884): a session with an open question just ends its turn, and
+        # answer-dispatcher resumes it when he answers.
+        self.wait_note = self.unshown_note()
+        head = self.reply.lstrip()
+        if head.startswith(('⚠', '❓')):
+            why = left_open_reason(self.reply, self.linked_tasks(), self.path, self.sid)
+            if why:
+                self.emit(why)
+            return self.done()  # ⚠️/❓ is stricter than the offer check below
+        if self.plan_block() or self.offer_block():
+            return None
+        if head.startswith('✅'):
+            self.open_tasks_block()
+        return self.done()
+
+    def unshown_note(self):
         try:
-            unshown = unshown_question(ev.get('transcript_path'), sid)
+            unshown = unshown_question(self.path, self.sid)
         except Exception:
             unshown = None
-        # No waiter reminder any more (task 1884): a session with an open question just ends its turn, and
-        # answer-dispatcher resumes it when he answers. A background `tasks wait` re-woke the model at every
-        # shell timeout (30 min, 2 h) only to say "still waiting", which burns the usage limit at scale.
-        wait_note = ''
-        if unshown:  # rides along with any other block, like the waiter reminder
-            labels = option_labels(unshown)
-            labels.sort(key=lambda x: x != unshown.get('default_answer'))
-            wait_note = (
-                f"His decision ?{unshown['id']} is open on http://beacon/decisions, but your next-step box does not show "
+        if not unshown:
+            return ''
+        labels = option_labels(unshown)
+        labels.sort(key=lambda x: x != unshown.get('default_answer'))
+        return (f"His decision ?{unshown['id']} is open on http://beacon/decisions, but your next-step box does not show "
                 f"it, so he can't answer it here in the chat. Call the next-step box tool (wrap_up) now: ask = "
                 f"\"{unshown['question'][:100]}\" (that exact wording), buttons with exactly these labels, in this "
                 f"order: {json.dumps(labels, ensure_ascii=False)}, and a recap. It is the same question: nothing is "
-                f"filed twice." + ('\n\n' + wait_note if wait_note else ''))
-        def emit(text):  # every block also carries the waiter reminder (one block per turn: never lose it)
-            nonlocal wait_note
-            if wait_note:
-                d = json.loads(text)
-                d['reason'] = wait_note + '\n\n' + d['reason']
-                text, wait_note = json.dumps(d), ''
-            print(text)
+                f"filed twice.")
 
-        def done():
-            if wait_note:
-                emit(json.dumps({'decision': 'block', 'reason': 'Run the command only, then end with no text: he '
-                                                                 'already read your reply.'}))
-        if reply.lstrip().startswith(('⚠', '❓')):
-            why = left_open_reason(reply, linked_tasks(), ev.get('transcript_path'), sid)
-            if why:
-                emit(json.dumps({'decision': 'block', 'reason': why}))
-            return done()  # ⚠️/❓ is stricter than the offer check below
-        steps = hands_plan(reply)
-        if (steps >= PLAN_MIN and not task_touched_this_turn(ev.get('transcript_path'))
-                and not any(t['status'] == 'doing' for t in linked_tasks())):
-            emit(json.dumps({'decision': 'block', 'reason': plan_reason(steps)}))
-            return
-        # a session working its own task ("doing") may say what it does next in this session ("once the agents
-        # finish, I'll merge it"); only a session with no task in hand, and no task command this turn, goes back
-        if (offers_work(reply) and not task_touched_this_turn(ev.get('transcript_path'))
-                and not any(t['status'] == 'doing' for t in linked_tasks())):
-            emit(json.dumps({'decision': 'block', 'reason': (
-                'Your reply offers or promises more work, but no task was filed or noted this turn. Every later step '
-                'is a task before the reply: `tasks add "<outcome>" -b "<what only this session knows + done-test>"`, '
-                'or `tasks note ID "<the step>"` on the task it belongs to. Run the command only: he already read '
-                'your reply, do not repeat or rewrite it, no task talk, end with no text.')}))
-            return
-        if not reply.lstrip().startswith('✅'):
-            return done()
-        q = urllib.parse.urlencode({'session': f'Claude Code:{sid}', 'limit': 50})
-        with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
-            linked = json.load(r)['tasks']
-        seen_file = os.path.join(os.path.expanduser('~/.cache/tasks-hook'), sid)
+    def no_task_in_hand(self):
+        """No task command ran this turn and the session works no task of its own ("doing")."""
+        return not task_touched_this_turn(self.path) and not any(t['status'] == 'doing' for t in self.linked_tasks())
+
+    def plan_block(self):
+        steps = hands_plan(self.reply)
+        if steps >= PLAN_MIN and self.no_task_in_hand():
+            self.emit(plan_reason(steps))
+            return True
+        return False
+
+    def offer_block(self):
+        """A session working its own task may say what it does next in this session ("once the agents finish,
+        I'll merge it"); only one with no task in hand, and no task command this turn, goes back."""
+        if offers_work(self.reply) and self.no_task_in_hand():
+            self.emit('Your reply offers or promises more work, but no task was filed or noted this turn. Every later '
+                      'step is a task before the reply: `tasks add "<outcome>" -b "<what only this session knows + '
+                      'done-test>"`, or `tasks note ID "<the step>"` on the task it belongs to. Run the command only: he '
+                      'already read your reply, do not repeat or rewrite it, no task talk, end with no text.')
+            return True
+        return False
+
+    def open_tasks_block(self):
+        """A ✅ reply while tasks linked to this session are open: each is named once (the seen file)."""
+        linked = self.linked_tasks()
+        seen_file = os.path.join(os.path.expanduser('~/.cache/tasks-hook'), self.sid)
         try:
             with open(seen_file) as f:
                 seen = set(f.read().split())
@@ -2139,25 +2256,27 @@ def hook_stop(stdin):
         doing = [t for t in linked if t['status'] == 'doing' and str(t['id']) not in seen]
         filed = [t for t in linked if t['status'] == 'todo' and str(t['id']) not in seen and not handed_off(t)]
         if not doing and not filed:
-            return done()
+            return
         os.makedirs(os.path.dirname(seen_file), exist_ok=True)
         with open(seen_file, 'a') as f:
             f.write(''.join(f"{t['id']}\n" for t in doing + filed))
-        out = ['Your reply says ✅, but tasks linked to this session are still open.']
-        if doing:
-            out.append('Taken by this session (close it: `tasks done ID -m "<result>"`; not finished: '
-                       '`tasks note ID "<what is left>"` and reply ⚠️ or ❓ instead of ✅):')
-            out += [f"  #{t['id']} {t['title']}" for t in doing]
-        if filed:
-            out.append('Filed by this session for later: close or drop any this session already did, keep the rest:')
-            out += [f"  #{t['id']} {t['title']}" for t in filed]
-        out.append('Fix the task with the command only; never close a task whose PR is still open or whose result '
-                   'is not there. He already read your reply: do not repeat or rewrite it, and no task talk. If your ✅ '
-                   'was right, end with no text. If work is in fact left, one line in the language of your reply: '
-                   '"⚠️ <what is left>".')
-        emit(json.dumps({'decision': 'block', 'reason': '\n'.join(out)}))
-    except Exception as e:  # a broken hub or hook must never hold a session
-        print(f'tasks hook-stop: {e}', file=sys.stderr)
+        self.emit('\n'.join(_open_tasks_lines(doing, filed)))
+
+
+def _open_tasks_lines(doing, filed):
+    out = ['Your reply says ✅, but tasks linked to this session are still open.']
+    if doing:
+        out.append('Taken by this session (close it: `tasks done ID -m "<result>"`; not finished: '
+                   '`tasks note ID "<what is left>"` and reply ⚠️ or ❓ instead of ✅):')
+        out += [f"  #{t['id']} {t['title']}" for t in doing]
+    if filed:
+        out.append('Filed by this session for later: close or drop any this session already did, keep the rest:')
+        out += [f"  #{t['id']} {t['title']}" for t in filed]
+    out.append('Fix the task with the command only; never close a task whose PR is still open or whose result '
+               'is not there. He already read your reply: do not repeat or rewrite it, and no task talk. If your ✅ '
+               'was right, end with no text. If work is in fact left, one line in the language of your reply: '
+               '"⚠️ <what is left>".')
+    return out
 
 
 # ------------------------------------------------------------ session names (task 1789)
@@ -2248,24 +2367,34 @@ def first_prompts(path, n=2):
                 except ValueError:
                     continue
                 project = project or o.get('cwd')
-                if o.get('type') != 'user' or o.get('isMeta') or o.get('isSidechain') or o.get('promptSource') == 'system':
-                    continue
-                content = (o.get('message') or {}).get('content')
-                if isinstance(content, list):
-                    if any(isinstance(b, dict) and b.get('type') == 'tool_result' for b in content):
-                        continue
-                    content = '\n'.join(b.get('text', '') for b in content if isinstance(b, dict) and b.get('type') == 'text')
-                if not isinstance(content, str):
-                    continue
-                text = re.sub(r'^(?:\s*<system-reminder>.*?</system-reminder>)+\s*', '', content, flags=re.S).strip()
-                cmd = re.search(r'<command-name>(.*?)</command-name>', text, re.S)
-                if cmd:  # /clear, /model: says nothing about the work
-                    continue
-                if text and not text.startswith('<'):
+                text = _typed_prompt(o)
+                if text:
                     out.append(re.sub(r'\s+', ' ', text)[:500])
     except OSError:
         pass
     return out, os.path.basename((project or '').rstrip('/\\')) or '?'
+
+
+def _typed_prompt(o):
+    """The text a person typed in this transcript record, without system reminders; None for anything else."""
+    if o.get('type') != 'user' or o.get('isMeta') or o.get('isSidechain') or o.get('promptSource') == 'system':
+        return None
+    content = _user_text((o.get('message') or {}).get('content'))
+    if content is None:
+        return None
+    text = re.sub(r'^(?:\s*<system-reminder>.*?</system-reminder>)+\s*', '', content, flags=re.S).strip()
+    if re.search(r'<command-name>(.*?)</command-name>', text, re.S):  # /clear, /model: says nothing about the work
+        return None
+    return text if text and not text.startswith('<') else None
+
+
+def _user_text(content):
+    """A user record's text: a string, or its text blocks joined; None for a tool result or anything else."""
+    if isinstance(content, list):
+        if any(isinstance(b, dict) and b.get('type') == 'tool_result' for b in content):
+            return None
+        content = '\n'.join(b.get('text', '') for b in content if isinstance(b, dict) and b.get('type') == 'text')
+    return content if isinstance(content, str) else None
 
 
 def ask_haiku_name(project, prompts):
@@ -2392,61 +2521,91 @@ def hook_prompt(stdin):
         if not sid or prompt.lstrip().startswith('/') or hooks_off():
             return
         if manual_here():  # outside Beacon: told once, on its first prompt
-            mark = os.path.join(os.path.expanduser('~/.cache/tasks-hook'), f'{sid}.manual')
-            if not os.path.exists(mark):
-                os.makedirs(os.path.dirname(mark), exist_ok=True)
-                open(mark, 'w').close()
-                print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': MANUAL_NOTE}}))
+            if _first_time(sid, 'manual'):
+                _prompt_context(MANUAL_NOTE)
             return
-        try:
-            seen = box_answer(sid, prompt)
-        except Exception:  # the hub away: the box question stays open on the page
-            seen = None
-        try:
-            own = own_answers(sid)
-        except Exception:  # the hub away: the dispatcher still carries the answers out
-            own = ''
-        seen = '\n\n'.join(x for x in (seen, own) if x)
+        seen = _answers_news(sid, prompt)
         if seen:
-            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': seen}}))
+            _prompt_context(seen)
             return
-        mark = os.path.join(os.path.expanduser('~/.cache/tasks-hook'), f'{sid}.prompts')
-        try:
-            with open(mark) as f:
-                n = int(f.read() or 0)
-        except (OSError, ValueError):
-            n = 0
-        if n >= 3:
+        if not _counted_prompt(sid) or _has_task(sid):
             return
-        os.makedirs(os.path.dirname(mark), exist_ok=True)
-        with open(mark, 'w') as f:
-            f.write(str(n + 1))
-        q = urllib.parse.urlencode({'session': f'Claude Code:{sid}', 'status': 'all', 'limit': 50})
-        with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
-            if any(t['status'] in ('doing', 'done') for t in json.load(r)['tasks']):
-                return
-        project = project_of(ev.get('cwd'))
-        here = project != 'personal'  # in a repo: its tasks only; elsewhere every project, stricter
-        q = urllib.parse.urlencode({'status': 'todo', 'limit': 2000, **({'project': project} if here else {})})
-        with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
-            open_ = [t for t in json.load(r)['tasks'] if 'parked' not in t['tags']]
-        want = words(prompt)
-        scored = sorted(((len(want & words(t['title'] + ' ' + (t.get('body') or '')[:400])), t) for t in open_),
-                        key=lambda x: (-x[0], -x[1]['updated_at']))
-        hits = [t for score, t in scored[:5] if score >= (2 if here else 3)]
-        out = ['No task at http://beacon is taken by this session yet. If this prompt starts work that outlives this '
-               'reply, take its task first: `tasks doing ID` only for a task that is clearly the same outcome; none '
-               'is → `tasks add "<outcome>" --doing -b "<why + Done-test>"`. A question, chat or quick fix needs no '
-               'task, but an idea of his to make, start, try or set up something is one, even asked as "how do I…": '
-               'file it with the whole plan as 🤖/👤 steps, do the 🤖 ones, and end ❓ with his next 👤 steps as a '
-               '`tasks ask --task ID --step …` card. Word matches below are guesses; ignore any that is not the same work.']
-        if hits:
-            out.append(f"Open tasks that share words with the prompt ({project if here else 'all projects'}):")
-            out += [f"  #{t['id']} [{t['project']}] {t['status']}: {t['title'][:120]}" for t in hits]
-        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit',
-                                                 'additionalContext': '\n'.join(out)}}))
+        _prompt_context(_task_hint(ev, prompt))
     except Exception as e:  # a broken hub or hook must never hold a prompt
         print(f'tasks hook-prompt: {e}', file=sys.stderr)
+
+
+def _prompt_context(text):
+    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': text}}))
+
+
+def _first_time(sid, what):
+    """True once per session for `what`: a mark file remembers it was done."""
+    mark = os.path.join(os.path.expanduser('~/.cache/tasks-hook'), f'{sid}.{what}')
+    if os.path.exists(mark):
+        return False
+    os.makedirs(os.path.dirname(mark), exist_ok=True)
+    open(mark, 'w').close()
+    return True
+
+
+def _answers_news(sid, prompt):
+    """What this prompt's session must know about answers to its questions ('' when nothing)."""
+    try:
+        seen = box_answer(sid, prompt)
+    except Exception:  # the hub away: the box question stays open on the page
+        seen = None
+    try:
+        own = own_answers(sid)
+    except Exception:  # the hub away: the dispatcher still carries the answers out
+        own = ''
+    return '\n\n'.join(x for x in (seen, own) if x)
+
+
+def _counted_prompt(sid):
+    """Count this prompt; False from the 4th on (the task hint is for a session's first 3 prompts only)."""
+    mark = os.path.join(os.path.expanduser('~/.cache/tasks-hook'), f'{sid}.prompts')
+    try:
+        with open(mark) as f:
+            n = int(f.read() or 0)
+    except (OSError, ValueError):
+        n = 0
+    if n >= 3:
+        return False
+    os.makedirs(os.path.dirname(mark), exist_ok=True)
+    with open(mark, 'w') as f:
+        f.write(str(n + 1))
+    return True
+
+
+def _has_task(sid):
+    """The session has taken (or finished) a task already."""
+    q = urllib.parse.urlencode({'session': f'Claude Code:{sid}', 'status': 'all', 'limit': 50})
+    with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
+        return any(t['status'] in ('doing', 'done') for t in json.load(r)['tasks'])
+
+
+def _task_hint(ev, prompt):
+    """The nudge to take a task, with the open tasks whose words the prompt shares."""
+    project = project_of(ev.get('cwd'))
+    here = project != 'personal'  # in a repo: its tasks only; elsewhere every project, stricter
+    q = urllib.parse.urlencode({'status': 'todo', 'limit': 2000, **({'project': project} if here else {})})
+    with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
+        open_ = [t for t in json.load(r)['tasks'] if 'parked' not in t['tags']]
+    want = words(prompt)
+    scored = sorted(((len(want & words(t['title'] + ' ' + (t.get('body') or '')[:400])), t) for t in open_),
+                    key=lambda x: (-x[0], -x[1]['updated_at']))
+    hits = [t for score, t in scored[:5] if score >= (2 if here else 3)]
+    out = ['No task at http://beacon is taken by this session yet. If this prompt starts work that outlives this '
+           'reply, take its task first: `tasks doing ID` only for a task that is clearly the same outcome; none '
+           'is → `tasks add "<outcome>" --doing -b "<why + Done-test>"`. A question, chat or quick fix needs no '
+           'task, but an idea of his to make, start, try or set up something is one, even asked as "how do I…": '
+           'file it with the whole plan as 🤖/👤 steps, do the 🤖 ones, and end ❓ with his next 👤 steps as a '
+           '`tasks ask --task ID --step …` card. Word matches below are guesses; ignore any that is not the same work.']
+    if hits:
+        out.append(f"Open tasks that share words with the prompt ({project if here else 'all projects'}):")
+        out += [f"  #{t['id']} [{t['project']}] {t['status']}: {t['title'][:120]}" for t in hits]
+    return '\n'.join(out)
 
 
 def utf8_console():
