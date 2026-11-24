@@ -67,7 +67,7 @@ if git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
   done
   [ -n "$(git diff --name-only "$BASE" -- ruff.toml ruff.strict.toml biome.json .jscpd.json \
       pyrightconfig.json .coveragerc requirements-dev.in requirements-dev.txt uv.toml package.json package-lock.json .npmrc .gitleaksignore .github \
-      scripts/ratchet.py scripts/scores.py scripts/check scripts/supply-chain .githooks)" ] \
+      scripts/ratchet.py scripts/scores.py scripts/check scripts/supply-chain scripts/canaries.py scripts/nightly canaries.json .githooks)" ] \
     && problems+=("changes a check's configuration")
   python3 scripts/ratchet.py --raised-since "$BASE" || problems+=("loosens quality-baseline.json")
   if [ ${#problems[@]} -gt 0 ] && ! git log --format=%B "$BASE..HEAD" 2>/dev/null | grep -q '^Quality-exception: .\+'; then

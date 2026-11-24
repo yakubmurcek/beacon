@@ -1,0 +1,128 @@
+{
+ "about": "One known-bad change per check. scripts/canaries.py applies each to a throwaway copy of HEAD, runs the check and fails if it stays green or goes red for another reason. `expect` is text the right check prints.",
+ "canaries": [
+  {
+   "name": "type error",
+   "check": "pyright ratchet",
+   "run": "fast",
+   "expect": "adds type errors",
+   "file": "hub/names.py",
+   "append": "\n\ndef canary_type_error() -> int:\n    return 'not a number'\n"
+  },
+  {
+   "name": "too complex function",
+   "check": "ruff strict ratchet (C901)",
+   "run": "fast",
+   "expect": "C901",
+   "file": "hub/names.py",
+   "append": "\n\ndef canary_complex(a, b, c, d, e, f, g, h):\n    n = 0\n    if a:\n        n += 1\n    if b:\n        n += 1\n    if c:\n        n += 1\n    if d:\n        n += 1\n    if e:\n        n += 1\n    if f:\n        n += 1\n    if g:\n        n += 1\n    if h:\n        n += 1\n    if a and b:\n        n += 1\n    if c and d:\n        n += 1\n    if e and f:\n        n += 1\n    if g and h:\n        n += 1\n    if a or h:\n        n += 1\n    if b or g:\n        n += 1\n    if c or f:\n        n += 1\n    if d or e:\n        n += 1\n    return n\n"
+  },
+  {
+   "name": "dead test assertion",
+   "check": "ruff strict ratchet (B015)",
+   "run": "fast",
+   "expect": "B015",
+   "file": "tests/test_names.py",
+   "replace": [
+    "        self.assertEqual(self.names.view(), {'at': None, 'names': [], 'flags': []})",
+    "        self.names.view() == {'at': None, 'names': [], 'flags': []}"
+   ]
+  },
+  {
+   "name": "undefined name",
+   "check": "ruff lint (F821)",
+   "run": "fast",
+   "expect": "F821",
+   "file": "hub/names.py",
+   "append": "\n\ndef canary_undefined():\n    return not_defined_anywhere\n"
+  },
+  {
+   "name": "lint suppression",
+   "check": "not-loosened guard",
+   "run": "fast",
+   "expect": "adds a lint suppression",
+   "file": "hub/names.py",
+   "append": "\n\nCANARY = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'  # noqa: E501\n"
+  },
+  {
+   "name": "skipped test",
+   "check": "not-loosened guard",
+   "run": "fast",
+   "expect": "skips a test",
+   "file": "tests/test_names.py",
+   "replace": [
+    "    def test_nothing_posted_yet_reads_empty(self):",
+    "    @unittest.skip('canary')\n    def test_nothing_posted_yet_reads_empty(self):"
+   ]
+  },
+  {
+   "name": "loosened lint config",
+   "check": "not-loosened guard",
+   "run": "fast",
+   "expect": "changes a check's configuration",
+   "file": "ruff.strict.toml",
+   "replace": [
+    "max-complexity = 15",
+    "max-complexity = 40"
+   ]
+  },
+  {
+   "name": "raised baseline",
+   "check": "not-loosened guard",
+   "run": "fast",
+   "expect": "loosens quality-baseline.json",
+   "file": "quality-baseline.json",
+   "json_bump": [
+    "at_most",
+    "pyright hub",
+    1
+   ]
+  },
+  {
+   "name": "new module not strict",
+   "check": "not-loosened guard",
+   "run": "fast",
+   "expect": "without '# pyright: strict'",
+   "file": "hub/canary_module.py",
+   "create": "\"\"\"A new module that forgot the strict header.\"\"\"\n"
+  },
+  {
+   "name": "injectable workflow",
+   "check": "zizmor",
+   "run": "fast",
+   "expect": "template-injection",
+   "file": ".github/workflows/ci.yml",
+   "replace": [
+    "      - run: scripts/supply-chain",
+    "      - run: echo \"${{ github.event.head_commit.message }}\"\n      - run: scripts/supply-chain"
+   ]
+  },
+  {
+   "name": "tampered vendored file",
+   "check": "vendor manifest test",
+   "run": "test tests.test_vendor",
+   "expect": "changed: update it",
+   "file": "web/vendor/d3-timer.min.js",
+   "append": "\n;window.canary=1;\n"
+  },
+  {
+   "name": "committed secret",
+   "check": "gitleaks",
+   "run": "supply-chain",
+   "expect": "leaks found",
+   "file": "hub/names.py",
+   "secret": true
+  },
+  {
+   "name": "coverage drop",
+   "check": "coverage ratchet",
+   "run": "full",
+   "expect": "lowers test coverage",
+   "file": "tests/test_names.py",
+   "replace": [
+    "class NamesSnapshot(unittest.TestCase):",
+    "class NamesSnapshot:"
+   ]
+  }
+ ]
+}

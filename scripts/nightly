@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# The nightly quality run (a systemd timer on the home server): on a fresh copy of origin/main, the full check, the
+# supply-chain scan (new CVEs appear without a push) and every canary. Results go to $QUALITY_STATE/nightly.json for
+# the quality report; a non-zero exit is the alarm (the unit's OnFailure).
+set -uo pipefail
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+TREE="${NIGHTLY_TREE:-$REPO/../.beacon-nightly}"
+STATE="${QUALITY_STATE:-$HOME/.local/state/beacon-quality}"
+mkdir -p "$STATE"
+
+git -C "$REPO" fetch -q origin main
+[ -d "$TREE" ] || git -C "$REPO" worktree add -q --detach "$TREE" origin/main
+cd "$TREE" && git checkout -q --detach --force origin/main && git clean -qfdx -e .venv -e node_modules -e .tools
+sha=$(git rev-parse --short HEAD)
+
+run() {  # name, command...: runs it, keeps its exit code and the last lines of its output
+  local name=$1; shift
+  "$@" > "$STATE/$name.log" 2>&1; echo $? > "$STATE/$name.code"
+}
+run check env CHECK_BASE=HEAD scripts/check
+run supply-chain scripts/supply-chain
+run canaries .venv/bin/python scripts/canaries.py --json "$STATE/canaries.json"
+
+python3 - "$STATE" "$sha" <<'PY'
+import json, sys, time
+state, sha = sys.argv[1], sys.argv[2]
+steps = {n: int(open(f"{state}/{n}.code").read()) for n in ("check", "supply-chain", "canaries")}
+out = {"at": time.time(), "commit": sha, "steps": {n: ("ok" if c == 0 else "red") for n, c in steps.items()}}
+open(f"{state}/nightly.json", "w").write(json.dumps(out, indent=1) + "\n")
+print(json.dumps(out))
+sys.exit(1 if any(steps.values()) else 0)
+PY
