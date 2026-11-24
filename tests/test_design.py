@@ -37,6 +37,17 @@ class DesignSystem(unittest.TestCase):
                 with self.subTest(sheet=name, line=line.strip()[:80]):
                     self.assertIsNone(COLOUR.search(line), f'{name}: use a token from tokens.css, not a raw colour')
 
+    def test_every_stylesheet_has_balanced_braces(self):
+        # one stray '}' silently drops the next rule (2026-11-24: the lead grid fell to one column)
+        for path in sorted(glob.glob(os.path.join(WEB, '*.css'))):
+            depth = 0
+            text = re.sub(r'/\*.*?\*/', '', open(path, encoding='utf8').read(), flags=re.S)
+            for n, line in enumerate(text.split('\n'), 1):
+                for ch in line:
+                    depth += {'{': 1, '}': -1}.get(ch, 0)
+                    self.assertGreaterEqual(depth, 0, f'{os.path.basename(path)}:{n}: a closing brace too many')
+            self.assertEqual(depth, 0, f'{os.path.basename(path)}: an unclosed brace')
+
     def test_no_override_layers(self):
         for name, css in sheets():
             with self.subTest(sheet=name):

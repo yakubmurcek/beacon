@@ -149,7 +149,6 @@
   .facets { gap: 6px; }
   .fbtn { height: 34px; padding: 0 9px; font-size: 12.5px; }
 }
-}
 
 .leads { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
 .lead { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px 12px; border-radius: var(--r-xl); border: 1px solid var(--line);
