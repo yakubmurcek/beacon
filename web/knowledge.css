@@ -180,9 +180,15 @@
 
 /* ------------------------------------------------------------ graph (force-graph), drawn straight on the page */
 .kn-graph { position: relative; overflow: hidden; margin: 4px 0 10px; }
+.kn-graph[hidden] { display: none; }
 .kn-graph-canvas { height: clamp(440px, calc(100vh - 230px), 920px); }
 .kn-graph-canvas canvas { display: block; touch-action: none; }  /* pinch zooms the brain, not the page */
-.kn-graph-wait { color: var(--muted); padding: 40px 18px; margin: 0; }
+.kn-graph-canvas { opacity: 0; transition: opacity calc(var(--t-slow) * 2) var(--ease); }  /* one fade in, once the layout is ready */
+.kn-graph.ready .kn-graph-canvas { opacity: 1; }
+.kn-graph-wait { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; color: var(--muted); pointer-events: none;
+  animation: kn-breathe calc(var(--t-slow) * 5) var(--ease-in-out) infinite alternate; }
+.kn-graph-wait:empty, .kn-graph.ready .kn-graph-wait { display: none; }
+@keyframes kn-breathe { from { opacity: .45; } to { opacity: 1; } }
 .kn-legend { position: absolute; top: 0; left: 0; right: 0; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
 .kn-legend button { pointer-events: auto; display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--r-pill); cursor: pointer;
   font: 500 12px/1.1 var(--sans); color: var(--text); background: color-mix(in srgb, var(--bg) 85%, transparent); border: 1px solid var(--line); }
@@ -192,15 +198,22 @@
 .kn-legend button.off i { background: transparent; box-shadow: inset 0 0 0 1px var(--c); }
 .kn-legend .fit { margin-left: auto; }
 .kn-pick { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--r-lg);
-  background: var(--panel); border: 1px solid var(--line); color: var(--text); }
-.kn-pick[hidden] { display: none; }
-.kn-pick > i { flex: none; width: 10px; height: 10px; border-radius: 50%; }
+  background: var(--panel); border: 1px solid var(--line); color: var(--text); box-shadow: var(--shadow-2);
+  opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity var(--t) var(--ease), transform var(--t-slow) var(--ease); }
+.kn-pick.on { opacity: 1; transform: none; pointer-events: auto; }
+.kn-pick > i { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--c); box-shadow: 0 0 0 4px color-mix(in srgb, var(--c) 22%, transparent); }
 .kn-pick .tx { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .kn-pick .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kn-pick .b { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kn-pick .open { margin-left: auto; flex: none; color: var(--accent-ink); font-weight: 600; text-decoration: none; padding: 4px 2px; }
 @media (max-width: 760px) {
-  .kn-graph-canvas { height: 64vh; min-height: 380px; }
-  .kn-legend button { padding: 4px 8px; font-size: 11px; }
-  .kn-legend .fit { margin-left: 0; }
+  /* the whole graph on the first screen, above the bottom tabs; the kinds in one row that scrolls sideways,
+     the tapped dot's bar right under it, clear of the tabs and the feedback button */
+  .kn-graph-canvas { height: calc(100svh - 290px - env(safe-area-inset-bottom)); min-height: 340px; }
+  .kn-legend { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; pointer-events: auto; padding-bottom: 2px; }
+  .kn-legend::-webkit-scrollbar { display: none; }
+  .kn-legend button { flex: none; padding: 4px 8px; font-size: 11px; }
+  .kn-legend .fit { order: -1; margin-left: 0; }
+  .kn-pick { top: 36px; bottom: auto; transform: translateY(-8px); }
+  .kn-pick.on { transform: none; }
 }

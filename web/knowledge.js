@@ -181,14 +181,19 @@ const go = (hash) => { if (location.hash !== hash) location.hash = hash; else re
 const searchHash = (q, s) => '#/?' + new URLSearchParams(Object.entries({ q, s }).filter(([, v]) => v)).toString();
 
 // ------------------------------------------------------------------ graph: the brain drawn the way Obsidian draws it
-// force-graph 1.52.0 (MIT, github.com/vasturiano/force-graph), vendored in web/vendor: canvas, d3-force, pan, pinch, drag.
+// force-graph 1.52.0 (MIT, github.com/vasturiano/force-graph), vendored in web/vendor: canvas, pan, pinch, drag.
+// One graph lives for the whole visit: the layout is worked out off screen (in slices, so a phone never
+// freezes), remembered per dot, and the canvas fades in once, already fitted. New data moves the same dots
+// to their new places; nothing is torn down, so a reload or a refresh never blinks or re-lays the brain.
+// Hover (a finger: tap) lights the dot and its links, fades the rest and draws the neighbours in a little;
+// dots near the pointer lean towards it. All of that is drawn, never simulated, so the brain stays put.
 
 const GROUPS = {  // drawn straight on the page: greys for the many, a few strong colours for what matters
   core: { label: 'Core notes', color: '#e07b2a' },
   decisions: { label: 'Decisions', color: '#c9a20c' },
   reference: { label: 'Notes', color: '#d8453c' },
   feedback: { label: 'Rules', color: '#9a8a1e' },
-  project: { label: 'Projects', color: '#3b372e' },
+  project: { label: 'Projects', color: null },  // the page's ink, so it reads on both themes
   chat: { label: 'Claude chats', color: '#9a9283' },
   call: { label: 'Calls', color: '#5b5bd6' },
   person: { label: 'People on calls', color: '#8f9cf0' },
@@ -201,14 +206,22 @@ function readTheme() {
   ink = cs.getPropertyValue('--text').trim() || ink;
   paper = cs.getPropertyValue('--bg').trim() || paper;
 }
-const alpha = (hex, a) => { const m = /^#([0-9a-f]{6})$/i.exec(hex); if (!m) return `rgba(0,0,0,${a})`; const n = parseInt(m[1], 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; };
+const rgb = (c) => { const m = /^#([0-9a-f]{6})$/i.exec(c); if (!m) return [100, 116, 139]; const v = parseInt(m[1], 16); return [v >> 16, (v >> 8) & 255, v & 255]; };
+const rgba = (c, a) => { const [r, g, b] = rgb(c); return `rgba(${r},${g},${b},${a})`; };
+const colorOf = (x) => (GROUPS[x.group] && GROUPS[x.group].color) || ink;
 const TOUCH = matchMedia('(hover: none)').matches;
+const CALM = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const radius = (x) => 2 + Math.sqrt(x.deg);  // Quartz's (and Obsidian's) dot size: 2 + sqrt(links)
+const POS = 'kn.graphpos';  // where every dot was last drawn, so the next visit starts there
+
 let graph = snap.get('kn.graph');
-let fg = null, gbox = null, gdata = null, fitted = false;
+let fg = null, gbox = null, canvasBox = null, gsig = '', shown = false, revealed = false, userMoved = false;
 let hover = null, picked = null, matches = null;  // what lights up: the dot under the pointer, the tapped one, search hits
+let pointer = null;  // the mouse, in graph units
+let layoutJob = 0, tween = null, lastFrame = 0, awake = false;
 const hiddenGroups = new Set();
 const nbrs = new Map();
+let byId = new Map();
 
 function graphHref(x) {
   if (x.id.startsWith('call:')) return '#/call/' + encodeURIComponent(x.id.slice(5));
@@ -219,158 +232,470 @@ function graphHref(x) {
   return '#/n/' + encodeURIComponent(x.id);
 }
 
+const focusNode = () => hover || picked;
 function lit() {  // ids drawn bright; null = everything
-  const x = hover || picked;
+  const x = focusNode();
   if (x) return new Set([x.id, ...(nbrs.get(x.id) || [])]);
   return matches;
 }
 
-function drawNode(x, ctx, scale) {
+// ---- the frame: every dot eases towards its target look; while anything still moves, redraw every frame
+
+function wake() {  // something changed: draw every frame until the dots have eased into place
+  if (!fg) return;
+  if (!awake) { awake = true; lastFrame = 0; fg.autoPauseRedraw(false); }
+}
+
+function tweenStep(now) {  // fresh data: known dots glide to their new places
+  const t = Math.min(1, (now - tween.start) / 650);
+  const e = t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;  // ease in-out
+  for (const [x, a, b] of tween.moves) { x.x = a[0] + (b[0] - a[0]) * e; x.y = a[1] + (b[1] - a[1]) * e; }
+  if (t === 1) { tween = null; savePositions(); }
+}
+
+function lean(x, f, on, pull, scale) {  // where a dot is drawn off its place: [dx, dy]
+  let tx = 0, ty = 0;
+  if (f && x !== f && on.has(x.id)) { tx += (f.x - x.x) * 0.1; ty += (f.y - x.y) * 0.1; }  // the neighbours gather in round the lit dot
+  if (!pull) return [tx, ty];
+  const ddx = pointer.x - x.x, ddy = pointer.y - x.y, d = Math.hypot(ddx, ddy);  // and dots near the pointer lean towards it
+  if (d >= pull || d < 0.01) return [tx, ty];
+  const w = Math.min((1 - d / pull) ** 2 * (12 / scale), d);
+  return [tx + (ddx / d) * w, ty + (ddy / d) * w];
+}
+
+function looks(x, f, on) {  // a dot's target brightness, glow and size
+  const g = f ? (x === f ? 1 : on.has(x.id) ? 0.5 : 0) : matches && matches.has(x.id) ? 0.8 : 0;
+  return { b: !on || on.has(x.id) ? 1 : 0.2, g, s: x === f ? 1.6 : g > 0 ? 1.2 : 1 };
+}
+
+function step(scale) {
+  const now = performance.now();
+  const dt = lastFrame ? Math.min(64, now - lastFrame) : 16;
+  lastFrame = now;
+  const k = CALM ? 1 : 1 - 0.8 ** (dt / 16.7);  // ~0.2 a frame at 60 fps, the same speed at 120
+  const f = focusNode();
   const on = lit();
-  const r = radius(x);
-  const bright = !on || on.has(x.id);
-  ctx.globalAlpha = bright ? (x.group === 'missing' ? 0.55 : x.deg ? 1 : 0.6) : 0.12;
-  ctx.beginPath();
-  ctx.arc(x.x, x.y, r, 0, 2 * Math.PI);
-  ctx.fillStyle = GROUPS[x.group] ? GROUPS[x.group].color : '#64748b';
-  ctx.fill();
-  if (x === hover || x === picked) { ctx.lineWidth = 2 / scale; ctx.strokeStyle = ink; ctx.stroke(); }
-  // names stay hidden until he zooms in, fading in as Quartz/Obsidian do ((zoom - 1) / 3.75); the pointed one always
-  const focus = x === hover || x === picked;
-  const fade = focus ? 1 : on && on.has(x.id) && on.size <= 12 ? 0.9 : Math.min(1, Math.max(0, (scale - 1) / 3.75)) * (bright ? 1 : 0);
-  if (fade > 0.02) {
-    const fs = 12 / scale;
-    ctx.font = `${focus ? 600 : 400} ${fs}px Inter, system-ui, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.globalAlpha = fade;
-    const label = x.label.length > 42 ? x.label.slice(0, 40) + '…' : x.label;
-    ctx.lineWidth = 3 / scale;
-    ctx.strokeStyle = paper;
-    ctx.strokeText(label, x.x, x.y + r + 2 / scale);
-    ctx.fillStyle = ink;
-    ctx.fillText(label, x.x, x.y + r + 2 / scale);
+  const pull = pointer && !TOUCH && !CALM ? 90 / scale : 0;  // the pointer's reach: 90 screen px
+  let moving = !!f || !!tween;  // the lit dot breathes while it is lit
+  if (tween) tweenStep(now);
+  const ease = (cur, tgt) => { const v = cur + (tgt - cur) * k; if (Math.abs(tgt - v) > 0.004) moving = true; return Math.abs(tgt - v) > 0.0005 ? v : tgt; };
+  for (const x of fg.graphData().nodes) {
+    const want = looks(x, f, on);
+    const [tx, ty] = lean(x, f, on, pull, scale);
+    x.b = ease(x.b ?? 1, want.b);
+    x.g = ease(x.g ?? 0, want.g);
+    x.s = ease(x.s ?? 1, want.s);
+    x.dx = ease(x.dx || 0, tx);
+    x.dy = ease(x.dy || 0, ty);
   }
+  if (!moving && awake) { awake = false; fg.autoPauseRedraw(true); }
+}
+
+const px = (x) => x.x + (x.dx || 0);
+const py = (x) => x.y + (x.dy || 0);
+
+function drawNode(x, ctx, scale) {
+  const X = px(x), Y = py(x), c = colorOf(x);
+  const f = focusNode();
+  const r = radius(x) * (x.s || 1);
+  const b = x.b ?? 1;
+  if (x.g > 0.02) {  // the glow: a soft halo in the dot's own colour, breathing on the lit one
+    const breathe = x === f && !CALM ? 1 + 0.12 * Math.sin(performance.now() / 380) : 1;
+    const R = Math.max(r * (1.8 + 1.6 * x.g), (x === f ? 18 : 9) * x.g / scale) * breathe;  // still a glow when zoomed out
+    const grad = ctx.createRadialGradient(X, Y, r * 0.6, X, Y, R);
+    grad.addColorStop(0, rgba(c, 0.42 * x.g));
+    grad.addColorStop(1, rgba(c, 0));
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(X, Y, R, 0, 2 * Math.PI); ctx.fill();
+  }
+  ctx.globalAlpha = b * (x.group === 'missing' ? 0.6 : x.deg ? 1 : 0.65);
+  ctx.beginPath();
+  ctx.arc(X, Y, r, 0, 2 * Math.PI);
+  ctx.fillStyle = c;
+  ctx.fill();
+  if (x.g > 0.5) {  // a paper rim keeps a lit dot crisp on top of its own glow
+    ctx.globalAlpha = Math.min(1, (x.g - 0.5) * 2.5);
+    ctx.lineWidth = (x === f ? 2 : 1.2) / scale;
+    ctx.strokeStyle = paper;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  label(x, ctx, scale, X, Y, r);
+}
+
+function labelFade(x, scale) {
+  // names stay hidden until he zooms in and fade in as he does, as Quartz/Obsidian do;
+  // the lit dot always (as a pill), its neighbours when there are few of them;
+  // well-linked dots name themselves first, the many one-link chats only once he is close
+  if (x === focusNode()) return Math.min(1, x.g * 1.4);
+  const on = lit();
+  const few = on && on.size <= 14 && on.has(x.id) ? x.g * 1.2 : 0;
+  const zoomFade = Math.min(1, Math.max(0, (scale - (x.deg >= 3 ? 1.3 : 2.8)) / 2.5));
+  return Math.min(1, Math.max(few, zoomFade * (x.b ?? 1) ** 2));
+}
+
+function pill(ctx, x, text, X, ty, scale) {  // the lit dot's name on a paper pill with a soft shadow
+  const w = ctx.measureText(text).width + 16 / scale, hgt = 22 / scale;
+  ctx.beginPath();
+  ctx.roundRect(X - w / 2, ty - hgt / 2, w, hgt, hgt / 2);
+  ctx.fillStyle = paper;
+  ctx.shadowColor = 'rgba(0,0,0,0.18)';
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 2;
+  ctx.fill();
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  ctx.lineWidth = 1 / scale;
+  ctx.strokeStyle = rgba(colorOf(x), 0.55);
+  ctx.stroke();
+}
+
+function label(x, ctx, scale, X, Y, r) {
+  const fade = labelFade(x, scale);
+  if (fade < 0.03) return;
+  const isFocus = x === focusNode();
+  const text = x.label.length > 42 ? `${x.label.slice(0, 40)}…` : x.label;
+  ctx.font = `${isFocus ? 600 : 500} ${(isFocus ? 13 : 11.5) / scale}px Inter, system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const ty = Y + r + (isFocus ? 14 : 9) / scale;
+  ctx.globalAlpha = fade;
+  if (isFocus) pill(ctx, x, text, X, ty, scale);
+  else { ctx.lineWidth = 3 / scale; ctx.strokeStyle = paper; ctx.strokeText(text, X, ty); }
+  ctx.fillStyle = ink;
+  ctx.fillText(text, X, ty);
   ctx.globalAlpha = 1;
 }
 
-function linkLit(l) {
-  const x = hover || picked;
-  return x && (l.source.id === x.id || l.target.id === x.id);
+function drawLink(l, ctx, scale) {
+  const s = l.source, t = l.target;
+  if (typeof s !== 'object' || typeof t !== 'object') return;
+  const f = focusNode();
+  const hot = f && (s === f || t === f) ? (s === f ? t : s).g || 0 : 0;  // eases in with the far dot's glow
+  const dim = Math.min(s.b ?? 1, t.b ?? 1);
+  const sx = px(s), sy = py(s), tx = px(t), ty = py(t);
+  ctx.beginPath();
+  ctx.moveTo(sx, sy);
+  ctx.lineTo(tx, ty);
+  if (hot > 0.02) {
+    ctx.strokeStyle = rgba(colorOf(f), 0.2 + 0.6 * hot);
+    ctx.lineWidth = (0.5 + 1.1 * hot) / scale;
+  } else {
+    ctx.strokeStyle = rgba(ink, 0.15 * (0.25 + 0.75 * dim));
+    ctx.lineWidth = 0.5 / scale;
+  }
+  ctx.stroke();
+  if (hot > 0.3 && !CALM) {  // a spark runs out from the lit dot along each of its links
+    const from = s === f ? [sx, sy] : [tx, ty], to = s === f ? [tx, ty] : [sx, sy];
+    const p = ((performance.now() + (l.seed || 0)) % 1400) / 1400;
+    ctx.globalAlpha = hot * Math.sin(Math.PI * p);
+    ctx.fillStyle = colorOf(f);
+    ctx.beginPath();
+    ctx.arc(from[0] + (to[0] - from[0]) * p, from[1] + (to[1] - from[1]) * p, 1.6 / scale, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
 }
+
+function hitArea(x, color, ctx, scale) {  // where the pointer finds a dot: where it is drawn, never smaller than 4 px
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(px(x), py(x), Math.max(radius(x) * (x.s || 1), 4 / scale), 0, 2 * Math.PI);
+  ctx.fill();
+}
+
+// ---- the panel round the canvas
 
 function pickBar() {
   const bar = gbox && gbox.querySelector('.kn-pick');
   if (!bar) return;
-  const x = hover || picked;
-  bar.hidden = !x;
+  const x = focusNode();
+  bar.classList.toggle('on', !!x);
   if (!x) return;
   const card = notes && notes.notes ? notes.notes.find((c) => c.path === x.id) : null;
   const sub = card ? card.blurb : x.group === 'call' ? 'Call · ' + (x.changed ? when(x.changed) : '') : x.group === 'person' ? `On ${x.deg} call${x.deg === 1 ? '' : 's'}` : x.group === 'chat' ? `Claude chat · ${x.changed ? when(x.changed) : ''} · ${num(x.size)} messages` : x.group === 'project' ? `Project · ${x.deg} chats and notes round it` : x.group === 'missing' ? 'Linked to, but no note has this name yet' : '';
-  bar.replaceChildren(h('i', { style: `background:${GROUPS[x.group].color}` }),
-    h('span', { class: 'tx' }, h('span', { class: 't' }, x.label), sub ? h('span', { class: 'b' }, sub) : null),
+  const links = (nbrs.get(x.id) || new Set()).size;
+  bar.replaceChildren(h('i', { style: `--c:${colorOf(x)}` }),
+    h('span', { class: 'tx' }, h('span', { class: 't' }, x.label), h('span', { class: 'b' }, [(GROUPS[x.group] || { label: '' }).label, links ? `${links} link${links === 1 ? '' : 's'}` : '', sub].filter(Boolean).join(' · '))),
     h('a', { class: 'open', href: graphHref(x) }, ['person', 'missing', 'project'].includes(x.group) ? 'Search →' : 'Open →'));
 }
 
-function relight() {
-  if (!fg) return;
-  readTheme();
-  fg.nodeCanvasObject(drawNode);  // a new accessor makes it draw again even when the layout has settled
-  pickBar();
-}
+function relight() { readTheme(); pickBar(); wake(); }
 
 function legend() {
+  const box = gbox.querySelector('.kn-legend');
   const counts = {};
   for (const x of graph.nodes) counts[x.group] = (counts[x.group] || 0) + 1;
-  return h('div', { class: 'kn-legend' },
-    Object.entries(GROUPS).filter(([k]) => counts[k]).map(([k, g]) => {
+  box.replaceChildren(
+    ...Object.entries(GROUPS).filter(([k]) => counts[k]).map(([k, g]) => {
       const b = h('button', { type: 'button', class: hiddenGroups.has(k) ? 'off' : '', title: 'Show or hide ' + g.label },
-        h('i', { style: `--c:${g.color}` }), g.label, h('span', { class: 'count' }, String(counts[k])));
+        h('i', { style: `--c:${g.color || 'var(--text)'}` }), g.label, h('span', { class: 'count' }, String(counts[k])));
       b.addEventListener('click', () => {
         if (hiddenGroups.has(k)) hiddenGroups.delete(k); else hiddenGroups.add(k);
         b.classList.toggle('off', hiddenGroups.has(k));
-        fg.nodeVisibility((x) => !hiddenGroups.has(x.group)).linkVisibility((l) => !hiddenGroups.has(l.source.group) && !hiddenGroups.has(l.target.group));
+        if (fg) fg.nodeVisibility((x) => !hiddenGroups.has(x.group)).linkVisibility((l) => !hiddenGroups.has(l.source.group) && !hiddenGroups.has(l.target.group));
       });
       return b;
     }),
-    (() => { const b = h('button', { type: 'button', class: 'fit', title: 'Show the whole brain' }, 'Fit'); b.addEventListener('click', () => { picked = null; relight(); fg.zoomToFit(500, 30); }); return b; })());
+    (() => { const b = h('button', { type: 'button', class: 'fit', title: 'Show the whole brain' }, 'Fit'); b.addEventListener('click', () => { picked = null; userMoved = false; relight(); if (fg) fg.zoomToFit(500, 30); }); return b; })());
 }
 
-function graphPanel() {
-  if (!graph || !graph.nodes) {
-    return h('section', { class: 'kn-graph' }, h('p', { class: 'kn-graph-wait' }, graph && graph.error ? 'The graph is not reachable: ' + graph.error : 'Drawing the brain…'));
+function graphBox() {  // built once, above the view: render() only shows or hides it, so it is never re-attached
+  if (gbox) return gbox;
+  canvasBox = h('div', { class: 'kn-graph-canvas' });
+  gbox = h('section', { class: 'kn-graph', 'aria-label': 'Graph of the brain notes', hidden: '' },
+    canvasBox, h('div', { class: 'kn-legend' }), h('div', { class: 'kn-pick' }), h('p', { class: 'kn-graph-wait' }, 'Drawing the brain…'));
+  $('view').before(gbox);
+  return gbox;
+}
+
+function showGraph(on) {
+  graphBox().hidden = !on;
+  shown = on;
+  if (!fg) return;
+  if (on) { fg.resumeAnimation(); sizeCanvas(); reveal(); } else fg.pauseAnimation();
+}
+
+function sizeCanvas() {  // a width the canvas already has is never set again: setting it wipes the picture
+  const w = canvasBox.clientWidth, hgt = canvasBox.clientHeight;
+  if (!fg || !w || !hgt) return false;
+  if (fg.width() !== w || fg.height() !== hgt) {
+    fg.width(w).height(hgt);
+    if (revealed && !userMoved && !picked) fg.zoomToFit(0, 30);
   }
-  if (typeof ForceGraph === 'undefined') return h('p', { class: 'error' }, 'The graph script did not load.');
-  const sig = graph.nodes.length + ':' + graph.links.length + ':' + graph.nodes.map((x) => x.id + x.deg).join('|');
-  if (gbox && gdata === sig) { fg.resumeAnimation(); return gbox; }
-  const canvasBox = h('div', { class: 'kn-graph-canvas' });
-  gbox = h('section', { class: 'kn-graph', 'aria-label': 'Graph of the brain notes' }, canvasBox, legend(), h('div', { class: 'kn-pick', hidden: '' }));
-  gdata = sig;
+  return true;
+}
+
+function reveal() {  // once a visit: fitted at once, then the canvas fades in while the camera eases in a touch
+  if (revealed || !shown || layoutJob || !sizeCanvas()) return;
+  revealed = true;
+  fg.zoomToFit(0, 30);
+  if (!CALM) { const k = fg.zoom(); fg.zoom(k * 0.92, 0); fg.zoom(k, 600); }
+  gbox.classList.add('ready');
+}
+
+// ---- data in: the same graph gets the new dots; the layout runs off screen, in slices
+
+function savePositions() {
+  if (!fg) return;
+  const out = {};
+  for (const x of fg.graphData().nodes) if (Number.isFinite(x.x)) out[x.id] = [Math.round(x.x), Math.round(x.y)];
+  out['#shape'] = hash(gsig);  // the dots and links these places were worked out for
+  snap.set(POS, out);
+}
+
+let worker;
+try { worker = new Worker('knowledge-layout.js'); } catch { worker = null; }
+function settle(nodes, links, alpha, done) {  // knowledge-layout.js works the layout out in a worker
+  const job = ++layoutJob;
+  const finish = (places) => {
+    if (job !== layoutJob) return;  // newer data took over
+    layoutJob = 0;
+    for (const [id, x, y] of places) at.set(id, [x, y]);
+    done(at);
+  };
+  const at = new Map();
+  if (worker) {
+    worker.onmessage = (e) => finish(e.data.places);
+    worker.onerror = () => { worker = null; settle(nodes, links, alpha, done); };
+    worker.postMessage({ job, nodes, links, alpha });
+    return;
+  }
+  // no worker (blocked): the same forces on the page, ~10 ms a frame so it never freezes
+  const sim = d3.forceSimulation(nodes)
+    .alpha(alpha).alphaMin(0.004).alphaDecay(0.045)
+    .force('charge', d3.forceManyBody().strength(-50).distanceMax(400))
+    .force('link', d3.forceLink(links).id((x) => x.id).distance(30))
+    .force('collide', d3.forceCollide((x) => radius(x) + 1))
+    .force('x', d3.forceX(0).strength(0.04))
+    .force('y', d3.forceY(0).strength(0.04))
+    .stop();
+  const slice = () => {
+    if (job !== layoutJob) return;
+    const t0 = performance.now();
+    while (sim.alpha() > sim.alphaMin() && performance.now() - t0 < 10) sim.tick();
+    if (sim.alpha() > sim.alphaMin()) return requestAnimationFrame(slice);
+    finish(nodes.map((x) => [x.id, x.x, x.y]));
+  };
+  requestAnimationFrame(slice);
+}
+
+function linkUp(g) {  // who is linked to whom, both ways
   nbrs.clear();
-  const nodes = graph.nodes.map((x) => ({ ...x }));
-  const links = graph.links.map((l) => ({ ...l }));
-  for (const l of links) {
+  for (const l of g.links) {
     if (!nbrs.has(l.source)) nbrs.set(l.source, new Set());
     if (!nbrs.has(l.target)) nbrs.set(l.target, new Set());
     nbrs.get(l.source).add(l.target);
     nbrs.get(l.target).add(l.source);
   }
-  if (fg) fg._destructor && fg._destructor();
+}
+
+function startPlaces(g, prev, saved) {  // every dot starts where it was: this visit, else the last visit, else by a neighbour
+  const start = new Map();
+  for (const x of g.nodes) {
+    const o = prev.get(x.id);
+    if (o) start.set(x.id, [o.x, o.y]);
+    else if (saved[x.id]) start.set(x.id, saved[x.id]);
+  }
+  for (const x of g.nodes) {
+    if (start.has(x.id)) continue;
+    const nb = [...(nbrs.get(x.id) || [])].find((y) => start.has(y));
+    if (nb) { const p = start.get(nb); start.set(x.id, [p[0] + (Math.random() - 0.5) * 20, p[1] + (Math.random() - 0.5) * 20]); }
+  }
+  return start;
+}
+
+function graphReady(g) {  // false (and says why on the canvas) when there is nothing to draw yet
+  const wait = graphBox().querySelector('.kn-graph-wait');
+  if (!g || !g.nodes) { wait.textContent = g && g.error ? `The graph is not reachable: ${g.error}` : 'Drawing the brain…'; return false; }
+  if (typeof ForceGraph === 'undefined' || typeof d3 === 'undefined') { wait.textContent = 'The graph script did not load.'; return false; }
+  return true;
+}
+
+function setGraph(g) {
+  graph = g;
+  if (!graphReady(g)) return;
+  legend();
+  linkUp(g);
+  const sig = `${g.nodes.map((x) => x.id).join('|')}#${g.links.map((l) => `${l.source}>${l.target}`).join('|')}`;
+  if (fg && sig === gsig) {  // the same brain: new sizes and names only, drawn in place
+    for (const x of g.nodes) { const o = byId.get(x.id); if (o) Object.assign(o, x); }
+    pickBar(); wake();
+    return;
+  }
+  gsig = sig;
+  const saved = snap.get(POS) || {};
+  const prev = byId;
+  const start = startPlaces(g, prev, saved);
+  const isKnown = (id) => prev.has(id) || !!saved[id];
+  const known = g.nodes.filter((x) => isKnown(x.id)).length;
+  if (known === g.nodes.length && saved['#shape'] === hash(sig)) {
+    layoutJob = 0;
+    return apply(g, start);  // every dot has its place and no link changed: drawn at once, no layout at all
+  }
+  // a new brain settles from scratch; a known one keeps every known dot pinned and only places the new ones,
+  // so a refresh never shifts the brain under his eyes
+  const pin = known / g.nodes.length >= 0.8;
+  const sim = g.nodes.map((x) => {
+    const p = start.get(x.id);
+    if (!p) return { id: x.id, deg: x.deg };
+    const fixed = pin && isKnown(x.id) ? { fx: p[0], fy: p[1] } : {};
+    return { id: x.id, deg: x.deg, x: p[0], y: p[1], ...fixed };
+  });
+  const simLinks = g.links.map((l) => ({ source: l.source, target: l.target }));
+  settle(sim, simLinks, known === 0 ? 1 : pin ? 0.3 : 0.5, (at) => apply(g, at));
+}
+function hash(s) { let v = 5381; for (let i = 0; i < s.length; i++) v = ((v << 5) + v + s.charCodeAt(i)) | 0; return String(v >>> 0); }
+
+function apply(g, at) {
+  const visible = revealed && shown;
+  const moves = [];
+  const nodes = g.nodes.map((x) => {
+    const o = byId.get(x.id);
+    const to = at.get(x.id);
+    if (o && visible) { Object.assign(o, x); moves.push([o, [o.x, o.y], to]); return o; }  // glides there
+    const n = o ? Object.assign(o, x) : { ...x };
+    n.x = to[0]; n.y = to[1];
+    if (!o && visible) { n.b = 0; n.s = 0.2; }  // a dot new to this visit grows in where it lands
+    return n;
+  });
+  byId = new Map(nodes.map((x) => [x.id, x]));
+  if (hover && !byId.has(hover.id)) hover = null;
+  if (picked && !byId.has(picked.id)) picked = null;
+  const links = g.links.map((l, i) => ({ source: l.source, target: l.target, seed: (i * 397) % 1400 }));
+  if (!fg) build();
+  fg.graphData({ nodes, links });
+  fg.nodeVisibility((x) => !hiddenGroups.has(x.group)).linkVisibility((l) => !hiddenGroups.has(l.source.group) && !hiddenGroups.has(l.target.group));
+  const moved = moves.filter(([, a, b]) => Math.hypot(a[0] - b[0], a[1] - b[1]) > 0.5);
+  if (moved.length) { tween = { start: performance.now(), moves: moved }; } else savePositions();
+  wake();
+  gbox.querySelector('.kn-graph-wait').textContent = '';
+  reveal();
+}
+
+function build() {
   readTheme();
-  fitted = false;
   fg = new ForceGraph(canvasBox)
     .backgroundColor('rgba(0,0,0,0)')
     .nodeId('id')
     .nodeLabel(() => '')
-    .nodeVal((x) => radius(x) ** 2)  // pointer area = the drawn dot
     .nodeRelSize(1)
     .nodeCanvasObjectMode(() => 'replace')
     .nodeCanvasObject(drawNode)
-    .linkColor((l) => alpha(ink, linkLit(l) ? 0.7 : lit() ? 0.04 : 0.16))
-    .linkWidth((l) => (linkLit(l) ? 1.2 : 0.4))
-    .warmupTicks(120)
-    .cooldownTime(4000)
-    .onNodeHover((x) => { if (TOUCH) return; hover = x || null; canvasBox.style.cursor = x ? 'pointer' : ''; relight(); })
-    .onNodeClick((x) => {
-      if (!TOUCH || picked === x) return go(graphHref(x));  // a mouse opens at once; a finger lights it first, opens on the second tap
-      picked = x;
-      relight();
-      const near = lit();
-      fg.zoomToFit(500, 50, (y) => near.has(y.id));
-    })
-    .onBackgroundClick(() => { picked = null; relight(); })
-    .onEngineStop(() => { if (!fitted) { fitted = true; fg.zoomToFit(400, 30); } })
-    .graphData({ nodes, links });
-  // Quartz's forces (its graph is the open-source copy of Obsidian's): repel -50, links 30 long, no two dots
-  // overlapping (the packed ball), plus a gentle pull to the middle that leaves loose notes as an outer ring
-  fg.d3Force('charge').strength(-50).distanceMax(400);
-  fg.d3Force('link').distance(30);
-  fg.d3Force('collide', d3.forceCollide((x) => radius(x) + 1).iterations(3));
-  fg.d3Force('x', d3.forceX(0).strength(0.04));
-  fg.d3Force('y', d3.forceY(0).strength(0.04));
-  setTimeout(() => { if (!fitted) fg.zoomToFit(500, 30); }, 700);  // fill the frame at once, settle into it after
-  // a new size keeps the brain in the middle: the canvas often gets its real width after the first draw
-  let lastW = 0;
-  new ResizeObserver(() => {
-    const w = canvasBox.clientWidth;
-    if (!w) return;
-    fg.width(w).height(canvasBox.clientHeight);
-    if (Math.abs(w - lastW) > 40 && !picked) fg.zoomToFit(300, 30);
-    lastW = w;
-  }).observe(canvasBox);
-  return gbox;
+    .nodePointerAreaPaint(hitArea)
+    .linkCanvasObjectMode(() => 'replace')
+    .linkCanvasObject(drawLink)
+    .warmupTicks(0)
+    .cooldownTicks(0)  // the layout is ours (settle): force-graph only draws, so nothing ever jumps on its own
+    .onRenderFramePre((_ctx, scale) => step(scale))
+    .onNodeDragEnd(() => savePositions());
+  fg.d3Force('charge', null).d3Force('center', null);  // no forces inside force-graph: a drag moves just that dot
+  // the mouse's place feeds the lean; a wheel, a drag of the paper or a pinch means he set the view himself
+  canvasBox.addEventListener('pointermove', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    const { node, at } = nodeAt(e, false);
+    pointer = at;
+    if (node !== hover) { hover = node; canvasBox.style.cursor = node ? 'pointer' : ''; relight(); }
+    wake();
+  });
+  canvasBox.addEventListener('pointerleave', () => { pointer = null; if (hover) { hover = null; relight(); } wake(); });
+  canvasBox.addEventListener('wheel', () => { userMoved = true; }, { passive: true });
+  // taps and clicks are ours too, on the dots as drawn: the library's hit map repaints only every 0.8 s, and on a
+  // busy phone it takes a tap for a pan. A press that ends within 8 px and 0.6 s is a tap.
+  let down = null;
+  canvasBox.addEventListener('pointerdown', (e) => { userMoved = true; down = e.isPrimary ? { x: e.clientX, y: e.clientY, t: performance.now() } : null; });
+  canvasBox.addEventListener('pointerup', (e) => {
+    const d = down;
+    down = null;
+    if (d && e.button === 0 && Math.hypot(e.clientX - d.x, e.clientY - d.y) <= 8 && performance.now() - d.t < 600) clickAt(e);
+  });
+  new ResizeObserver(() => { if (shown) { sizeCanvas(); reveal(); } }).observe(canvasBox);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', relight);
+}
+
+function nodeAt(e, touch) {  // the dot under a pointer: the nearest drawn one within its own size, or 5 px (a finger 14)
+  const rect = canvasBox.getBoundingClientRect();
+  const at = fg.screen2GraphCoords(e.clientX - rect.left, e.clientY - rect.top);
+  const k = fg.zoom();
+  let node = null, best = Infinity;
+  for (const x of fg.graphData().nodes) {
+    if (hiddenGroups.has(x.group)) continue;
+    const reach = Math.max(radius(x) * (x.s || 1) * k, touch ? 14 : 5);
+    const d = Math.hypot(px(x) - at.x, py(x) - at.y) * k - reach;
+    if (d <= 0 && d < best) { node = x; best = d; }
+  }
+  return { node, at };
+}
+
+function clickAt(e) {
+  const x = nodeAt(e, TOUCH).node;
+  if (!x) { if (picked) { picked = null; relight(); } return; }
+  if (!TOUCH || picked === x) return go(graphHref(x));  // a mouse opens at once; a finger lights it first, opens on the second tap
+  picked = x;
+  relight();
+  flyTo(lit());
+}
+
+function flyTo(ids) {  // bring these dots into view, never closer than 2.5x: one dot alone stays a dot, not a disc
+  const ns = fg.graphData().nodes.filter((x) => ids.has(x.id));
+  if (!ns.length) return;
+  userMoved = true;
+  const xs = ns.map((x) => x.x), ys = ns.map((x) => x.y);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const k = Math.min(2.5, (fg.width() - 120) / (x1 - x0 + 1), (fg.height() - 160) / (y1 - y0 + 1));
+  fg.centerAt((x0 + x1) / 2, (y0 + y1) / 2, 600);
+  fg.zoom(Math.max(k, 0.2), 600);
 }
 
 let flyTimer = null;
 function graphFind(text) {  // the search box on the graph: light every match, fly to the best one
   const w = fold(text.trim());
   matches = null;
-  if (fg && gdata && w) {
+  if (fg && w) {
     const all = fg.graphData().nodes.filter((x) => !hiddenGroups.has(x.group));
     const hits = all.filter((x) => fold(x.label).includes(w));
     matches = new Set(hits.map((x) => x.id));
     clearTimeout(flyTimer);
-    if (hits.length) flyTimer = setTimeout(() => fg.zoomToFit(600, 60, (x) => matches && matches.has(x.id)), 300);
+    if (hits.length) flyTimer = setTimeout(() => { if (matches) flyTo(matches); }, 300);
   }
   relight();
 }
@@ -378,7 +703,7 @@ function graphFind(text) {  // the search box on the graph: light every match, f
 // ------------------------------------------------------------------ search
 
 function overviewView() {
-  const top = [graphPanel(), h('p', { class: 'kn-hint muted' }, 'Red dots are notes the agents wrote, grey ones Claude chats round their project, lines the links between them; ',
+  const top = [h('p', { class: 'kn-hint muted' }, 'Red dots are notes the agents wrote, grey ones Claude chats round their project, lines the links between them; ',
     'calls hang off the people who spoke in them. Type to light a note up, Enter searches mail, messages, chats and calls too.')];
   if (!overview) return [...top, h('p', { class: 'muted kn-wait' }, 'Counting what the agents know…')];
   const by = Object.fromEntries((overview.sources || []).map((s) => [s.source, s]));
@@ -673,7 +998,6 @@ async function detail(r) {
 let lastView = null;
 function render() {
   const r = route();
-  if (fg) fg.pauseAnimation();  // graphPanel() wakes it when the graph is on screen again
   const tab = ['t', 'call', 'n', 'g'].includes(r.view) ? (r.view === 'call' ? 'calls' : r.view === 'n' ? 'notes' : 'search') : r.view;
   for (const a of document.querySelectorAll('#views a')) a.classList.toggle('on', a.dataset.view === tab);
   $('notes-count').textContent = notes && notes.notes ? String(notes.notes.length) : '';
@@ -682,6 +1006,7 @@ function render() {
   const q = $('q');
   if (tab === 'search' && r.view === 'search' && document.activeElement !== q) q.value = r.q;
   q.placeholder = tab === 'notes' ? 'Filter notes, Enter searches inside them' : tab === 'calls' ? 'Filter calls by name or topic' : r.q ? 'Search mail, messages, chats, calls, notes' : 'Find a note, Enter searches everything';
+  showGraph(r.view === 'search' && !r.q && !r.source);  // the one graph: shown or hidden, never rebuilt
   if (['t', 'call', 'n', 'g'].includes(r.view)) {
     if (!$('view').querySelector('.doc') || $('view').dataset.key !== location.hash) $('view').replaceChildren(h('p', { class: 'muted kn-wait' }, 'Opening…'));
     $('view').dataset.key = location.hash;
@@ -705,8 +1030,7 @@ function render() {
 }
 
 async function load() {
-  api('/api/knowledge/graph').then((g) => { graph = g; snap.set('kn.graph', g); }, (e) => { if (!graph) graph = { error: e.message }; })
-    .then(() => { const r = route(); if (r.view === 'search' && !r.q && !r.source) render(); });
+  api('/api/knowledge/graph').then((g) => { snap.set('kn.graph', g); setGraph(g); }, (e) => { if (!graph) setGraph({ error: e.message }); });
   const [o, nt, c] = await Promise.all([
     api('/api/knowledge/overview').catch((e) => ({ error: e.message })),
     api('/api/knowledge/notes').catch((e) => ({ error: e.message })),
@@ -750,4 +1074,5 @@ window.addEventListener('hashchange', () => {
 // phones: the Home row scrolls sideways, so bring the lit Knowledge tab into view
 { const on = document.querySelector('.top .tabs .on'); if (on) on.parentElement.scrollLeft = on.offsetLeft + on.offsetWidth - on.parentElement.clientWidth; }
 render();  // the last data first, no blank page
+setGraph(graph);
 load();
