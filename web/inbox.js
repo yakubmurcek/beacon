@@ -100,7 +100,7 @@ async function turnOn() {
 }
 
 async function test() {
-  const r = await fetch('/api/notify/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  const r = await fetch('/api/notify/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"urgent": true}' });
   const out = await r.json().catch(() => ({}));
   ping.note = r.ok ? tr('Test sent: it shows on this phone in a few seconds.') : out.error || `The hub answered ${r.status}`;
   render();
@@ -141,7 +141,7 @@ function week(d) {
     h('ul', { class: 'rules' }, [
       ['🔴', `Urgent: at once, at most ${d.rules.urgent_cap} a day`],
       ['🔔', `Normal: one quiet digest at most every ${d.rules.digest_gap_h} h`],
-      ['🌙', `Nothing at night, ${d.rules.wake[1]}:00 to ${d.rules.wake[0]}:00`],
+      ['🌙', `Normal ones never at night, ${d.rules.wake[1]}:00 to ${d.rules.wake[0]}:00`],
       ['🟢', 'Fixed by itself: never pings'],
       ['📵', `At most ${d.rules.day_cap} pushes a day`],
     ].map(([i, t]) => h('li', null, h('span', { 'aria-hidden': 'true' }, i), h('span', null, tr(t))))));

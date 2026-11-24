@@ -5,8 +5,8 @@ Outreach move that finished) posts a notice here. The notice always lands in the
 whether it also buzzes the phone is decided here, never by the sender:
 
   urgent  his hands are needed now (a box down, a login dead). Pushed at once with sound, like Apple's
-          time-sensitive level, but at most URGENT_CAP a day, never twice in URGENT_GAP, and not at night
-          (WAKE hours): the night's urgent ones go as one push at the start of the day.
+          time-sensitive level, day or night, but at most URGENT_CAP a day, never twice in URGENT_GAP, and the
+          same trouble (key or topic) buzzes as urgent once a day only.
   normal  something finished or worth knowing. Never pushed alone: held, then sent as one quiet digest at most
           every DIGEST_GAP, only in waking hours, after a burst has had BATCH seconds to gather.
   inbox   kept for the record only (a self-fixed failure, a 🟢 "fixed" line). Never pushed.
@@ -194,12 +194,14 @@ class Notify:
             held = [dict(r) for r in con.execute("SELECT * FROM notices WHERE state = 'held' ORDER BY id").fetchall()]
             pushes = [dict(r) for r in con.execute(
                 'SELECT at, level FROM pushes WHERE ok = 1 AND at >= ? ORDER BY at', (self.day_start(now),))]
-        if not held or len(pushes) >= DAY_CAP or not self.awake(now):
-            return None, []  # night: nothing an agent saw so far was worth waking him for, it waits for the morning
+        if not held or len(pushes) >= DAY_CAP:
+            return None, []
         sent = [p['at'] for p in pushes if p['level'] == 'urgent']
         urgent = [x for x in held if x['level'] == 'urgent']
         if urgent and len(sent) < URGENT_CAP and now - max(sent, default=0) >= URGENT_GAP:
-            return 'urgent', urgent
+            return 'urgent', urgent  # day or night: urgent breaks through (his ask)
+        if not self.awake(now):
+            return None, []
         alone = [x for x in held if x['alone']]
         if alone:  # what his own tap started: by itself and quiet, no digest wait
             return 'alone', alone[:1]

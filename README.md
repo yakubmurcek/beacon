@@ -716,10 +716,10 @@ on `/machines` as a problem and one Telegram line, instead of being found by luc
 
 One way anything reaches the owner's phone. Senders post a notice; the hub decides what buzzes (`hub/notify.py`):
 
-- **urgent** (his hands needed now): pushed at once with sound, at most 4 a day, 15 min apart.
+- **urgent** (his hands needed now): pushed at once with sound, day or night, at most 4 a day, 15 min apart; the same trouble buzzes as urgent once a day.
 - **normal**: held, then one quiet digest at most every 3 h after a 10 min batch window.
 - **inbox**: kept only. A 🟢 "fixed" notice is always this, and withdraws the held alarm with its key.
-- At most 8 pushes a day in all, nothing 22:00 to 8:00 (the night's go out as one push at 8). The same key within
+- At most 8 pushes a day in all; normal ones never 22:00 to 8:00. The same key within
   its `every`, or the same first five words within 6 h, counts as a repeat of the first notice.
 
 Every notice lands in the inbox page (read/unread, filters, the week's notices vs pushes against the cap).

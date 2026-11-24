@@ -38,16 +38,15 @@ class NotifyTest(unittest.TestCase):
         return self.ok, 'test', None if self.ok else 'down'
 
     def test_urgent_goes_at_once_and_opens_its_link(self):
-        x = self.n.post({'level': 'urgent', 'title': '🔴 devbox down', 'link': '/machines'}, now=at(20, 13))
+        x = self.n.post({'level': 'urgent', 'title': '🔴 devbox down', 'link': '/machines'}, now=at(20, 3))
         self.assertEqual(x['state'], 'pushed')
         self.assertEqual(self.sent, [('urgent', '🔴 devbox down', '', 'http://hub/machines')])
 
-    def test_night_holds_even_urgent_for_the_morning(self):
-        self.n.post({'level': 'urgent', 'title': '🔴 login dead'}, now=at(20, 3))
-        self.n.post({'level': 'urgent', 'title': '🔴 box down'}, now=at(20, 4))
-        self.assertEqual(self.sent, [])
-        self.n.flush(at(20, 8))
-        self.assertEqual([(k, t) for k, t, *_ in self.sent], [('urgent', '🔴 2 updates')])
+    def test_urgent_breaks_through_at_night_normal_waits(self):
+        self.n.post({'level': 'urgent', 'title': '🔴 box down'}, now=at(20, 3))
+        self.n.post({'title': 'news'}, now=at(20, 3))
+        self.n.flush(at(20, 4))
+        self.assertEqual([(k, t) for k, t, *_ in self.sent], [('urgent', '🔴 box down')])
 
     def test_normal_waits_for_a_digest_in_waking_hours(self):
         self.n.post({'title': '✍️ Draft written: Acme', 'link': '/outreach#leads?l=acme'}, now=at(20, 9))

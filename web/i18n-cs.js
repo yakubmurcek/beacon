@@ -327,7 +327,7 @@ window.HUB_CS = {
     'of {n} notices today': 'z {n|zprávy|zpráv|zpráv} dnes',
     'Urgent: at once, at most {n} a day': 'Naléhavé: hned, nejvýš {n} denně',
     'Normal: one quiet digest at most every {n} h': 'Běžné: jeden tichý souhrn nejvýš každé {n} h',
-    'Nothing at night, {a} to {b}': 'V noci nic, od {a} do {b}',
+    'Normal ones never at night, {a} to {b}': 'Běžné nikdy v noci, od {a} do {b}',
     'At most {n} pushes a day': 'Nejvýš {n} na mobil denně',
     '{n} min ago': 'před {n} min', '{n}m ago': 'před {n} min', '{n}h ago': 'před {n} h', '{n}d ago': 'před {n} d', '{n} s ago': 'před {n} s',
     '{n} h ago': 'před {n} h', '{n} d ago': 'před {n} d', '{n} days ago': 'před {n|dnem|dny|dny}',
