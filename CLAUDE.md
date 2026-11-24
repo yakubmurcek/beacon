@@ -22,6 +22,7 @@ the hub, how it must look and read, past decisions). They win over defaults; the
   and look at them before calling them done.
 - Look: colours, spacing, radii and timings only from `web/tokens.css` (both themes); shared parts in `web/app.css`,
   no second skin or `:not(#x)` override (`tests/test_design.py` fails on both).
+- Czech is a switch (README "Czech"): every new English label or message on a page gets its Czech line in `web/i18n-cs.js`.
 - Page scripts never declare a global `n`: the header's inline badge script owns `var n` (a `const n` blanks the page).
 - Anything that runs on its own (loop, timer, agent) must show on `/machines` and alarm when broken; one that calls
   a model also shows on `/ai`.
