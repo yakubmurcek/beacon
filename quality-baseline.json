@@ -1,13 +1,13 @@
 {
  "at_least": {
-  "coverage client %": 78.3,
+  "coverage client %": 80.6,
   "coverage collector %": 50.0,
-  "coverage hub %": 79.1
+  "coverage hub %": 81.7
  },
  "at_most": {
-  "pyright client": 115,
+  "pyright client": 114,
   "pyright collector": 9,
-  "pyright hub": 266,
+  "pyright hub": 247,
   "pyright scripts": 3
  },
  "lint": {
