@@ -233,9 +233,9 @@ class QuestionsStoreTest(unittest.TestCase):
         free = self.qs.create({'question': 'No task?'})
         self.tasks.update(closed['id'], {'status': 'dropped'})
         self.assertEqual(len(self.qs.list('open')), 3)
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        with self.assertLogs('beacon.questions', 'INFO') as out:
             qs = Questions(self.store, self.tasks)
-        self.assertIn('withdrew 1', out.getvalue())
+        self.assertIn('withdrew 1', '\n'.join(out.output))
         self.assertEqual(sorted(q['question'] for q in qs.list('open')), ['No task?', 'b?'])
         self.assertEqual(qs.get(free['id'])['status'], 'open')
         self.assertEqual(qs.withdraw_closed(), 0)  # idempotent
