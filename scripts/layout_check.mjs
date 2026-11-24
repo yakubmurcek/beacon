@@ -7,6 +7,8 @@
 //   - a pill (badge, count) wider or taller than its text needs
 //   - the page wider than the screen (sideways scroll)
 //   - text drawn in a system font, which differs per device (the Mac, the iPhone, this box), so wrapping does too
+//   - a progress bar that disagrees with the "3 of 9" counter beside it (the Decisions bar sat at 57% on
+//     "1 of 9": it counted answered cards while the counter said where he was, 2026-11-24)
 // Usage: node scripts/layout_check.mjs <hub url> [--shots DIR]
 import { createRequire } from 'node:module';
 import { execSync } from 'node:child_process';
@@ -60,7 +62,24 @@ function measure([count, live]) {
       pills.push(`"${el.textContent.trim()}" is ${Math.round(r.width)}x${Math.round(r.height)}px, its text needs ${Math.round(need)}px wide`);
     }
   }
-  return { header, pills, overflow: document.documentElement.scrollWidth - innerWidth };
+  // a bar (one filled child) and the nearest "N of M" / "N z M" before it must say the same thing
+  const bars = [];
+  for (const bar of document.querySelectorAll('[class*="progress"]')) {
+    const fill = bar.children.length === 1 ? bar.firstElementChild : null;
+    const full = bar.getBoundingClientRect().width;
+    if (!fill || !full) continue;
+    let near = bar.previousElementSibling;
+    let m = null;
+    for (let k = 0; near && k < 2 && !m; k++, near = near.previousElementSibling) {
+      const texts = document.createTreeWalker(near, NodeFilter.SHOW_TEXT);  // node by node: a chip's count must not glue on
+      while (!m && texts.nextNode()) m = texts.currentNode.nodeValue.match(/^\s*(\d+)\s+(?:of|z)\s+(\d+)/);
+    }
+    if (!m) continue;
+    const said = Number(m[1]) / Number(m[2]);
+    const drawn = fill.getBoundingClientRect().width / full;
+    if (Math.abs(said - drawn) > 0.04) bars.push(`the bar is ${Math.round(drawn * 100)}% full beside "${m[0]}" (${Math.round(said * 100)}%)`);
+  }
+  return { header, pills, bars, overflow: document.documentElement.scrollWidth - innerWidth };
 }
 
 async function systemFonts(page) {
@@ -127,6 +146,7 @@ for (const view of VIEWS) {
       }
       seen.push([path, m.header]);
       for (const p of m.pills) problems.push(`${label}: a header pill is stretched: ${p}`);
+      for (const b of m.bars) problems.push(`${label}: a progress bar disagrees with its counter: ${b}`);
       if (m.overflow > 1) problems.push(`${label}: the page is ${m.overflow}px wider than the screen`);
       if (view.name === 'desktop' && mode.theme === 'paper') {
         // a second load, as he sees the page all day: fonts cached, nothing held back by font-display: optional

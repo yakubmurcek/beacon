@@ -155,6 +155,17 @@
     "class NamesSnapshot(unittest.TestCase):",
     "class NamesSnapshot:"
    ]
+  },
+  {
+   "name": "progress bar disagrees with its counter",
+   "check": "layout check (Chrome)",
+   "run": "full",
+   "expect": "a progress bar disagrees with its counter",
+   "file": "web/questions.js",
+   "replace": [
+    "width:${Math.round(((i + 1) / p.length) * 100)}%",
+    "width:${Math.round((deck.done / (p.length + deck.done)) * 100)}%"
+   ]
   }
  ]
 }

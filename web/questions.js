@@ -420,14 +420,13 @@ function viewOpen() {
   c.prepend(h('div', { class: 'stamp', 'aria-hidden': 'true' }));
   const go = (d) => { deck.cur = p[(i + d + p.length) % p.length].id; render(); };
   makeSwipeable(c, go);
-  const total = p.length + deck.done;
   return [
     freshPill,
     h('div', { class: 'deck-bar' },
       h('div', { class: 'chips' }, chip('all', 'All', state.open.length), waiting > 0 && chip('waiting', 'Agent waiting', waiting)),
       h('span', { class: 'deck-count' }, `${i + 1} of ${p.length}`)),
     projs,
-    h('div', { class: 'deck-progress', 'aria-hidden': 'true' }, h('span', { style: `width:${Math.round((deck.done / total) * 100)}%` })),
+    h('div', { class: 'deck-progress', 'aria-hidden': 'true' }, h('span', { style: `width:${Math.round(((i + 1) / p.length) * 100)}%` })),
     h('div', { class: 'deck' }, p.length > 2 && h('div', { class: 'ghost g2' }), p.length > 1 && h('div', { class: 'ghost g1' }), c),
     h('div', { class: 'deck-actions' },
       h('button', { class: 'round', 'aria-label': 'Previous', title: 'Previous (←)', disabled: p.length < 2, onclick: () => deckAct('prev') }, '↩'),
