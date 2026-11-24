@@ -1158,7 +1158,8 @@ def start_notify(live):
     import notify as notify_mod
     import webpush
     base = HUB.get('https') or HUB.get('url') or ''
-    Handler.webpush = webpush.WebPush(Handler.store, os.environ.get('VAPID_PRIVATE_KEY'), base)
+    Handler.webpush = webpush.WebPush(Handler.store, os.environ.get('VAPID_PRIVATE_KEY'),
+                                       webpush.contact(base, CONFIG['owner'].get('emails') or []))
     wp = Handler.webpush
 
     def name():

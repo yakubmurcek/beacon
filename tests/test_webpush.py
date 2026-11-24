@@ -84,3 +84,10 @@ class WebPushTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ContactTest(unittest.TestCase):
+    def test_a_short_tailnet_name_gives_way_to_the_owners_mail(self):
+        self.assertEqual(webpush.contact('https://hub', ['me@example.com']), 'mailto:me@example.com')
+        self.assertEqual(webpush.contact('https://hub.example.com', ['me@example.com']), 'https://hub.example.com')
+        self.assertEqual(webpush.contact('http://hub', []), 'https://example.com')

@@ -90,6 +90,16 @@ def vapid_header(endpoint, key, subject, now=None):
     return f'vapid t={head}.{claims}.{sig}, k={b64e(raw_public(key))}'
 
 
+def contact(url, emails=()):
+    """The JWT's contact (sub): a public https URL or a mailto. Apple refuses a short tailnet name such as
+    https://hub (403 BadJwtToken, 2026-11-24), so a dotless host gives way to the owner's mail."""
+    host = urllib.parse.urlparse(url or '').hostname or ''
+    if url.startswith('https://') and '.' in host:
+        return url
+    mail = next((e for e in emails if '@' in (e or '')), '')
+    return f'mailto:{mail}' if mail else 'https://example.com'
+
+
 class WebPush:
     def __init__(self, store, key_text=None, subject=''):
         self.store = store
