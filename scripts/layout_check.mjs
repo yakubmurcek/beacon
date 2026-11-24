@@ -118,7 +118,13 @@ for (const view of VIEWS) {
         await page.evaluate(() => document.fonts.ready);
         return page.evaluate(measure, [COUNT, LIVE]);
       };
-      const m = await settle().catch(async () => { await page.waitForLoadState('load'); return settle(); });
+      let m;
+      for (let tries = 1; !m; tries++) {
+        try { m = await settle(); } catch (e) {
+          if (tries === 3) throw e;
+          await page.waitForTimeout(1500);
+        }
+      }
       seen.push([path, m.header]);
       for (const p of m.pills) problems.push(`${label}: a header pill is stretched: ${p}`);
       if (m.overflow > 1) problems.push(`${label}: the page is ${m.overflow}px wider than the screen`);
