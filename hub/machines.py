@@ -446,8 +446,13 @@ def problem_text(j):
     return f"{j['name']} is no longer {'running' if j.get('kind') == 'daemon' else 'scheduled'}"
 
 
+NOTIFY = None  # f(text, key, quiet) -> bool: the live hub's notices (hub/notify.py); else telegram-alarm
+
+
 def telegram(text, key, quiet=False):
-    """True once telegram-alarm took it. A failed send (DNS down, no token) is tried again next minute."""
+    """True once the alarm is taken. A failed send (DNS down, no token) is tried again next minute."""
+    if NOTIFY:
+        return NOTIFY(text, key, quiet)
     exe = shutil.which('telegram-alarm') or '/usr/local/bin/telegram-alarm'
     cmd = [exe, '--from', '🖥️ Machines'] + (['--quiet'] if quiet else []) + [text]
     try:

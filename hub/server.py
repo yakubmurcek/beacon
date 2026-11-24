@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import unicodedata
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -72,6 +73,14 @@ def asset_version(name):
         return ''
     return f'{(st.st_mtime_ns ^ st.st_size) & 0xffffffff:08x}'
 
+
+# page path -> its file in web/
+PAGE_FILES = {'/decisions': 'questions.html', '/tasks': 'tasks.html', '/usage': 'index.html', '/machines': 'machines.html',
+              '/team': 'team.html', '/knowledge': 'knowledge.html', '/rank': 'rank.html',
+              '/ai': 'ai.html',  # every job that runs a model by itself, its model, effort and cost
+              '/power': 'power.html', '/outreach': 'outreach.html',  # every lead and research report
+              '/buildlog': 'buildlog.html', '/labs': 'labs.html',  # Labs: ask in words, the answer drawn as live cards
+              '/inbox': 'inbox.html'}  # every notice, pushed to the phone or held back (hub/notify.py)
 
 BRIEF_BODY, BRIEF_NOTE = 320, 240
 PR_URL = re.compile(r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+')
@@ -561,6 +570,41 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(400, {'error': f'bad request: {e}'})
         return self.send_json(201, {'task': t['id'], 'title': t['title']})
 
+    def routed(self, method, path):
+        """The newer POST APIs, one table instead of another branch in do_POST each (GETs: GET_ROUTES)."""
+        routes = {
+            ('POST', '/api/notify'): lambda: self.post_notify(path),
+            ('POST', '/api/notify/read'): lambda: self.post_notify(path),
+            ('POST', '/api/notify/subscribe'): lambda: self.post_notify(path),  # a phone turning pings on
+            ('POST', '/api/notify/test'): lambda: self.post_notify(path),  # "Send a test" on the inbox
+        }
+        fn = routes.get((method, path))
+        if not fn or (path.startswith('/api/notify') and not getattr(self, 'notify', None)):
+            return self.send_json(404, {'error': 'not found'})
+        return fn()
+
+    def post_notify(self, path):
+        """A notice from any sender (agents and boxes with the task token), or his read marks on the inbox."""
+        who, body = self.writer_body(64 * 1024)
+        if not who:
+            return
+        try:
+            if path == '/api/notify/read':
+                return self.send_json(200, self.notify.read(body.get('ids'), bool(body.get('all'))))
+            if path in ('/api/notify/subscribe', '/api/notify/test'):
+                if who != 'owner' or not self.webpush.ready():
+                    return self.send_json(403 if who != 'owner' else 503,
+                                          {'error': 'only his own phone' if who != 'owner' else 'web push is not set up'})
+                if path == '/api/notify/subscribe':
+                    return self.send_json(201, self.webpush.subscribe(body.get('subscription'), body.get('device')))
+                ok, _, err = self.webpush.send('urgent' if body.get('urgent') else 'digest', '🔔 Beacon pings work',
+                                               'This is what a notice looks like. Tap it to open the inbox.',
+                                               self.notify.base + '/inbox')
+                return self.send_json(200 if ok else 502, {'ok': ok, 'error': err})
+            return self.send_json(201, self.notify.post(body))
+        except ValueError as e:
+            return self.send_json(400, {'error': f'bad request: {e}'})
+
     def post_tasks(self, path):
         who, body = self.writer_body()
         if not who:
@@ -822,34 +866,12 @@ class Handler(BaseHTTPRequestHandler):
         if path != page and page != '/':  # /decisions/ would load its files from /decisions/...
             return self.redirect(page + ('?' + query if query else ''), 302)
         tasks_host = host == 'beacon'
-        if page == '/decisions':
-            rel = 'questions.html'
+        if page in PAGE_FILES:  # every page links the others by path, on whatever name it was opened
+            rel = PAGE_FILES[page]
         elif page == '/':
             rel = 'tasks.html' if tasks_host else 'index.html'
         elif page == '/new' and tasks_host:
             rel = 'tasks.html'
-        elif page == '/tasks':  # every page links the other two by path, on whatever name it was opened
-            rel = 'tasks.html'
-        elif page == '/usage':
-            rel = 'index.html'
-        elif page == '/machines':
-            rel = 'machines.html'
-        elif page == '/team':
-            rel = 'team.html'
-        elif page == '/knowledge':
-            rel = 'knowledge.html'
-        elif page == '/rank':
-            rel = 'rank.html'
-        elif page == '/ai':  # every job that runs a model by itself, its model, effort and cost
-            rel = 'ai.html'
-        elif page == '/power':
-            rel = 'power.html'
-        elif page == '/outreach':  # every lead and research report (Home)
-            rel = 'outreach.html'
-        elif page == '/buildlog':
-            rel = 'buildlog.html'
-        elif page == '/labs':  # Labs: ask in words, the answer drawn as live cards
-            rel = 'labs.html'
         elif page == '/home':  # Home groups his other tools: Power, Money (budget), Lighthouse
             return self.redirect('/power', 302)
         else:
@@ -929,7 +951,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/rank/ingest' and getattr(self, 'rank', None):  # the ai-rank collector, with the collector's token
             return self.post_rank()
         if path != '/api/ingest':
-            return self.send_json(404, {'error': 'not found'})
+            return self.routed('POST', path)
         auth = self.headers.get('Authorization', '')
         if not TOKEN or not hmac.compare_digest(auth, 'Bearer ' + TOKEN):
             return self.send_json(401, {'error': 'unauthorized'})
@@ -1004,6 +1026,9 @@ GET_ROUTES = {
     # what a collector reports and which copies to update
     '/api/freshness': ('machines', lambda h, path, q: h.send_json(200, h.machines.freshness_for(q.get('machine') or ''))),
     '/api/names': ('names', _view('names', 'view')),
+    '/api/notify': ('notify', _view('notify', 'view')),  # the inbox and its send log (task 1967)
+    '/api/notify/vapid': ('webpush', lambda h, path, q: h.send_json(  # the key a phone subscribes with
+        200, {'key': h.webpush.public_key(), 'devices': h.webpush.count()})),
     '/api/outreach': ('outreach', _view('outreach', 'view')),  # every lead and research report
     '/outreach/doc': ('outreach', lambda h, path, q: h.send_doc(q.get('p', ''))),  # one research file, read-only
     '/outreach/logo': (None, Handler.get_outreach_logo),
@@ -1027,6 +1052,56 @@ GET_PREFIXES = (
     ('/api/questions/file/', (None, Handler.get_question_file)),
     ('/api/questions', (None, Handler.get_questions)),
 )
+
+
+def start_notify(live):
+    """Notices (hub/notify.py): every alarm and finished move lands in /inbox; only the live hub pushes to the phone,
+    through Beacon's own home-screen app (hub/webpush.py), Telegram while no phone has subscribed."""
+    import machines as machines_mod  # after the sys.path line above, like every hub module
+    import notify as notify_mod
+    import webpush
+    base = HUB.get('https') or HUB.get('url') or ''
+    Handler.webpush = webpush.WebPush(Handler.store, os.environ.get('VAPID_PRIVATE_KEY'), base)
+    wp = Handler.webpush
+
+    def name():
+        return 'webpush' if wp.ready() and wp.count() else 'telegram' if notify_mod.legacy_bin() else 'none'
+    send = notify_mod.first_of(*([wp.send] if wp.ready() else []), notify_mod.telegram) if live else None
+    Handler.notify = notify_mod.Notify(Handler.store, send, os.environ.get('USAGE_TZ', 'Europe/Prague'), base, name)
+    machines_mod.NOTIFY = lambda text, key, quiet: bool(
+        Handler.notify.post(notify_mod.from_alarm(text, key, quiet, '🖥️ Machines')))
+    Handler.tasks.on_close = outreach_done(Handler.tasks, Handler.notify, Handler.tasks.on_close)
+    if live:  # the live hub tells him when talk loses its own voice
+        Handler.talk.send = lambda text: machines_telegram(text, 'talk-voice')
+        Handler.notify.watch()
+
+
+def outreach_done(tasks, notices, then=None):
+    """A task a tapped Outreach move filed, closed: one normal notice that opens the lead's card (task 1967).
+    Chained after the slot's earlier owner (questions withdraws a closed task's cards)."""
+    def closed(tid):
+        if then:
+            then(tid)
+        try:
+            t = tasks.get(tid)
+            link = outreach_link(t.get('body') if t else '')
+            if link:
+                done = t['status'] == 'done'
+                notices.post({'title': ('✅ ' if done else '🗑️ ') + t['title'], 'link': link, 'source': 'Outreach',
+                              'key': f'outreach-move:{tid}', 'level': 'normal' if done else 'inbox'})
+        except Exception:
+            traceback.print_exc()
+    return closed
+
+
+def outreach_link(body):
+    """The lead card a move's task came from (the `Outreach lead: <project> / <name>` line outreach.move writes)."""
+    m = re.search(r'^Outreach lead: (.+?) / (.+)$', body or '', re.M)
+    if not m:
+        return ''
+    slug = unicodedata.normalize('NFD', f'{m.group(1).strip()}-{m.group(2).strip()}'.lower())
+    slug = re.sub(r'[^a-z0-9]+', '-', ''.join(c for c in slug if not unicodedata.combining(c)))
+    return '/outreach#leads?l=' + slug  # the page's leadId()
 
 
 def main():
@@ -1059,8 +1134,7 @@ def main():
     Handler.labs.aijobs = Handler.aijobs  # its ai_jobs sources
     Handler.talk = Talk(Handler.store, Handler.labs, Handler.questions, Handler.tasks)
     Handler.aijobs.extra.append(Handler.talk.aijob)  # the voice's own cost on /ai
-    if os.environ.get('HUB_ALARMS') == '1':  # the live hub tells him when talk loses its own voice
-        Handler.talk.send = lambda text: machines_telegram(text, 'talk-voice')
+    start_notify(os.environ.get('HUB_ALARMS') == '1')
     Handler.machines.watch()  # alarms only where HUB_ALARMS=1 (the live hub)
     Handler.questions.harvesting = True  # screenshots a question links to (a PR body) land on its card
     threading.Thread(target=Handler.questions.harvest_open, daemon=True).start()

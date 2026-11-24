@@ -712,6 +712,31 @@ on `/machines` as a problem and one Telegram line, instead of being found by luc
 - The agents' CLI and its settings are served at `/cli/tasks`, `/cli/settings.py`, `/cli/config.example.json` and
   `/cli/config.json` for boxes without a checkout.
 
+## Inbox and phone pings: http://beacon/inbox (task 1967)
+
+One way anything reaches the owner's phone. Senders post a notice; the hub decides what buzzes (`hub/notify.py`):
+
+- **urgent** (his hands needed now): pushed at once with sound, at most 4 a day, 15 min apart.
+- **normal**: held, then one quiet digest at most every 3 h after a 10 min batch window.
+- **inbox**: kept only. A 🟢 "fixed" notice is always this, and withdraws the held alarm with its key.
+- At most 8 pushes a day in all, nothing 22:00 to 8:00 (the night's go out as one push at 8). The same key within
+  its `every`, or the same first five words within 6 h, counts as a repeat of the first notice.
+
+Every notice lands in the inbox page (read/unread, filters, the week's notices vs pushes against the cap).
+
+| API | |
+|---|---|
+| `POST /api/notify` | `{text}` or `{title, body}`, `level` (urgent/normal/inbox), `link`, `source`, `key`, `every`; task token |
+| `GET /api/notify` | the inbox: notices, unread, pushes, 7-day log, the rules, the channel |
+| `POST /api/notify/read` | `{ids}` or `{all: true}` |
+| `GET /api/notify/vapid`, `POST /api/notify/subscribe`, `POST /api/notify/test` | Web Push: the key, a phone subscribing (owner only), a test push |
+
+Senders: the `telegram-alarm` command on every box posts here (Telegram only when the hub does not answer), the hub's
+machine alarms call it in process, and a tapped Outreach move's task closing posts one normal notice that opens the
+lead card. The channel is Web Push to the home-screen app (`hub/webpush.py`, `web/sw.js`; needs `cryptography` and
+`VAPID_PRIVATE_KEY`; the page must be opened on the `hub.https` name), with the old Telegram sender as the fallback
+until a phone has subscribed.
+
 ## Endings: every session ending is a card (task 1857)
 
 The owner runs dozens of sessions an hour and never opens them to learn what they did. Every Claude Code reply is posted

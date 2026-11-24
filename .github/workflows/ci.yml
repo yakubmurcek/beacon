@@ -26,6 +26,7 @@ jobs:
         with:
           node-version: '22'
       - uses: astral-sh/setup-uv@v7
+      - run: pip install cryptography  # Web Push (hub/webpush.py), on the live hub's Python too
       # The same command the pre-push hook runs; compared with the commit before this push (or the PR base).
       - run: scripts/check
         env:

@@ -42,7 +42,7 @@ NAV = [
     ('team', 'Team', [('team', 'Results', '/team'), ('buildlog', 'Build log', '/buildlog'),
                       ('today', 'Today', '/lighthouse/today'), ('wall', 'Wall', '/lighthouse/dashboard')]),
     ('tasks', 'Tasks', [('tasks', 'Tasks', '/tasks')]),
-    ('decisions', 'Decisions', [('decisions', 'Decisions', '/decisions')]),
+    ('decisions', 'Decisions', [('decisions', 'Decisions', '/decisions'), ('inbox', 'Inbox', '/inbox')]),
     ('business', 'Business', [('outreach', 'Outreach', '/outreach'), ('money', 'Money', '/budget')]),
     ('knowledge', 'Knowledge', [('knowledge', 'Knowledge', '/knowledge')]),
     ('system', 'System', [('usage', 'Usage', '/usage'), ('ai', 'AI jobs', '/ai'), ('machines', 'Machines', '/machines'),
@@ -55,7 +55,8 @@ HIDDEN = {'rank': 'team'}
 # hub pages: file -> page id
 PAGES = {'team.html': 'team', 'buildlog.html': 'buildlog', 'tasks.html': 'tasks', 'questions.html': 'decisions',
          'outreach.html': 'outreach', 'rank.html': 'rank', 'knowledge.html': 'knowledge', 'index.html': 'usage',
-         'ai.html': 'ai', 'machines.html': 'machines', 'power.html': 'power', 'labs.html': 'labs'}
+         'ai.html': 'ai', 'machines.html': 'machines', 'power.html': 'power', 'labs.html': 'labs',
+         'inbox.html': 'inbox'}
 
 
 def header_nav(page):
