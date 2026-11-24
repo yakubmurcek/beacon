@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """The hub's navigation, defined once and written into every page's header.
 
-Five main tabs, each page in exactly one of them; a main tab with more than one page gets one group row.
+Six main tabs, each page in exactly one of them; a main tab with more than one page gets one group row.
 Grouped by what he does there (2026-11-22, "home under System doesn't make sense"):
   Team       what the agents did: results, the build log, Lighthouse's Today and the wall TV
   Tasks      the work
   Decisions  his say
-  Business   users and money: leads, money, what the agents know
+  Business   users and money: leads, money
+  Knowledge  what the agents know (its own tab with a brain icon, 2026-11-24)
 AI Rank is no tab (2026-11-22, "a little flex on top"): a slim badge on Team > Results opens /rank, which sits under Team.
   System     what it runs on and costs: usage, AI jobs, machines, their power, labs
 
@@ -28,6 +29,7 @@ ICONS = {
     'tasks': '<rect x="3" y="3" width="18" height="18" rx="5"/><path d="m8 12 3 3 5-6"/>',
     'decisions': '<path d="M12 21v-9"/><path d="M12 12 6.5 6.5"/><path d="m12 12 5.5-5.5"/><path d="M5 10V5h5"/><path d="M19 10V5h-5"/>',
     'business': '<path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/>',
+    'knowledge': '<path d="M12 5a3 3 0 1 0-6 .1 4 4 0 0 0-2.5 5.8 4 4 0 0 0 .5 6.6A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 6 .1 4 4 0 0 1 2.5 5.8 4 4 0 0 1-.5 6.6A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.6 6.5a3 3 0 0 0 .4-1.4"/><path d="M6 5.1a3 3 0 0 0 .4 1.4"/><path d="M6 18a4 4 0 0 1-2-.5"/><path d="M20 17.5a4 4 0 0 1-2 .5"/>',
     'system': '<path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/>',
 }
 
@@ -41,8 +43,8 @@ NAV = [
                       ('today', 'Today', '/lighthouse/today'), ('wall', 'Wall', '/lighthouse/dashboard')]),
     ('tasks', 'Tasks', [('tasks', 'Tasks', '/tasks')]),
     ('decisions', 'Decisions', [('decisions', 'Decisions', '/decisions')]),
-    ('business', 'Business', [('outreach', 'Outreach', '/outreach'), ('money', 'Money', '/budget'),
-                              ('knowledge', 'Knowledge', '/knowledge')]),
+    ('business', 'Business', [('outreach', 'Outreach', '/outreach'), ('money', 'Money', '/budget')]),
+    ('knowledge', 'Knowledge', [('knowledge', 'Knowledge', '/knowledge')]),
     ('system', 'System', [('usage', 'Usage', '/usage'), ('ai', 'AI jobs', '/ai'), ('machines', 'Machines', '/machines'),
                           ('power', 'Power', '/power'), ('labs', 'Labs', '/labs')]),
 ]
