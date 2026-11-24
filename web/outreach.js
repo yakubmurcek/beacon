@@ -59,6 +59,7 @@ const ICONS = {
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
   refresh: '<path d="M20 11a8 8 0 0 0-14.9-3.9L3 9"/><path d="M3 4v5h5"/><path d="M4 13a8 8 0 0 0 14.9 3.9L21 15"/><path d="M21 20v-5h-5"/>',
   sort: '<path d="M7 4v16M3 16l4 4 4-4"/><path d="M17 20V4M13 8l4-4 4 4"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 };
 const ic = (name, cls) => h('span', { class: 'ic' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true',
@@ -264,30 +265,47 @@ const SORTS = [
   ['chance', 'Best chance', (a, b) => CRANK(b) - CRANK(a), (rows) => rows.some((r) => r.chance)],
   ['ai', 'Most AI', (a, b) => ((AI[b.ai] || [-1])[0]) - ((AI[a.ai] || [-1])[0]), (rows) => rows.some((r) => r.ai)],
 ];
-function sortRow(rows) {
-  const opts = SORTS.filter(([, , , show]) => show(rows));
-  return h('div', { class: 'facet' },
-    h('span', { class: 'fk' }, ic('sort'), 'Sort'),
-    h('div', { class: 'fv' }, opts.map(([k, word]) => h('button', { type: 'button', class: 'chip' + (st.sort === k ? ' on' : ''),
-      onclick: () => { st.sort = k; st.shown = { ...STEP }; renderList(); refreshFacets(); } }, word))));
+const optOn = (key, v) => key === '_sort' ? (st.sort || '_default') === v : (st.facets[key] || '') === v;
+// filters as one compact row of dropdowns, each showing what is picked; a tap opens its options with counts
+function fselect(key, label, icon, current, glyph, options, pick) {
+  const open = st.openFacet === key;
+  const btn = h('button', { type: 'button', class: 'fbtn' + (current ? ' on' : '') + (open ? ' open' : ''), 'aria-expanded': String(open),
+    onclick: (e) => { e.stopPropagation(); st.openFacet = open ? '' : key; refreshFacets(); } },
+  ic(icon), h('span', { class: 'fl' }, label), current ? h('span', { class: 'fval' }, glyph, current) : h('span', { class: 'fany' }, 'All'), ic('down'));
+  const pop = open ? h('div', { class: 'fpop', role: 'listbox', onclick: (e) => e.stopPropagation() },
+    options.map(([v, word, g, n, off]) => h('button', { type: 'button', class: 'fopt' + (optOn(key, v) ? ' on' : ''), disabled: !!off,
+      onclick: () => { st.openFacet = ''; pick(v); st.shown = { ...STEP }; renderList(); refreshFacets(); } },
+    g || h('span', { class: 'ic' }), h('span', { class: 'fw' }, word), n == null ? null : h('b', null, String(n))))) : null;
+  if (pop) requestAnimationFrame(() => {  // keep the open list on screen near the right edge
+    const r = pop.getBoundingClientRect(), over = r.right - (window.innerWidth - 12);
+    if (over > 0) pop.style.left = `${-over}px`;
+  });
+  return h('div', { class: 'fsel' }, btn, pop);
 }
-
 function facetBar() {
   const base = baseRows();
-  const list = facetList(base);
   if (!base.length) return null;
-  return h('div', { class: 'facets' }, sortRow(base), list.map(([k, vals]) => {
-    const here = base.filter((r) => facetOk(r, k));  // counts as they would be with this filter changed
-    return h('div', { class: 'facet' },
-      h('span', { class: 'fk' }, ic(FACET_IC[k] || 'target'), k),
-      h('div', { class: 'fv' }, vals.map(([v]) => {
-        const n = here.filter((r) => [].concat(facetsOf(r)[k] || []).includes(v)).length;
-        return h('button', { type: 'button', class: 'chip' + (st.facets[k] === v ? ' on' : ''), disabled: !n && st.facets[k] !== v,
-          onclick: () => { st.facets = { ...st.facets, [k]: st.facets[k] === v ? '' : v }; st.shown = { ...STEP }; renderList(); refreshFacets(); } },
-          valueGlyph(k, v), v, h('b', null, String(n)));
-      })));
-  }));
+  const list = facetList(base);
+  const sorts = SORTS.filter(([, , , show]) => show(base));
+  const sortWord = (sorts.find(([k]) => k === st.sort) || sorts[0])[1];
+  return h('div', { class: 'facets' },
+    fselect('_sort', 'Sort', 'sort', st.sort ? sortWord : '', null, sorts.map(([k, word]) => [k || '_default', word, null, null]),
+      (v) => { st.sort = v === '_default' ? '' : v; }),
+    list.map(([k, vals]) => {
+      const here = base.filter((r) => facetOk(r, k));  // counts as they would be with this filter changed
+      const cur = st.facets[k] || '';
+      return fselect(k, k, FACET_IC[k] || 'target', cur, cur ? valueGlyph(k, cur) : null,
+        [['', 'All', null, here.length], ...vals.map(([v]) => {
+          const n = here.filter((r) => [].concat(facetsOf(r)[k] || []).includes(v)).length;
+          return [v, v, valueGlyph(k, v), n, !n && cur !== v];
+        })],
+        (v) => { st.facets = { ...st.facets, [k]: v }; });
+    }),
+    Object.values(st.facets).some(Boolean) || st.sort ? h('button', { type: 'button', class: 'fclear',
+      onclick: () => { st.facets = {}; st.sort = ''; st.openFacet = ''; st.shown = { ...STEP }; renderList(); refreshFacets(); } }, ic('x'), 'Clear') : null);
 }
+document.addEventListener('click', () => { if (st.openFacet) { st.openFacet = ''; refreshFacets(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && st.openFacet) { st.openFacet = ''; refreshFacets(); } });
 function refreshFacets() {
   const old = document.querySelector('.facets');
   const nu = facetBar();
