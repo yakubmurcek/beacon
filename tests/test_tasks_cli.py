@@ -215,3 +215,14 @@ class TasksCliTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SameQuestionTest(unittest.TestCase):
+    def test_the_recommended_mark_on_a_chat_button_still_matches_the_card(self):
+        # 2026-11-24: the card said "Build it", the chat buttons "Build it (Recommended)", and he answered twice
+        cli = load_cli()
+        card = {'question': 'Build the twice-daily relevance check for cards and tasks?',
+                'options': [{'label': 'Build it'}, {'label': 'Cards only'}]}
+        self.assertTrue(cli.same_question(card, 'Build the twice-daily relevance check? A cheap model reads each card.',
+                                          ['Build it (Recommended)', 'Cards only']))
+        self.assertFalse(cli.same_question(card, 'Something else?', ['Build it (Recommended)', 'Tasks only']))

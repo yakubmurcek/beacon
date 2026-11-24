@@ -1552,12 +1552,21 @@ GENERIC = {'yes', 'no', 'ano', 'ne', 'ok', 'go ahead', 'do it', 'udělej to', 'n
            'hotovo', 'cancel', 'approve', 'keep', 'stop', 'try again', 'not needed'}
 
 
+RECOMMENDED = re.compile(r'\s*\((recommended|doporučeno|doporučuji)\)\s*$', re.I)
+
+
+def label_key(label):
+    """A button label as matched: the "(Recommended)" mark the chat buttons add to the first option is not part of it
+    (2026-11-24: "Build it" on the card and "Build it (Recommended)" in the chat made two cards for one question)."""
+    return norm(RECOMMENDED.sub('', str(label or '')))
+
+
 def same_question(q, ask, labels):
     """The box shows question q: the same buttons, when they say what they do ("Finish it" / "Stop at what is
     done", in any language of the question). Buttons any question has (Yes / No) also need the question's words:
     "Merge PR #12?" and "Deploy to prod?" both offer Yes / No, and a tap on one must never answer the other."""
-    want = sorted(norm(x) for x in labels)
-    if not want or sorted(norm(x) for x in option_labels(q)) != want:
+    want = sorted(label_key(x) for x in labels)
+    if not want or sorted(label_key(x) for x in option_labels(q)) != want:
         return False
     if not all(x in GENERIC for x in want):
         return True
