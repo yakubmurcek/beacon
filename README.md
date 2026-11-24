@@ -63,8 +63,8 @@ The strict rules arrived after 36k lines were written, so the old findings are h
 than fixed in one big rewrite: 2,696 findings across 63 rules on day one, 2,286 across 62 by the evening.
 The same day's refactors, each proven byte-for-byte on a copy of the live database or pinned by a test first:
 `do_GET` became a route table (complexity 79 → 17), `AIJobs.build` named steps (114 → 17), `aggregate` a
-`Period` accumulator (58 → under 15), `Questions.create` validate-then-write (56 → 19), the task agent's
-`finish` five steps (71 → 15). Errors go through `logging`; broad excepts are narrowed where the failure is
+`Period` accumulator (58 → 24 at most per step), `Questions.create` validate-then-write (56 → 19), the task agent's
+`finish` five steps (71 → 29). Errors go through `logging`; broad excepts are narrowed where the failure is
 known and log why where they stay. The biggest debts left: `client/tasks`' `main` (187), the collectors'
 `collect_claude` / `collect_opencode` (~65), `Machines.machine` (64). Each fix lowers the baseline for good.
 
