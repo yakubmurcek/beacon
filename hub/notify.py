@@ -22,16 +22,18 @@ POST /api/notify            {level, title, body, link, source, key, every}  -> t
 POST /api/notify/read       {ids: [...]} or {all: true}
 """
 import json
+import logging
 import os
 import shutil
 import subprocess
 import threading
 import time
-import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from settings import TIMEZONE
+
+log = logging.getLogger('beacon.notify')
 
 LEVELS = ('urgent', 'normal', 'inbox')
 DAY_CAP = 8            # pushes a day, both levels together: "not a notification every 5 minutes"
@@ -241,7 +243,7 @@ class Notify:
         try:
             return self.send(kind, title, body, link)
         except Exception as e:  # a channel down must never take the hub with it; tried again next pass
-            traceback.print_exc()
+            log.exception('sending a %s notice failed', kind)
             return False, 'error', str(e)[:200]
 
     def watch(self, every=60):
@@ -251,7 +253,7 @@ class Notify:
                 try:
                     self.flush()
                 except Exception:
-                    traceback.print_exc()
+                    log.exception('a notice flush failed')
         threading.Thread(target=loop, daemon=True, name='notify').start()
 
     # ------------------------------------------------------------ the inbox page
