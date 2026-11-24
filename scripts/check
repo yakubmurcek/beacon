@@ -17,13 +17,19 @@ python3 scripts/ratchet.py
 step "copy-paste (jscpd, .jscpd.json)"
 npx -y jscpd@4.0.5 --config .jscpd.json . >/dev/null || { npx -y jscpd@4.0.5 --config .jscpd.json --reporters consoleFull .; exit 1; }
 
-step "tests were not weakened"
+step "the checks themselves were not loosened"
+# What an agent stuck on a red check is tempted to do instead of fixing the code. Each needs a commit
+# line `Quality-exception: <why>` in this change, so the reason is on record for the owner.
 if git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
-  deleted=$(git diff --diff-filter=D --name-only "$BASE" -- tests/)
-  skipped=$(git diff "$BASE" -- tests/ | grep -E '^\+.*(unittest\.skip|skipTest\(|expectedFailure)' || true)
-  if [ -n "$deleted$skipped" ]; then
-    echo "A change deletes or skips tests. Fix the code instead, or explain it to the owner first:"
-    printf '%s\n' "$deleted" "$skipped"
+  problems=()
+  [ -n "$(git diff --diff-filter=D --name-only "$BASE" -- tests/)" ] && problems+=("deletes a test file")
+  git diff "$BASE" -- tests/ | grep -qE '^\+.*(unittest\.skip|skipTest\(|expectedFailure)' && problems+=("skips a test")
+  git diff "$BASE" -- . ':!scripts/check' | grep -qE '^\+.*(# *noqa|biome-ignore|# *type: *ignore)' && problems+=("adds a lint suppression")
+  [ -n "$(git diff --name-only "$BASE" -- ruff.toml ruff.strict.toml biome.json .jscpd.json scripts/ratchet.py scripts/check .githooks)" ] \
+    && problems+=("changes a check's configuration")
+  python3 scripts/ratchet.py --raised-since "$BASE" || problems+=("raises a count in quality-baseline.json")
+  if [ ${#problems[@]} -gt 0 ] && ! git log --format=%B "$BASE..HEAD" 2>/dev/null | grep -q '^Quality-exception: .\+'; then
+    printf 'This change %s.\nFix the code instead, or add a commit line "Quality-exception: <why>".\n' "$(IFS=,; echo "${problems[*]}")"
     exit 1
   fi
 fi
@@ -31,7 +37,6 @@ fi
 if [ "$FAST" = "--fast" ]; then printf '\n✓ fast check passed (CI runs the tests)\n'; exit 0; fi
 
 step "tests"
-python3 -m unittest discover -s tests -q 2>&1 | tail -3
-test "${PIPESTATUS[0]}" -eq 0
+python3 -m unittest discover -s tests -q
 
 printf '\n✓ check passed\n'

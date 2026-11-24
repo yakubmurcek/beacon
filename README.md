@@ -51,7 +51,7 @@ git config core.hooksPath .githooks # once per clone: every push runs `scripts/c
 | Lint | `ruff check` (`ruff.toml`) | zero findings: syntax errors, undefined and unused names |
 | Quality ratchet | `scripts/ratchet.py`: ruff with `ruff.strict.toml` (complexity 15, size limits, bugbear, security, imports, modern syntax) and Biome on `web/` (`biome.json`) | new code meets the strict rules; old code may not get worse. Findings are counted per rule in `quality-baseline.json`; a fix lowers the count with `scripts/ratchet.py --update`, nothing ever raises it |
 | Copy-paste | `jscpd` (`.jscpd.json`) | under 1% duplicated lines (0.27% on 2026-11-24) |
-| Tests not weakened | git diff against `origin/main` | a change may not delete test files or add skips |
+| Checks not loosened | git diff against `origin/main` | a change may not delete or skip tests, add `noqa` / `biome-ignore` / `type: ignore`, edit a check's config or raise the baseline, unless a commit line `Quality-exception: <why>` puts the reason on record |
 | Tests | `python3 -m unittest discover -s tests` | runs on `config.example.json` only |
 
 CI runs the same `scripts/check` on every push and pull request (`.github/workflows/ci.yml`); Dependabot keeps

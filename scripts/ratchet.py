@@ -98,11 +98,23 @@ def compare(found: Findings, baseline: dict[str, int]) -> tuple[list[str], dict[
     return worse, {rule: n for rule, n in lowered.items() if n}
 
 
+def baseline_raised(rev: str) -> bool:
+    """Whether quality-baseline.json allows more of any rule than it did at `rev`."""
+    old = subprocess.run(["git", "-C", str(ROOT), "show", f"{rev}:{BASELINE.name}"], capture_output=True, text=True, check=False)
+    if old.returncode:
+        return False  # no baseline at that commit yet: nothing to compare
+    before = json.loads(old.stdout)
+    return any(n > before.get(rule, 0) for rule, n in json.loads(BASELINE.read_text()).items())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--update", action="store_true", help="write lowered counts back (never raises one)")
     parser.add_argument("--init", action="store_true", help="write today's counts as the first baseline")
+    parser.add_argument("--raised-since", metavar="REV", help="only report whether the baseline file went up since REV")
     args = parser.parse_args()
+    if args.raised_since:
+        return 1 if baseline_raised(args.raised_since) else 0
 
     found = ruff_findings() | biome_findings()
     if args.init:
