@@ -161,6 +161,9 @@ def allowed(t):
 # A move he tapped on a Beacon page (a lead's 'Write the draft'…): his own go-ahead for that one task, so it goes
 # first and runs even while the agent is paused (the pause stops agents working on their own; 2026-11-24).
 TAPPED = re.compile(r'^Beacon move: \S+$', re.M)
+# TASK_AGENT_TAPPED=1: an instance that works only those (task-agent-moves on the home server, its own state and lock),
+# so a tap never waits behind, or depends on, the scoped game agent.
+TAPPED_ONLY = os.environ.get('TASK_AGENT_TAPPED') == '1'
 
 
 def tapped(t):
@@ -2253,7 +2256,7 @@ def run(a):
     if not a.dry_run and not a.id and ONLY:
         step('stale reports', stale_reports)
         step('weekly summary', weekly)
-    if not a.dry_run and not a.id and not ONLY:
+    if not a.dry_run and not a.id and not ONLY and not TAPPED_ONLY:
         step('PR sync', sync_prs)
         if not paused():  # paused: nothing routed, and only a move he tapped is worked
             for t in step('routing', to_route) or []:
@@ -2271,7 +2274,7 @@ def run(a):
                 step('cap notice', cap_notice)
             return 0  # the day's runs are used up; the queue waits
     ready = queue()
-    if paused() and not a.id and not ONLY:
+    if (paused() or TAPPED_ONLY) and not a.id and not ONLY:
         ready = [t for t in ready if tapped(t)]
     if a.id:
         ready = [t for t in ready if t['id'] == a.id]

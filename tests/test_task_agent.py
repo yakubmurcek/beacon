@@ -530,6 +530,16 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         self.assertNotEqual(self.tasks.get(tap['id'])['status'], 'todo')
         self.assertEqual([t['title'] for t in self.agent.queue() if self.agent.tapped(t)], [])  # the fake needs his tag, not 'auto'
 
+    def test_the_moves_instance_works_only_tapped_moves(self):
+        self.agent.TAPPED_ONLY = True
+        self.hand('Fix login', 'pr')
+        self.assertEqual(self.agent.main([]), 0)
+        self.assertFalse(os.path.exists(self.seen))  # not tapped: left for the main agent
+        self.assertFalse(os.path.exists(self.seen + '.route'))  # and nothing routed
+        self.hand('Write the draft', 'close', body='Beacon move: draft')
+        self.assertEqual(self.agent.main([]), 0)
+        self.assertTrue(os.path.exists(self.seen))
+
     def test_paused_it_neither_routes_nor_works_but_still_tidies(self):
         self.assertEqual(self.agent.main(['pause']), 0)
         new = self.tasks.create({'title': 'Renew the domain'})
