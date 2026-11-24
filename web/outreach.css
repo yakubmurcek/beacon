@@ -57,6 +57,20 @@
 .filters input[type=search] { flex: 1 1 240px; min-width: 0; max-width: 360px; font: 500 15px var(--sans); padding: 8px 16px;
   border-radius: var(--r-pill); border: 1px solid var(--line); background: var(--panel); color: var(--text); }
 
+.facets { display: grid; gap: 8px; padding: 12px 14px; border-radius: var(--r-xl); border: 1px solid var(--line); background: var(--panel); }
+.facet { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 8px; align-items: start; }
+.facet .fk { display: inline-flex; align-items: center; gap: 6px; padding-top: 7px; font: 700 12px/1 var(--sans); color: var(--muted); }
+.facet .fk .ic { width: 15px; height: 15px; color: var(--accent-ink); }
+.facet .fv { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.facet .chip { padding: 6px 12px; font-size: 13px; cursor: pointer; }
+.facet .chip b { font-weight: 700; font-variant-numeric: tabular-nums; opacity: .7; }
+@media (max-width: 560px) {
+  .facet { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .facet .fk { padding-top: 0; }
+  .facet .fv { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .facet .chip { flex: none; }
+}
+
 .leads { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
 .lead { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px 12px; border-radius: var(--r-xl); border: 1px solid var(--line);
   background: var(--panel); min-width: 0; }

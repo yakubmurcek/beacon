@@ -69,7 +69,7 @@ const KIND = { research: 'Research', plan: 'Plan', draft: 'Draft', notes: 'Notes
 const PCOL = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#4a3aa7', '#008300', '#e34948', '#0e8a96', '#9a6b2f'];
 
 let data = null;
-const st = { view: 'leads', project: '', q: '', status: '', lead: '', shown: { ...STEP }, allChips: false };
+const st = { view: 'leads', project: '', q: '', status: '', lead: '', facets: {}, shown: { ...STEP }, allChips: false };
 const CHIPS = 8;  // project chips shown before "+ N more"
 
 const fmtDate = (d) => {
@@ -95,11 +95,14 @@ function readHash() {
   st.project = p.get('p') || '';
   st.status = p.get('s') || '';
   st.lead = p.get('l') || '';
+  st.facets = Object.fromEntries((p.get('f') || '').split('|').filter(Boolean).map((x) => x.split('~')));
 }
 function writeHash() {
   const p = new URLSearchParams();
   if (st.project) p.set('p', st.project);
   if (st.status) p.set('s', st.status);
+  const f = Object.entries(st.facets).filter(([, v]) => v).map(([k, v]) => k + '~' + v).join('|');
+  if (f) p.set('f', f);
   if (st.lead) p.set('l', st.lead);
   const h = '#' + st.view + (p.toString() ? '?' + p : '');
   if (location.hash !== h) history.replaceState(null, '', h);
@@ -131,7 +134,7 @@ function chips(items, current, onpick, total) {
 
 function search(placeholder) {
   const inp = h('input', { type: 'search', id: 'q', placeholder, value: st.q, autocomplete: 'off', 'aria-label': placeholder });
-  inp.addEventListener('input', () => { st.q = inp.value; st.shown = { ...STEP }; renderList(); });
+  inp.addEventListener('input', () => { st.q = inp.value; st.shown = { ...STEP }; renderList(); if (st.view === 'leads') refreshFacets(); });
   return inp;
 }
 
@@ -144,13 +147,60 @@ function more(total, key) {
 // ------------------------------------------------------------ leads
 
 const SRANK = Object.fromEntries(STATUS.map(([k], i) => [k, i]));
-function leadRows() {
+// filters: what a list's reader tags each lead with (r.facets), plus chance, type and town where they split the group
+const FACET_IC = { Where: 'pin', Field: 'briefcase', 'Open role': 'briefcase', Chance: 'target', Type: 'building', Town: 'pin' };
+function facetsOf(r) {
+  const f = { ...(r.facets || {}) };
+  if (r.chance && !f.Chance) f.Chance = [(CHANCE[r.chance] || [r.chance])[0] + ' chance'];
+  if (r.segment && !f.Type) f.Type = [r.segment];
+  const town = (r.town || '').split(/[·,]/)[0].trim();
+  if (town && !f.Where && !f.Town) f.Town = [town];
+  return f;
+}
+function facetList(rows) {  // [name, [[value, count]...]] for filters that split these rows into 2-14 useful parts
+  const out = {};
+  for (const r of rows) for (const [k, vs] of Object.entries(facetsOf(r))) for (const v of [].concat(vs)) {
+    out[k] = out[k] || {};
+    out[k][v] = (out[k][v] || 0) + 1;
+  }
+  return Object.entries(out).map(([k, m]) => [k, Object.entries(m).sort((a, b) => b[1] - a[1])])
+    .filter(([k, vals]) => st.facets[k] || (vals.length >= 2 && vals.length <= 14 && vals[0][1] < rows.length));
+}
+const facetOk = (r, skip) => Object.entries(st.facets).every(([k, v]) => k === skip || !v || [].concat(facetsOf(r)[k] || []).includes(v));
+
+function baseRows() {
   const q = norm(st.q).trim();
-  const rows = data.leads.filter((r) => (!st.project || r.project === st.project) && (!st.status || r.status === st.status) &&
+  return data.leads.filter((r) => (!st.project || r.project === st.project) && (!st.status || r.status === st.status) &&
     (!q || norm([r.name, r.town, r.segment, r.know, r.next].join(' ')).includes(q)));
+}
+function leadRows() {
+  const rows = baseRows().filter((r) => facetOk(r));
   // one group: the threads in motion first (a sent or drafted one above the not-yet-contacted), newest first within
   if (st.project) rows.sort((a, b) => (SRANK[a.status] ?? 99) - (SRANK[b.status] ?? 99) || (b.touched || '').localeCompare(a.touched || ''));
   return rows;
+}
+
+function facetBar() {
+  const base = baseRows();
+  const list = facetList(base);
+  if (!list.length) return null;
+  return h('div', { class: 'facets' }, list.map(([k, vals]) => {
+    const here = base.filter((r) => facetOk(r, k));  // counts as they would be with this filter changed
+    return h('div', { class: 'facet' },
+      h('span', { class: 'fk' }, ic(FACET_IC[k] || 'target'), k),
+      h('div', { class: 'fv' }, vals.map(([v]) => {
+        const n = here.filter((r) => [].concat(facetsOf(r)[k] || []).includes(v)).length;
+        return h('button', { type: 'button', class: 'chip' + (st.facets[k] === v ? ' on' : ''), disabled: !n && st.facets[k] !== v,
+          onclick: () => { st.facets = { ...st.facets, [k]: st.facets[k] === v ? '' : v }; st.shown = { ...STEP }; renderList(); refreshFacets(); } },
+          v, ' ', h('b', null, String(n)));
+      })));
+  }));
+}
+function refreshFacets() {
+  const old = document.querySelector('.facets');
+  const nu = facetBar();
+  if (old && nu) old.replaceWith(nu);
+  writeHash();
 }
 
 function leadCard(r) {
@@ -283,7 +333,7 @@ function projectCards() {
     const rows = data.leads.filter((r) => r.project === p.id);
     const moving = rows.filter((r) => !['not contacted', 'dropped', 'rejected'].includes(r.status)).length;
     return h('button', { type: 'button', class: 'pcard' + (st.project === p.id ? ' on' : ''), style: `--c:${pcolor(p.id)}`,
-      onclick: () => { st.project = st.project === p.id ? '' : p.id; st.status = ''; st.shown = { ...STEP }; render(); } },
+      onclick: () => { st.project = st.project === p.id ? '' : p.id; st.status = ''; st.facets = {}; st.shown = { ...STEP }; render(); } },
       h('span', { class: 'pn' }, p.name),
       h('span', { class: 'big' }, String(p.leads)),
       statusBar(rows),
@@ -315,8 +365,9 @@ function renderLeads(v) {
     projectCards(),
     h('div', { class: 'filters' },
       chips(data.projects.filter((p) => p.leads).map((p) => [p.id, p.leads]), st.project,
-        (id) => { st.project = id; st.status = ''; st.shown = { ...STEP }; render(); }, all.length),
+        (id) => { st.project = id; st.status = ''; st.facets = {}; st.shown = { ...STEP }; render(); }, all.length),
       search('Search a name, town, what we know…')),
+    facetBar() || h('div', { class: 'facets', hidden: true }),
     h('div', { id: 'list' }));
   renderList();
 }
