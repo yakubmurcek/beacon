@@ -106,6 +106,136 @@ def epoch(iso):
         return None
 
 
+def is_gone(r, newest):
+    """A job listed before and missing from the newest scan: disabled, deleted or broken. An app's updater replaced
+    on update or a package timer renamed (own = 0) is not news."""
+    return r['last_seen'] < newest - 60 and r['kind'] in ('timer', 'daemon', 'launchd', 'schtask') and r['own'] != 0
+
+
+def gone_job(jid, r):
+    return {'id': jid, 'name': r['name'], 'kind': r['kind'], 'desc': None, 'state': None,
+            'status': 'gone', 'last_run': None, 'next_run': None, 'code': None,
+            'alarm': False, 'alarm_failed': False, 'own': True, 'bad_since': r['last_seen'],
+            'why': 'no longer running on this machine' if r['kind'] == 'daemon'
+            else 'no longer scheduled on this machine'}
+
+
+def worth_listing(m, now):
+    """Shown on the page: it reports, must always be on, or tailscale saw it in the last 60 days."""
+    ts = m['tailscale']
+    return m['seen_at'] or m['always_on'] or (ts and (ts['online'] or (ts['last_seen'] or 0) > now - 60 * 86400))
+
+
+def add_drift(m, extra):
+    m['drift'] += extra
+    m['problems'] += [d['text'] for d in extra]
+    if extra and m['state'] == 'ok':
+        m['state'] = 'warn'
+
+
+def overdue_why(j, jobs_at, always):
+    """Why a job counts as overdue though its own state says otherwise, else None."""
+    state, nxt = j.get('state'), j.get('next_run')
+    if not jobs_at:
+        return None
+    late = OVERDUE_SEC if always else 2 * 3600  # a PC that just woke catches up its missed runs first
+    if state in ('ok', 'never') and nxt and nxt < jobs_at - late:
+        return j.get('why') or 'its scheduled run did not start'
+    if state == 'running' and j.get('kind') == 'timer' and j.get('started') and jobs_at - j['started'] > HUNG_SEC:
+        return f"one run has been going for {round((jobs_at - j['started']) / 3600)} h: hung?"  # it blocks every later run
+    return None
+
+
+def offline_alarm(m, now):
+    """(text, since, ready) for an always-on machine that is not online."""
+    name, ts = m['machine'], m['tailscale'] or {}
+    since = m['seen_at'] or ts.get('last_seen') or now
+    hours = (now - since) / 3600
+    ago = f'{round(hours)} h' if hours >= 1.5 else f'{round(hours * 60)} min'
+    what = 'stopped reporting' if m['seen_at'] else 'is offline'
+    ready = now - since >= (SILENT_SEC if m['seen_at'] else TS_OFFLINE_SEC)
+    return f'🔴 {name} {what} ({ago})\n👉 reply here: check {name}\n{m["role"] or ""}'.rstrip(), since, ready
+
+
+def online_alarms(m, now):
+    """{key: (text, since, ready)} for an online machine: a stopped job scan, outdated copies, its own broken jobs."""
+    name = m['machine']
+    out = {}
+    stale = [p for p in m['problems'] if p.startswith('its job list stopped')]
+    if stale and m['always_on']:
+        out[f'machine:{name}:scan'] = (f'🔴 {name}: {stale[0]}\n👉 reply here: fix the job scan on {name}', now, True)
+    for d in m.get('drift') or []:  # an outdated copy (hub/freshness.py): its grace is already spent
+        out[d['key']] = (f"🔴 {name}: {d['text']}\n👉 reply here: update {d['name']} on {name}", d.get('since') or now, True)
+    for j in m['jobs']:
+        if j['status'] in ('failed', 'overdue', 'gone') and j.get('own', True):  # a package's job is shown, never alarmed
+            out.update([job_alarm(name, j, now)])
+    return out
+
+
+def job_alarm(name, j, now):
+    """(key, (text, since, ready)) for one of his jobs that failed, is overdue or is gone.
+    No trust in the job's own OnFailure alarm: unit-alarm exits 0 when it skips a send, and a crash loop never
+    fires it. A second, quiet line a day beats a silent miss."""
+    ready = j['status'] != 'failed' or now - (j['bad_since'] or now) >= FAIL_GRACE_SEC
+    # A one-off run that failed (a training job, nothing scheduled after it) is told once, out loud.
+    once = j['status'] == 'failed' and j.get('kind') == 'schtask' and not j.get('next_run')
+    key = f'job:{name}:{j["id"]}' + (':gone' if j['status'] == 'gone' else ':once' if once else '')
+    text = f'🔴 {name}: {problem_text(j)}\n👉 reply here: fix {j["name"]} on {name}' + (f'\n{j["why"]}' if j.get('why') else '')
+    return key, (text, j['bad_since'] or now, ready)
+
+
+def is_fixed(key, r, listed, online):
+    """Whether a told problem (alarm row r) is fixed: True, False, or None when its job is gone from the list.
+    A machine or an outdated copy is fixed once the machine is online without it; a job only by a good run after it
+    broke, not by a scan that caught it running or a reboot that made systemd forget the failure. A machine that is
+    asleep is neither broken nor fixed."""
+    kind, machine = key.split(':')[:2]
+    if kind in ('machine', 'drift'):
+        return machine in online
+    if machine not in online:
+        return False
+    j = listed.get((machine, key[len(f'job:{machine}:'):].removesuffix(':gone')))
+    if not j:
+        return None
+    return j['status'] == 'ok' and (j.get('last_run') or 0) > (r['first_bad'] or 0)
+
+
+def presence(host, pushed, ts, now):
+    """(seen_at, online): a machine that reports is online while it does; one that never did, while tailscale sees it."""
+    seen_at = max(pushed or 0, host['seen_at'] if host else 0) or None
+    if host or pushed:
+        return seen_at, bool(seen_at and now - seen_at <= SILENT_SEC)
+    return seen_at, bool(ts and ts['online'])
+
+
+def stale_scan(seen, now):
+    """The problem line when its job scan stopped (hub time of the last scan, so no clock skew), else None."""
+    scanned = max((r['last_seen'] for r in seen.values()), default=None)
+    if scanned and now - scanned > STALE_SCAN_SEC:
+        return f'its job list stopped updating {round((now - scanned) / 60)} min ago'
+    return None
+
+
+def disk_problems(stats):
+    out = []
+    for d in (stats or {}).get('disks') or []:
+        if d.get('size') and d['free'] / d['size'] < 0.1:
+            out.append(f"disk {d['mount']} {round(100 - 100 * d['free'] / d['size'])}% full")
+    return out
+
+
+def machine_state(m, mine, reported, now):
+    """ok / warn / bad for a machine that is online; an always-on one that isn't is bad (and says why first);
+    any other is asleep while tailscale sees it or it reported in the last three days."""
+    if m['online']:
+        return 'bad' if any(j['status'] == 'failed' for j in mine) else 'warn' if m['problems'] else 'ok'
+    if m['always_on']:
+        m['problems'].insert(0, 'offline' if not reported else 'stopped reporting')
+        return 'bad'
+    ts, seen_at = m['tailscale'], m['seen_at']
+    return 'asleep' if (ts and ts['online']) or (seen_at and now - seen_at < 3 * 86400) else 'offline'
+
+
 class Machines:
     def __init__(self, store, alarms=None):
         self.store = store
@@ -200,6 +330,20 @@ class Machines:
 
     def view(self, now=None):
         now = now or time.time()
+        hosts, seen, pushes, deaf = self._reports(now)
+        ts = self.tailscale()
+        names = set(hosts) | set(ts) | {n for n, (_, always) in ROLES.items() if always}
+        out = [self.machine(n, hosts.get(n), seen.get(n, {}), pushes.get(n), ts.get(n), now) for n in names]
+        out = [m for m in out if worth_listing(m, now)]
+        lag = self._lag(out, now)
+        for m in out:  # outdated copies the per-machine view can't see alone: tool versions, dead hooks
+            if m['online']:
+                add_drift(m, lag.get(m['machine'], []) + ([deaf[m['machine']]] if m['machine'] in deaf else []))
+        out.sort(key=lambda m: (STATE_ORDER[m['state']], not m['always_on'], m['machine']))
+        return {'now': now, 'machines': out}
+
+    def _reports(self, now):
+        """What the collectors sent: host blocks, the jobs each scan listed lately, live pushes, dead session hooks."""
         with self.store.connect() as con:
             hosts = {r['machine']: r for r in con.execute('SELECT * FROM hosts')}
             seen = {}
@@ -207,96 +351,82 @@ class Machines:
                 seen.setdefault(r['machine'], {})[r['job_id']] = r
             pushes = {r['machine']: r['seen_at'] for r in con.execute('SELECT machine, seen_at FROM live')}
             deaf = freshness.deaf_hooks(con, now)
-        ts = self.tailscale()
-        names = set(hosts) | set(ts) | {n for n, (_, always) in ROLES.items() if always}
-        out = [self.machine(n, hosts.get(n), seen.get(n, {}), pushes.get(n), ts.get(n), now) for n in names]
-        out = [m for m in out if m['seen_at'] or m['always_on'] or m['tailscale'] and (m['tailscale']['online'] or
-               (m['tailscale']['last_seen'] or 0) > now - 60 * 86400)]
-        lag = freshness.version_lag(out)
+        return hosts, seen, pushes, deaf
+
+    def _lag(self, machines, now):
+        """{machine: [problem]}: tools behind another machine's copy, and the hub's own blind spot."""
+        lag = freshness.version_lag(machines)
         blind = sorted(k for k, since in self.sources.failing.items() if now - since > 3600)
         if blind:  # the watcher's own blind spot: a source it can't read checks nothing
-            lag.setdefault(HUB_MACHINE, []).append({'key': f'drift:{HUB_MACHINE}:sources', 'since': None, 'name': 'GitHub login',
-                                                    'text': f"can't read the source of {', '.join(blind)} to spot outdated copies"})
-        for m in out:  # outdated copies the per-machine view can't see alone: tool versions, dead hooks
-            if not m['online']:
-                continue
-            extra = lag.get(m['machine'], []) + ([deaf[m['machine']]] if m['machine'] in deaf else [])
-            m['drift'] += extra
-            m['problems'] += [d['text'] for d in extra]
-            if extra and m['state'] == 'ok':
-                m['state'] = 'warn'
-        out.sort(key=lambda m: (STATE_ORDER[m['state']], not m['always_on'], m['machine']))
-        return {'now': now, 'machines': out}
+            lag.setdefault(HUB_MACHINE, []).append({
+                'key': f'drift:{HUB_MACHINE}:sources', 'since': None, 'name': 'GitHub login',
+                'text': f"can't read the source of {', '.join(blind)} to spot outdated copies"})
+        return lag
 
     def machine(self, name, host, seen, pushed, ts, now):
         role, always = ROLES.get(name, (None, False))
         data = json.loads(host['data']) if host else {}
-        seen_at = max(pushed or 0, host['seen_at'] if host else 0) or None
-        online = bool(seen_at and now - seen_at <= SILENT_SEC) if host or pushed else bool(ts and ts['online'])
-        stats = data.get('stats') if online and host else None
+        seen_at, online = presence(host, pushed, ts, now)
+        reporting = bool(online and host)  # its own collector's block is fresh: stats, versions and scans count
+        stats = self._stats(name, data, reporting, ts)
+        jobs = self._jobs(data, seen, always)
+        mine = [j for j in jobs if j.get('own', True)]  # a package's broken timer is listed, not his problem
+        drift = self._drift(name, data, now) if reporting else []
+        problems = [problem_text(j) for j in mine if j['status'] in ('failed', 'overdue', 'gone')]
+        problems += disk_problems(stats) + [d['text'] for d in drift]
+        stale = stale_scan(seen, now) if reporting else None
+        if stale:
+            problems.insert(0, stale)
+        m = {'machine': name, 'role': role, 'always_on': always, 'state': None, 'online': online,
+             'seen_at': seen_at, 'problems': problems, 'drift': drift, 'stats': stats, 'versions': data.get('versions') or {},
+             'tailscale': ts, 'jobs_at': data.get('jobs_at'), 'jobs': jobs,
+             'serve': data.get('serve') if online else None}
+        m['state'] = machine_state(m, mine, bool(host or pushed), now)
+        return m
+
+    def _stats(self, name, data, reporting, ts):
+        """Its collector's stats, or a Pi's from node_exporter when only tailscale sees it."""
+        stats = data.get('stats') if reporting else None
         if stats is None and name in NODE_EXPORTER and ts and ts['online']:
             stats = self.node_exporter(name, NODE_EXPORTER[name])
+        return stats
+
+    def _jobs(self, data, seen, always):
+        """The jobs its last scan listed, plus the ones listed before and missing now."""
         jobs = [self.job(j, seen.get(j['id']), data.get('jobs_at'), always) for j in data.get('jobs') or []
                 if isinstance(j, dict) and j.get('id')]
         listed = {j['id'] for j in jobs}
         newest = max((r['last_seen'] for r in seen.values()), default=0)  # hub time of the last scan: no clock skew
-        for jid, r in seen.items():  # listed before, missing now: disabled, deleted or broken
-            if (jid not in listed and r['last_seen'] < newest - 60 and r['kind'] in ('timer', 'daemon', 'launchd', 'schtask')
-                    and r['own'] != 0):  # an app's updater replaced on update, a package timer renamed: not news
-                jobs.append({'id': jid, 'name': r['name'], 'kind': r['kind'], 'desc': None, 'state': None,
-                             'status': 'gone', 'last_run': None, 'next_run': None, 'code': None,
-                             'alarm': False, 'alarm_failed': False, 'own': True, 'bad_since': r['last_seen'],
-                             'why': 'no longer running on this machine' if r['kind'] == 'daemon'
-                             else 'no longer scheduled on this machine'})
+        jobs += [gone_job(jid, r) for jid, r in seen.items() if jid not in listed and is_gone(r, newest)]
         jobs.sort(key=lambda j: (JOB_ORDER.get(j['status'], 9), j['name'] or ''))
-        mine = [j for j in jobs if j.get('own', True)]  # a package's broken timer is listed, not his problem
-        scanned = max((r['last_seen'] for r in seen.values()), default=None)  # hub time of the last job scan
-        problems = [problem_text(j) for j in mine if j['status'] in ('failed', 'overdue', 'gone')]
-        if stats:
-            for d in stats.get('disks') or []:
-                if d.get('size') and d['free'] / d['size'] < 0.1:
-                    problems.append(f"disk {d['mount']} {round(100 - 100 * d['free'] / d['size'])}% full")
-        lacks = missing_since((data.get('versions') or {}).get('collector'), now) if online and host else None
+        return jobs
+
+    def _drift(self, name, data, now):
+        """Outdated copies a reporting machine runs: its collector itself, then the freshness list."""
         drift = []
+        lacks = missing_since((data.get('versions') or {}).get('collector'), now)
         if lacks and now - lacks > BEHIND_SEC:
             drift.append({'key': f'drift:{name}:collector', 'since': lacks, 'name': 'collector',
                           'text': f'its collector stopped updating {round((now - lacks) / 3600)} h ago'})
-        if online and host:
-            try:
-                drift += freshness.check(name, data.get('fresh'), self.sources, now)
-            except Exception as e:  # noqa: BLE001 - a bad report never breaks the view
-                log.warning('%s: freshness: %s: %s', name, type(e).__name__, e)
-        problems += [d['text'] for d in drift]
-        if online and host and scanned and now - scanned > STALE_SCAN_SEC:
-            problems.insert(0, f'its job list stopped updating {round((now - scanned) / 60)} min ago')
-        if online:
-            state = 'bad' if any(j['status'] == 'failed' for j in mine) else 'warn' if problems else 'ok'
-        elif always:
-            state = 'bad'
-            problems.insert(0, 'offline' if not (host or pushed) else 'stopped reporting')
-        else:
-            state = 'asleep' if (ts and ts['online']) or (seen_at and now - seen_at < 3 * 86400) else 'offline'
-        return {'machine': name, 'role': role, 'always_on': always, 'state': state, 'online': online,
-                'seen_at': seen_at, 'problems': problems, 'drift': drift, 'stats': stats, 'versions': data.get('versions') or {},
-                'tailscale': ts, 'jobs_at': data.get('jobs_at'), 'jobs': jobs,
-                'serve': data.get('serve') if online else None}
+        try:
+            drift += freshness.check(name, data.get('fresh'), self.sources, now)
+        except Exception as e:  # a bad report never breaks the view
+            log.warning('%s: freshness: %s: %s', name, type(e).__name__, e)
+        return drift
 
     def job(self, j, seen, jobs_at, always):
         j = dict(j)
         state = j.get('state')
         status = state if state in JOB_ORDER else 'unknown'
-        nxt = j.get('next_run')
-        late = OVERDUE_SEC if always else 2 * 3600  # a PC that just woke catches up its missed runs first
-        if state in ('ok', 'never') and nxt and jobs_at and nxt < jobs_at - late:
+        why = overdue_why(j, jobs_at, always)
+        if why:
             status = 'overdue'
-            j['why'] = j.get('why') or 'its scheduled run did not start'
-        elif state == 'running' and j.get('kind') == 'timer' and j.get('started') and jobs_at \
-                and jobs_at - j['started'] > HUNG_SEC:  # a hung run also blocks every later one
-            status = 'overdue'
-            j['why'] = f"one run has been going for {round((jobs_at - j['started']) / 3600)} h: hung?"
+            j['why'] = why
         j['status'] = status
-        j['bad_since'] = (seen['bad_since'] if seen and status == 'failed' else
-                          (j.get('started') or nxt) if status == 'overdue' else None)
+        if status == 'failed':
+            j['bad_since'] = seen['bad_since'] if seen else None
+        else:
+            j['bad_since'] = (j.get('started') or j.get('next_run')) if status == 'overdue' else None
         return j
 
     def freshness_for(self, name):
@@ -316,94 +446,62 @@ class Machines:
         now = view['now']
         out = {}
         for m in view['machines']:
-            name = m['machine']
             if m['always_on'] and not m['online']:
-                ts = m['tailscale'] or {}
-                since = m['seen_at'] or ts.get('last_seen') or now
-                hours = (now - since) / 3600
-                ago = f'{round(hours)} h' if hours >= 1.5 else f'{round(hours * 60)} min'
-                what = 'stopped reporting' if m['seen_at'] else 'is offline'
-                ready = now - since >= (SILENT_SEC if m['seen_at'] else TS_OFFLINE_SEC)
-                out[f'machine:{name}'] = (f'🔴 {name} {what} ({ago})\n👉 reply here: check {name}\n'
-                                          f'{m["role"] or ""}'.rstrip(), since, ready)
-                continue
-            if not m['online']:
-                continue
-            stale = [p for p in m['problems'] if p.startswith('its job list stopped')]
-            if stale and m['always_on']:
-                out[f'machine:{name}:scan'] = (f'🔴 {name}: {stale[0]}\n👉 reply here: fix the job scan on {name}',
-                                               now, True)
-            for d in m.get('drift') or []:  # an outdated copy (hub/freshness.py): its grace is already spent
-                out[d['key']] = (f"🔴 {name}: {d['text']}\n👉 reply here: update {d['name']} on {name}",
-                                 d.get('since') or now, True)
-            for j in m['jobs']:
-                if j['status'] not in ('failed', 'overdue', 'gone') or not j.get('own', True):
-                    continue  # a package's or an app's job is shown, never alarmed
-                # No trust in the job's own OnFailure alarm: unit-alarm exits 0 when it skips a send,
-                # and a crash loop never fires it. A second, quiet line a day beats a silent miss.
-                ready = j['status'] != 'failed' or now - (j['bad_since'] or now) >= FAIL_GRACE_SEC
-                # A one-off run that failed (a training job, nothing scheduled after it) is told once, out loud.
-                once = j['status'] == 'failed' and j.get('kind') == 'schtask' and not j.get('next_run')
-                out[f'job:{name}:{j["id"]}' + (':gone' if j['status'] == 'gone' else ':once' if once else '')] = (
-                    f'🔴 {name}: {problem_text(j)}\n👉 reply here: fix {j["name"]} on {name}'
-                    + (f'\n{j["why"]}' if j.get('why') else ''), j['bad_since'] or now, ready)
+                out[f"machine:{m['machine']}"] = offline_alarm(m, now)
+            elif m['online']:
+                out.update(online_alarms(m, now))
         return out
 
     def tick(self, now=None, send=None):
         """One alarm pass: new problems go out (one summary on the very first pass), fixed ones get a quiet 🟢.
         Sends happen outside any DB transaction (telegram-alarm can take a minute), one short write each."""
-        real = send is None
-        send = send or telegram
-        if real:
-            send = self._tracked(send)
+        if send is None:
+            send = self._tracked(telegram)
         view = self.view(now)
         now = view['now']
-        listed = {(m['machine'], j['id']): j for m in view['machines'] for j in m['jobs']}
-        online = {m['machine'] for m in view['machines'] if m['online']}
         with self._lock:
             with self.store.connect() as con:
                 known = {r['key']: dict(r) for r in con.execute('SELECT * FROM alarms')}
             wrong = self.problems(view)
-            if '_baseline' not in known:  # first pass: one summary of all that is already wrong, grace or not
-                # A machine not quiet long enough yet may just not have reported since the hub started.
-                wrong = {k: v for k, v in wrong.items() if v[2] or k.startswith('job:')}
-                lines = [t.split('\n')[0][2:] for _, (t, _, _) in sorted(wrong.items())]
-                text = (f'🟠 {len(lines)} thing{"s" * (len(lines) != 1)} already broken on the machines\n'
-                        '👉 reply here: fix them\n' + '\n'.join('· ' + x for x in lines[:12])) if lines else None
-                if text is None or send(text, '_baseline', quiet=True):
-                    rows = [('_baseline', text, now, now)] + [(k, t, since, now) for k, (t, since, _) in wrong.items()]
-                    self._write(rows)
-                return wrong
-            for k, (t, since, ready) in wrong.items():
-                r = known.get(k)
-                if not ready or r and r['sent_at'] and (now - r['sent_at'] < EVERY_SEC or k.endswith((':gone', ':once'))):
-                    continue  # a vanished job or a failed one-off is told once, not every day
-                if send(t, k, quiet=k.startswith('job:') and not k.endswith(':once')):
-                    self._write([(k, t, r['first_bad'] if r else since, now)])
-            for k, r in known.items():
-                if k == '_baseline' or k in wrong:
-                    continue
-                kind, machine = k.split(':')[:2]
-                if kind == 'machine':
-                    fixed = machine in online
-                elif kind == 'drift':
-                    fixed = machine in online  # online and no longer outdated
-                else:
-                    if machine not in online:
-                        continue  # asleep: neither broken nor fixed while it sleeps
-                    jid = k[len(f'job:{machine}:'):].removesuffix(':gone')
-                    j = listed.get((machine, jid))
-                    if not j:  # no longer listed and no longer shown as gone: let it go quietly
-                        self._delete(k)
-                        continue
-                    # Fixed means a good run after it broke, not a scan that caught it running or
-                    # a reboot that made systemd forget the failure.
-                    fixed = j['status'] == 'ok' and (j.get('last_run') or 0) > (r['first_bad'] or 0)
-                if fixed:
-                    head = (r['text'] or '').split('\n')[0][2:]
-                    if send(f'🟢 fixed: {head}', k + ':ok', quiet=True):
-                        self._delete(k)
+            if '_baseline' not in known:
+                return self._first_pass(wrong, send, now)
+            self._send_new(wrong, known, send, now)
+            self._send_fixed(view, {k: r for k, r in known.items() if k != '_baseline' and k not in wrong}, send)
         return wrong
+
+    def _first_pass(self, wrong, send, now):
+        """One summary of all that is already wrong, grace or not. A machine not quiet long enough yet may just
+        not have reported since the hub started."""
+        wrong = {k: v for k, v in wrong.items() if v[2] or k.startswith('job:')}
+        lines = [t.split('\n')[0][2:] for _, (t, _, _) in sorted(wrong.items())]
+        text = (f'🟠 {len(lines)} thing{"s" * (len(lines) != 1)} already broken on the machines\n'
+                '👉 reply here: fix them\n' + '\n'.join('· ' + x for x in lines[:12])) if lines else None
+        if text is None or send(text, '_baseline', quiet=True):
+            rows = [('_baseline', text, now, now)] + [(k, t, since, now) for k, (t, since, _) in wrong.items()]
+            self._write(rows)
+        return wrong
+
+    def _send_new(self, wrong, known, send, now):
+        """Problems ready to tell and not told lately; a vanished job or a failed one-off is told once, not every day."""
+        for k, (t, since, ready) in wrong.items():
+            r = known.get(k)
+            if not ready or (r and r['sent_at'] and (now - r['sent_at'] < EVERY_SEC or k.endswith((':gone', ':once')))):
+                continue
+            if send(t, k, quiet=k.startswith('job:') and not k.endswith(':once')):
+                self._write([(k, t, r['first_bad'] if r else since, now)])
+
+    def _send_fixed(self, view, gone, send):
+        """A quiet 🟢 for each told problem that is no longer wrong and really fixed."""
+        listed = {(m['machine'], j['id']): j for m in view['machines'] for j in m['jobs']}
+        online = {m['machine'] for m in view['machines'] if m['online']}
+        for k, r in gone.items():
+            fixed = is_fixed(k, r, listed, online)
+            if fixed is None:  # no longer listed and no longer shown as gone: let it go quietly
+                self._delete(k)
+                continue
+            head = (r['text'] or '').split('\n')[0][2:]
+            if fixed and send(f'🟢 fixed: {head}', k + ':ok', quiet=True):
+                self._delete(k)
 
     def _tracked(self, send):
         def wrapped(text, key, quiet=False):
