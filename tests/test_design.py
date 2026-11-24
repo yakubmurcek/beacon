@@ -41,7 +41,8 @@ class DesignSystem(unittest.TestCase):
         # one stray '}' silently drops the next rule (2026-11-24: the lead grid fell to one column)
         for path in sorted(glob.glob(os.path.join(WEB, '*.css'))):
             depth = 0
-            text = re.sub(r'/\*.*?\*/', '', open(path, encoding='utf8').read(), flags=re.S)
+            with open(path, encoding='utf8') as f:
+                text = re.sub(r'/\*.*?\*/', '', f.read(), flags=re.S)
             for n, line in enumerate(text.split('\n'), 1):
                 for ch in line:
                     depth += {'{': 1, '}': -1}.get(ch, 0)
