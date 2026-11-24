@@ -28,6 +28,7 @@ class OutreachTest(unittest.TestCase):
         write(b, REF + "lists/gyms.tsv", "name\ttown\ttier\nRiver Gym\tRivertown\tSKIP\nFit Life\tRivertown\tWALK\n")
         write(b, REF + "outreach/sources.py", (  # the brain's own reader for its own list format
             "LABELS = {'gyms': 'Gyms', 'river-gym': 'River Gym'}\n"
+            "FEEDS = {'gyms': [{'job': 'gym-scan', 'what': 'Finds new gyms'}, {'job': 'not-installed', 'what': 'Gone'}]}\n"
             "WATCHED = ['knowledge/reference/lists/gyms.tsv']\n"
             "def readers(o):\n"
             "    def gyms():\n"
@@ -112,6 +113,16 @@ class OutreachTest(unittest.TestCase):
         o = Outreach(self.brain, self.projects, questions=Cards())
         self.assertEqual(o.view()["waiting"], [{'id': 7, 'project': 'gyms', 'question': 'Send the 5 mails?'}])
         self.assertEqual(self.o.view()["waiting"], [])  # no card store: nothing waits
+
+    def test_a_list_shows_the_jobs_that_keep_it_fresh(self):
+        class Machines:
+            def view(self):
+                return {'machines': [{'machine': 'box', 'jobs': [{'name': 'gym-scan', 'status': 'ok', 'last_run': 10, 'next_run': 20, 'code': 0}]}]}
+        feeds = Outreach(self.brain, self.projects, machines=Machines()).view()['feeds']
+        self.assertEqual(feeds[0], {'project': 'gyms', 'job': 'gym-scan', 'what': 'Finds new gyms', 'machine': 'box',
+                                    'status': 'ok', 'last_run': 10, 'next_run': 20, 'code': 0})
+        self.assertEqual(feeds[1]['status'], 'unknown')  # declared but not on any machine: shown as unknown, not hidden
+        self.assertEqual([f['status'] for f in self.o.view()['feeds']], ['unknown', 'unknown'])  # no machines view
 
     def test_no_sources_file_still_reads_the_hand_kept_leads(self):
         os.remove(os.path.join(self.brain, REF + "outreach/sources.py"))

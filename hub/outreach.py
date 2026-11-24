@@ -68,7 +68,7 @@ def _lead(**kw):
 
 
 class Outreach:
-    def __init__(self, brain=None, projects=None, questions=None):
+    def __init__(self, brain=None, projects=None, questions=None, machines=None):
         self.brain = os.path.realpath(os.path.expanduser(brain or os.environ.get('OUTREACH_BRAIN') or settings.p('brain')))
         self.projects = os.path.realpath(os.path.expanduser(projects or os.environ.get('OUTREACH_PROJECTS') or settings.p('projects')))
         self.lock = threading.Lock()
@@ -76,6 +76,7 @@ class Outreach:
         self.dates = {}
         self._sources = (None, None)
         self.questions = questions  # the hub's Questions, for the open cards a lead group waits on
+        self.machines = machines  # the hub's Machines, for the jobs that keep a lead group fresh
 
     # ------------------------------------------------------------ sources
 
@@ -255,7 +256,7 @@ class Outreach:
             else:
                 view = self.build()
                 self.cache = (sig, view)
-        return dict(view, waiting=self.waiting({p['id'] for p in view['projects'] if p['leads']}))
+        return dict(view, waiting=self.waiting({p['id'] for p in view['projects'] if p['leads']}), feeds=self.feeds())
 
     def build(self):
         """Every lead, research row and group count, from the sources as they are now."""
@@ -283,6 +284,28 @@ class Outreach:
         projects = [{'id': k, 'name': labels.get(k, k), **v} for k, v in
                     sorted(counts.items(), key=lambda kv: (order.index(kv[0]) if kv[0] in order else 99, kv[0]))]
         return {'projects': projects, 'leads': leads, 'research': research}
+
+    def feeds(self):
+        """The jobs that keep each lead group fresh (sources.py FEEDS: {group: [{job, what}]}), each with its live
+        state from the machines view, so a list shows what updates it and when, not only /machines."""
+        want = getattr(self.sources(), 'FEEDS', None) or {}
+        if not want:
+            return []
+        jobs = {}
+        try:
+            for m in (self.machines.view().get('machines') if self.machines else None) or []:
+                for j in m.get('jobs') or []:
+                    jobs.setdefault(j.get('name'), (m.get('machine'), j))
+        except Exception as e:  # the page never breaks on the machines view
+            print(f'outreach: feeds: {e}', flush=True)
+        out = []
+        for project, rows in want.items():
+            for f in rows:
+                machine, j = jobs.get(f.get('job'), ('', {}))
+                out.append({'project': project, 'job': f.get('job', ''), 'what': f.get('what', ''), 'machine': machine or '',
+                            'status': j.get('status') or ('unknown' if not j else ''), 'last_run': j.get('last_run'),
+                            'next_run': j.get('next_run'), 'code': j.get('code')})
+        return out
 
     def waiting(self, ids):
         """Open decision cards filed under a lead group's project: what that group waits on him for."""

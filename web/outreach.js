@@ -52,6 +52,7 @@ const ICONS = {
   map: '<path d="m3 6 6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/>',
   shapes: '<circle cx="7" cy="7" r="3.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><path d="m7 13.5 4 7H3z"/><circle cx="17" cy="17" r="3.5"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+  refresh: '<path d="M20 11a8 8 0 0 0-14.9-3.9L3 9"/><path d="M3 4v5h5"/><path d="M4 13a8 8 0 0 0 14.9 3.9L21 15"/><path d="M21 20v-5h-5"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 };
 const ic = (name, cls) => h('span', { class: 'ic' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true',
@@ -340,6 +341,7 @@ function openLead(r, quiet) {
         h('span', { class: 'role-t' }, x.text),
         h('span', { class: 'role-m' }, x.field ? h('span', { class: 'fld' }, x.field) : null, x.ai ? aiChip(x.ai) : null, x.fit ? h('span', { class: 'fitm' }, meter(x.fit), 'fit') : null,
           x.live === 'closed' ? h('span', { class: 'adclosed' }, ic('x'), 'Closed' + (x.closed_since ? ' ' + fmtDate(x.closed_since) : '')) : null,
+          x.live === 'open' && x.checked ? h('span', { class: 'checked', title: 'The morning ad check found it still open' }, ic('refresh'), 'Open, checked ' + fmtDate(x.checked)) : null,
           x.posted ? h('span', { class: 'posted' + (postedAge(x.posted) === POSTED[0] ? ' fresh' : ''), title: x.posted }, ic('clock'), 'Posted ' + fmtDate(x.posted)) : null, x.note || ''),
         x.ai_quote ? h('span', { class: 'role-q' }, x.ai_quote) : null,
         x.url ? ic('arrow', 'go') : null))));
@@ -434,6 +436,34 @@ function waitingCards() {  // open decision cards a lead group waits on: the nex
     h('span', { class: 'wp' }, pname(q.project)))));
 }
 
+// the jobs that keep this list fresh, with when they last ran and run next: nothing here updates unseen
+const when = (t, ahead) => {
+  if (!t) return ahead ? 'not scheduled' : 'never seen';
+  const d = new Date(t * 1000), now = new Date();
+  const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const day = Math.round((new Date(d.toDateString()) - new Date(now.toDateString())) / 864e5);
+  const mins = Math.round(Math.abs(now - d) / 6e4);
+  if (mins < 60) return ahead ? `in ${mins} min` : `${mins} min ago`;
+  return day === 0 ? `today ${hm}` : day === 1 ? `tomorrow ${hm}` : day === -1 ? `yesterday ${hm}` : fmtDate(d.toISOString());
+};
+const FEED_WORD = { ok: ['OK', 'var(--good)'], running: ['Running now', 'var(--accent)'], failed: ['Failed', 'var(--bad)'],
+  overdue: ['Overdue', 'var(--warn)'], gone: ['Gone', 'var(--bad)'], never: ['Never ran', 'var(--dim)'], unknown: ['Not seen on any machine', 'var(--dim)'] };
+function feedStrip() {
+  const rows = (data.feeds || []).filter((f) => f.project === st.project);
+  if (!rows.length) return null;
+  const newest = Math.max(...rows.map((f) => f.last_run || 0));
+  return h('section', { class: 'feeds' },
+    h('div', { class: 'feeds-h' }, ic('refresh'), h('b', null, 'Kept fresh by'), newest ? h('span', null, `updated ${when(newest)}`) : null,
+      h('a', { href: '/machines#/jobs' }, 'All jobs', ic('arrow'))),
+    h('div', { class: 'feeds-l' }, rows.map((f) => {
+      const [word, col] = FEED_WORD[f.status] || [f.status || 'Unknown', 'var(--dim)'];
+      return h('a', { class: 'feed', style: `--fc:${col}`, href: f.machine ? `/machines#/m/${encodeURIComponent(f.machine)}` : '/machines#/jobs', title: f.job },
+        h('span', { class: 'feed-t' }, h('i'), f.job.replace(/-/g, ' '), h('em', null, word)),
+        h('span', { class: 'feed-w' }, f.what),
+        h('span', { class: 'feed-r' }, ic('clock'), `Ran ${when(f.last_run)}`, h('span', null, '·'), `next ${when(f.next_run, true)}`));
+    })));
+}
+
 function renderLeads(v) {
   const all = data.leads;
   const moving = all.filter((r) => !['not contacted', 'dropped', 'rejected'].includes(r.status)).length;
@@ -446,6 +476,7 @@ function renderLeads(v) {
         h('div', { class: 'kpi' }, h('span', { class: 'v' }, String(data.projects.filter((p) => p.leads).length)), h('span', { class: 'k' }, 'projects'))),
       h('div', { class: 'stack' }, statusBar(pick, true), legend(pick))),
     waitingCards(),
+    feedStrip(),
     projectCards(),
     h('div', { class: 'filters' },
       chips(data.projects.filter((p) => p.leads).map((p) => [p.id, p.leads]), st.project,

@@ -974,7 +974,7 @@ def main():
     Handler.studio = Studio(Handler.store, Handler.narrator, progress=Handler.progress)
     Handler.machines = Machines(Handler.store)
     Handler.names = Names(Handler.store)
-    Handler.outreach = Outreach(questions=Handler.questions)
+    Handler.outreach = Outreach(questions=Handler.questions, machines=Handler.machines)
     Handler.knowledge = Knowledge()
     Handler.rank = Rank(Handler.store)
     Handler.outcomes = Outcomes(Handler.store)
