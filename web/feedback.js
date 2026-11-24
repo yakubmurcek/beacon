@@ -89,7 +89,7 @@
     // root is the frame, so fixed and sticky parts (the header, the phone's tab bar) are put back where he sees them.
     const pinned = [...document.querySelectorAll('body *')].filter((el) => {
       const p = getComputedStyle(el).position;
-      return (p === 'fixed' || p === 'sticky') && !el.closest('.fb-toggle,.fb');
+      return (p === 'fixed' || p === 'sticky') && !el.closest('.fb-toggle,.fb,.fb-toast');
     }).filter((el, _, all) => !all.some((o) => o !== el && o.contains(el)));  // one inside another moves with it
     pinned.forEach((el) => {
       const r = el.getBoundingClientRect();
@@ -103,13 +103,17 @@
         el.dataset.fbPin = [r.left + x, r.top + y, r.width, r.height].map(Math.round).join(',');
       }
     });
+    // text the page draws on one line stays on one line in the copy: the copy's text can come out a hair wider
+    // (his Mac at 125 % zoom), and with every box's width copied, chips and labels wrapped and overflowed (2026-11-24)
+    const oneLine = oneLineText(h);
     try {
       return await ms.domToCanvas(document.documentElement, {
         width: w, height: h, scale, backgroundColor: getComputedStyle(document.body).backgroundColor,
-        filter: (n) => !(n.classList && (n.classList.contains('fb-toggle') || n.classList.contains('fb'))),
+        filter: (n) => !(n.classList && ['fb-toggle', 'fb', 'fb-toast'].some((c) => n.classList.contains(c))),
         style: { transform: `translate(${-x}px, ${-y}px)` },
         onCloneNode: (clone) => {
           if (!clone.querySelectorAll) return;
+          clone.querySelectorAll('[data-fb-line]').forEach((c) => { c.style.whiteSpace = 'nowrap'; });
           clone.querySelectorAll('[data-fb-pin]').forEach((c) => {
             const [l, t, cw, ch] = c.dataset.fbPin.split(',');
             if (l === 'sticky') { Object.assign(c.style, { position: 'relative', top: t + 'px' }); return; }
@@ -120,7 +124,25 @@
       });
     } finally {
       pinned.forEach((el) => { delete el.dataset.fbPin; });
+      oneLine.forEach((el) => { delete el.dataset.fbLine; });
     }
+  }
+  function oneLineText(h) {  // marks each element whose text on screen sits on a single line
+    const one = new Map(), range = document.createRange();
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT,
+      { acceptNode: (t) => (t.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) });
+    for (let t; (t = walk.nextNode());) {
+      const el = t.parentElement;
+      if (!el || el.closest('.fb-toggle,.fb,.fb-toast')) continue;
+      range.selectNodeContents(t);
+      const rects = [...range.getClientRects()].filter((r) => r.width > 0);
+      if (!rects.length || rects[0].bottom < 0 || rects[0].top > h) continue;
+      const single = new Set(rects.map((r) => Math.round(r.top))).size === 1;
+      one.set(el, (one.has(el) ? one.get(el) : true) && single);
+    }
+    const marked = [...one].filter(([, single]) => single).map(([el]) => el);
+    marked.forEach((el) => { el.dataset.fbLine = ''; });
+    return marked;
   }
 
   // ------------------------------------------------------------ the markup layer
