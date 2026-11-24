@@ -257,7 +257,7 @@ function refreshFacets() {
 function openRoles(r) {
   const rows = ((r.detail || []).find((x) => /open roles/i.test(x.title || '')) || { rows: [] }).rows;
   const f = st.facets.Field, a = st.facets.AI;
-  return rows.filter((x) => (!f || !x.field || x.field === f) && (!a || !x.ai || (AI[x.ai] || [])[1] === a));
+  return rows.filter((x) => x.live !== 'closed' && (!f || !x.field || x.field === f) && (!a || !x.ai || (AI[x.ai] || [])[1] === a));
 }
 const bestAi = (rows) => rows.map((x) => x.ai).filter((x) => AI[x]).sort((a, b) => AI[b][0] - AI[a][0])[0] || '';
 
@@ -273,7 +273,8 @@ function leadCard(r) {
   const filtered = st.facets.Field || st.facets.AI;
   const segment = filtered && matching.length ? matching[0].text : r.segment;
   const ai = filtered ? bestAi(matching) || r.ai : r.ai;
-  const mail = (r.detail || []).some((x) => x.mail);
+  // a written draft is the next step itself: the chip says it, so the card drops the 'Next' line
+  const mail = (r.detail || []).some((x) => x.mail) && r.status === 'drafted';
   return h('article', { class: 'lead', style: `--c:${pcolor(r.project)}`, tabindex: '0', role: 'button', 'aria-label': `${r.name}: open the detail`,
     onclick: (e) => { if (!e.target.closest('a')) openLead(r); },
     onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) openLead(r); } },
@@ -289,12 +290,13 @@ function leadCard(r) {
     r.chance || r.person || roles || mail || r.ai || r.posted ? h('div', { class: 'badges' },
       r.chance ? chanceChip(r.chance) : null,
       ai ? aiChip(ai) : null,
-      mail ? h('span', { class: 'bdg mailready' }, ic('mail'), 'Mail ready') : null,
+      r.ad === 'closed' ? h('span', { class: 'bdg adclosed' }, ic('x'), mail ? "Ad closed · don't send" : 'Ad closed')
+        : mail ? h('span', { class: 'bdg mailready' }, ic('send'), 'Draft ready to send') : null,
       roles ? h('span', { class: 'bdg' }, ic('briefcase'), (roles === 1 ? '1 open role' : roles + ' open roles') + (filtered ? ' that match' : '')) : null,
       r.person && !/^not found$/i.test(r.person) ? h('span', { class: 'bdg' }, ic('user'), r.person) : null,
       r.posted && r.posted !== 'unknown' ? h('span', { class: 'bdg' + (postedAge(r.posted) === POSTED[0] ? ' fresh' : ''), title: r.posted }, ic('clock'), 'Posted ' + fmtDate(r.posted)) : null) : null,
     r.know ? h('p', { class: 'know' }, r.know) : null,
-    h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
+    mail ? null : h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
     h('div', { class: 'foot' }, h('span', { class: 'links' }, links), r.touched ? h('span', { class: 'when', title: r.touched }, fmtDate(r.touched)) : null));
 }
 
@@ -329,6 +331,7 @@ function openLead(r, quiet) {
       return h('section', { class: 'ld-sec' }, head, h('div', { class: 'roles' }, sorted.map((x) => h(x.url ? 'a' : 'div', { class: 'role' + (keep.has(x) ? '' : ' other'), ...(x.url ? { href: x.url, ...ext(x.url) } : {}) },
         h('span', { class: 'role-t' }, x.text),
         h('span', { class: 'role-m' }, x.field ? h('span', { class: 'fld' }, x.field) : null, x.ai ? aiChip(x.ai) : null, x.fit ? h('span', { class: 'fitm' }, meter(x.fit), 'fit') : null,
+          x.live === 'closed' ? h('span', { class: 'adclosed' }, ic('x'), 'Closed' + (x.closed_since ? ' ' + fmtDate(x.closed_since) : '')) : null,
           x.posted ? h('span', { class: 'posted' + (postedAge(x.posted) === POSTED[0] ? ' fresh' : ''), title: x.posted }, ic('clock'), 'Posted ' + fmtDate(x.posted)) : null, x.note || ''),
         x.ai_quote ? h('span', { class: 'role-q' }, x.ai_quote) : null,
         x.url ? ic('arrow', 'go') : null))));

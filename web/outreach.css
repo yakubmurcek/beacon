@@ -122,6 +122,9 @@
 .role .posted .ic { width: 13px; height: 13px; }
 .role .posted.fresh .ic { color: var(--good); }
 .role .fitm { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
+.bdg.adclosed, .role .adclosed { display: inline-flex; align-items: center; gap: 4px; font-weight: 700;
+  color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--panel)); border-radius: var(--r-pill); padding: 3px 8px 3px 6px; }
+.role .adclosed .ic, .bdg.adclosed .ic { width: 13px; height: 13px; color: var(--bad); }
 .role-q { font-size: 12.5px; line-height: 1.4; color: var(--muted); font-style: italic; }
 .meter { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
 .meter i { width: 4px; border-radius: 2px; background: color-mix(in srgb, var(--dim) 45%, transparent); }
