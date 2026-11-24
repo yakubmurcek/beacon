@@ -519,7 +519,7 @@ async function viewTask(id) {
     } catch (e) { showError(e); }
   } }, 'Add note');
 
-  let agent = agentBar(t), sessions = sessionsSection(t);
+  let agent = agentBar(t), sessions = sessionsSection(t), live = liveCard(t);
   // While the agent has it, its state, sessions and notes follow along (the rest of the page
   // is left alone, so a half-typed edit survives).
   clearInterval(taskPoll);
@@ -529,7 +529,8 @@ async function viewTask(id) {
     const fresh = await api(`/api/tasks/${t.id}`).catch(() => null);
     if (!fresh) return;
     const a = agentBar(fresh), s = sessionsSection(fresh) || h('span', { hidden: true });
-    agent.replaceWith(a); sessions.replaceWith(s); agent = a; sessions = s;
+    const l = liveCard(fresh);
+    agent.replaceWith(a); sessions.replaceWith(s); live.replaceWith(l); agent = a; sessions = s; live = l;
     if (fresh.comments.length !== comments.children.length) {
       comments.replaceChildren(...fresh.comments.map(noteItem));
       notesCount.textContent = fresh.comments.length;
@@ -541,6 +542,7 @@ async function viewTask(id) {
     h('p', { class: 'crumb' }, h('a', { href: '#/now' }, '← Today'), ' · ', h('a', { href: `#/backlog/${encodeURIComponent(t.project)}` }, t.project), ` · #${t.id}`),
     h('article', { class: 'detail' },
       title,
+      live,
       h('div', { class: 'fields' },
         field('Status', status), field('Priority', prio), field('Due', h('span', { class: 'due-in' }, dueDay, dueTime)),
         field('Project', project), field('Tags', tags)),
@@ -622,17 +624,63 @@ function sessionsSection(t) {
   return h('section', { class: 'group' }, h('h2', {}, 'Agent sessions'),
     h('ul', { class: 'tasks' }, t.sessions.map((s) => h('li', { class: 'agent' },
       h('span', { class: `state ${s.state || 'closed'}` }),
-      h('a', { class: 'body', href: `/usage#/session/${encodeURIComponent(s.session_id)}` }, h('span', { class: 'title' }, s.title || s.session_id.split(':').pop().slice(0, 8)),
-        h('span', { class: 'meta' }, h('span', {}, s.state ? `${s.state} on ${s.machine}` : 'closed'), s.doing && h('span', {}, s.doing)),
-        runSteps(s))))));
+      h('a', { class: 'body', href: `/usage#/session/${encodeURIComponent(s.session_id)}` }, h('span', { class: 'title' }, s.title || 'Agent run'),
+        h('span', { class: 'meta' }, h('span', {}, s.state ? `${s.state} on ${s.machine}` : 'closed'), s.doing && h('span', {}, plainStep(s.doing).label)))))));
 }
 
-// A live run's latest steps, newest first, so a run nobody started by hand can be watched as it works.
-function runSteps(s) {
-  const steps = s.state ? (s.steps || []) : [];
-  if (steps.length < 2) return null;
-  return h('ul', { class: 'run-steps' }, [...steps].reverse().map((x) => h('li', {},
-    h('span', { class: 'muted' }, x.at ? ago(x.at) : ''), ' ', x.text)));
+// A step the collector sent, in plain words with an icon: never a raw command, path or link.
+const COMMANDS = [
+  [/\b(unittest|pytest|ruff|tsc|npm (run )?(test|check|lint)|scripts\/check)\b/, '🧪', 'Running the checks'],
+  [/\bshot\b|screenshot/, '📸', 'Taking a screenshot'],
+  [/\bgit (commit|push)\b/, '📦', 'Saving the work'],
+  [/\bgit\b/, '🌿', 'Looking at the code history'],
+  [/\btasks\b/, '🗂️', 'Updating the task'],
+  [/\bssh\b|systemctl/, '🖥️', 'Working on a server'],
+  [/\bcurl\b/, '🌐', 'Asking a service'],
+  [/./, '🔍', 'Looking through the code'],
+];
+const SAID_ICONS = [
+  [/screenshot|shot\b/i, '📸'], [/\btests?\b|check/i, '🧪'], [/commit|push|merge/i, '📦'], [/deploy|restart|live/i, '🚀'],
+];
+function plainStep(text, said = false) {
+  const t = String(text || '').trim();
+  if (said) return { icon: '💬', label: t, said: true };
+  if (t.startsWith('$ ')) { const [, icon, label] = COMMANDS.find(([re]) => re.test(t)); return { icon, label }; }
+  if (t === 'Reading your message') return { icon: '📨', label: 'Reading your answer' };
+  if (/^(Editing|Writing) /.test(t)) return { icon: '✏️', label: 'Changing the code' };
+  if (/^Reading \S+\.\w{1,5}$|^Reading a file$/.test(t)) return { icon: '📖', label: 'Reading the code' };
+  if (/^Reading /.test(t)) return { icon: '🌐', label: 'Reading a web page' };
+  if (/^Searching the web/.test(t)) return { icon: '🌐', label: 'Searching the web' };
+  if (/^(Searching for|Looking for) /.test(t)) return { icon: '🔍', label: 'Looking through the code' };
+  if (/^Delegating/.test(t)) return { icon: '🤝', label: 'Handing a part to a helper' };
+  if (/^Planning/.test(t)) return { icon: '🗒️', label: 'Planning the next steps' };
+  if (/^Using /.test(t)) return { icon: '🧰', label: t };
+  // the agent's own words for a command (its description)
+  const hit = SAID_ICONS.find(([re]) => re.test(t));
+  return { icon: hit ? hit[1] : '⚙️', label: t };
+}
+
+// The run working this task right now, on top of the page: what it does this moment in plain words,
+// and the few steps before it, so a run nobody started by hand can be watched as it works.
+function liveCard(t) {
+  const s = t.sessions.filter((x) => x.state === 'working').sort((a, b) => (b.last || 0) - (a.last || 0))[0];
+  if (!s) return h('span', { hidden: true });
+  const steps = [];
+  for (const x of [...(s.steps || [])].reverse()) {
+    const p = plainStep(x.text, x.said);
+    if (steps.length && steps[steps.length - 1].label === p.label) continue;  // three reads in a row read as one
+    steps.push({ ...p, at: x.at });
+  }
+  const now = steps[0] || plainStep(s.doing || 'Working');
+  const lastSaid = steps.find((x) => x.said && x !== now);
+  return h('section', { class: 'live-run' },
+    h('div', { class: 'live-head' }, h('span', { class: 'pulse' }), h('b', {}, 'Working on it now'),
+      h('span', { class: 'live-where' }, `🖥️ ${s.machine}`)),
+    h('div', { class: `live-now${now.said ? ' said' : ''}` }, h('span', { class: 'live-ico' }, now.icon), h('span', {}, now.label)),
+    lastSaid && h('p', { class: 'live-said' }, lastSaid.label),
+    steps.length > 1 && h('ol', { class: 'live-steps' }, steps.slice(1, 6).filter((x) => x !== lastSaid).map((x) => h('li', {},
+      h('span', { class: 'live-ico' }, x.icon), h('span', { class: 'live-label' }, x.label),
+      x.at && h('span', { class: 'live-ago' }, ago(x.at))))));
 }
 
 // ------------------------------------------------------------------ routing + render

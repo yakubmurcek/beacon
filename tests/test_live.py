@@ -124,6 +124,11 @@ class ClaudeLiveTest(unittest.TestCase):
         self.assertEqual((got['done']['state'], got['done']['doing']), ('waiting', 'Done.'))
         self.assertEqual((got['stuck']['state'], got['stuck']['doing']), ('idle', '$ npm test'))
 
+    def test_a_shell_call_reads_as_its_plain_description(self):
+        self.assertEqual(live.describe_tool('Bash', {'command': 'git log -3', 'description': 'Show recent commits'}),
+                         'Show recent commits')
+        self.assertEqual(live.describe_tool('Bash', {'command': 'git log -3', 'description': ' '}), '$ git log -3')
+
     def reply(self, text):
         return [{'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': text}]}},
                 {'type': 'system', 'subtype': 'turn_duration'}]
@@ -417,11 +422,13 @@ class HubLiveTest(unittest.TestCase):
 
     def test_a_sessions_steps_are_capped_redacted_and_typed(self):
         steps = [{'text': f's{i}', 'at': i} for i in range(15)] + [
-            'junk', {'text': 5}, {'text': ' '}, {'text': 'key sk-ant-' + 'a' * 40, 'at': True}]
+            'junk', {'text': 5}, {'text': ' '}, {'text': 'said', 'said': True}, {'text': 'key sk-ant-' + 'a' * 40, 'at': True}]
         self.store.ingest('mac', [], 2, {}, self.snap(self.sess('a', 'working', steps=steps),
                                                       self.sess('b', 'working', steps='not a list')))
         got = {s['id']: s['steps'] for s in self.store.live()}
-        self.assertEqual([x['text'] for x in got['Claude Code:a']][:6], ['s9', 's10', 's11', 's12', 's13', 's14'])
+        self.assertEqual([x['text'] for x in got['Claude Code:a']][:6], ['s10', 's11', 's12', 's13', 's14', 'said'])
+        self.assertTrue(got['Claude Code:a'][-2]['said'])
+        self.assertNotIn('said', got['Claude Code:a'][-1])
         self.assertNotIn('aaaa', got['Claude Code:a'][-1]['text'])
         self.assertIsNone(got['Claude Code:a'][-1]['at'])
         self.assertEqual(got['Claude Code:b'], [])

@@ -79,6 +79,12 @@ window.HUB_CS = {
     // Tasks
     'Add': 'Přidat', 'Add a task…': 'Přidat úkol…', 'New task': 'Nový úkol', 'Search tasks': 'Hledat úkoly', 'Clean up': 'Úklid',
     'Projects': 'Projekty', 'Add a note': 'Přidat poznámku', 'Add note': 'Přidat poznámku', 'Agent': 'Agent',
+    'Working on it now': 'Právě na tom dělá', 'Agent run': 'Běh agenta', 'Running the checks': 'Spouští kontroly',
+    'Taking a screenshot': 'Fotí obrazovku', 'Saving the work': 'Ukládá práci', 'Looking at the code history': 'Prochází historii kódu',
+    'Updating the task': 'Aktualizuje úkol', 'Working on a server': 'Pracuje na serveru', 'Asking a service': 'Ptá se služby',
+    'Looking through the code': 'Prochází kód', 'Reading your answer': 'Čte tvoji odpověď', 'Changing the code': 'Upravuje kód',
+    'Reading the code': 'Čte kód', 'Reading a web page': 'Čte webovou stránku', 'Searching the web': 'Hledá na webu',
+    'Handing a part to a helper': 'Předává část pomocníkovi', 'Planning the next steps': 'Plánuje další kroky', 'Working': 'Pracuje',
     'Agent sessions': 'Session agentů', 'Agent sessions here now': 'Session agentů, které tu teď běží', 'Agents are on it': 'Agenti na tom dělají',
     'All by project': 'Vše podle projektu', 'Back in a week': 'Zpátky za týden', 'Back to Today': 'Zpět na Dnes', 'Back to to do': 'Zpátky mezi úkoly',
     'Clear due date': 'Smazat termín', 'Closed': 'Uzavřené', 'Date cleared': 'Termín smazán', 'Due': 'Termín', 'Due date': 'Termín',

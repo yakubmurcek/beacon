@@ -299,6 +299,9 @@ def _describe_tool(name, inp):
     inp = inp if isinstance(inp, dict) else {}
     name = str(name or '')
     if name in ('Bash', 'shell', 'exec_command', 'local_shell', 'run_terminal_cmd'):
+        # Claude Code's shell calls carry the agent's own plain words for what the command does
+        if isinstance(inp.get('description'), str) and inp['description'].strip():
+            return inp['description'].strip()
         cmd = inp.get('command') or inp.get('cmd') or ''
         if isinstance(cmd, list):
             cmd = ' '.join(str(x) for x in cmd)
@@ -373,16 +376,20 @@ def parse_claude(path, size):
             for b in msg.get('content') or []:
                 if not isinstance(b, dict):
                     continue
+                said = b.get('type') == 'text'
                 if b.get('type') == 'tool_use':
                     r['doing'] = describe_tool(b.get('name'), b.get('input'))
-                elif b.get('type') == 'text' and b.get('text', '').strip():
+                elif said and b.get('text', '').strip():
                     r['doing'] = short(b['text'])
                     reply = b['text']
                 else:
                     continue
                 # this turn's last few steps, so a run nobody watches can be followed on its task page
                 if r['doing']:
-                    r['steps'] = (r['steps'] + [{'at': stamp(o), 'text': r['doing']}])[-STEPS:]
+                    step = {'at': stamp(o), 'text': r['doing']}
+                    if said:
+                        step['said'] = True  # the agent's own words, not a tool call
+                    r['steps'] = (r['steps'] + [step])[-STEPS:]
         if kind == 'user' and interrupted(o):
             # Esc mid-turn writes no turn-end marker; the session is back with the human.
             r['turn_ended'] = True

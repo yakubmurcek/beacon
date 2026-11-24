@@ -68,8 +68,11 @@ def clean_steps(steps):
     for st in (steps if isinstance(steps, list) else [])[-10:]:
         if isinstance(st, dict) and isinstance(st.get('text'), str) and st['text'].strip():
             at = st.get('at')
-            out.append({'text': redact(st['text'][:300]),
-                        'at': at if isinstance(at, (int, float)) and not isinstance(at, bool) else None})
+            step = {'text': redact(st['text'][:300]),
+                    'at': at if isinstance(at, (int, float)) and not isinstance(at, bool) else None}
+            if st.get('said') is True:
+                step['said'] = True  # the agent's own words, not a tool call
+            out.append(step)
     return out
 
 
