@@ -808,130 +808,155 @@ def aggregate(rows, start, end, filt=NO_FILTER, seeds=None):
     into the period: (machine, session) -> ('human' or 'unattended', main calls since his
     last message).
     """
-    n = max(1, round((end - start) / 60))
     by_session = collections.OrderedDict()
     for r in rows:
         by_session.setdefault((r['machine'], r['session']), []).append(r)
-
-    tables = {k: collections.defaultdict(new_bucket) for k in TABLES}
-    intervals = {k: collections.defaultdict(list) for k in ('project', 'machine', 'agent')}
-    # Per-hour counts, so today can be compared with other days up to the same time.
-    hourly = {k: [0.0] * 24 for k in ('cost', 'prompts', 'calls', 'sessions')}
-    project_hour = {}
-
-    def hour_of(ts):
-        return min(23, max(0, int((ts - start) // 60) * 24 // n))
-    total = new_bucket()
-    cost_by_family = collections.Counter()
-    sessions = {}
+    period = Period(start, end)
     for (machine, sess), evs in by_session.items():
+        period.add_session(machine, sess, evs, filt, (seeds or {}).get((machine, sess), ('unattended', 0)))
+    return period.result()
+
+
+class Period:
+    """The running sums of aggregate(): totals, the per-project/machine/agent/model tables, hourly counts and
+    each session's own bucket."""
+
+    def __init__(self, start, end):
+        self.start = start
+        self.n = max(1, round((end - start) / 60))
+        self.tables = {k: collections.defaultdict(new_bucket) for k in TABLES}
+        self.intervals = {k: collections.defaultdict(list) for k in ('project', 'machine', 'agent')}
+        # Per-hour counts, so today can be compared with other days up to the same time.
+        self.hourly = {k: [0.0] * 24 for k in ('cost', 'prompts', 'calls', 'sessions')}
+        self.project_hour = {}
+        self.total = new_bucket()
+        self.cost_by_family = collections.Counter()
+        self.sessions = {}
+
+    def hour_of(self, ts):
+        return min(23, max(0, int((ts - self.start) // 60) * 24 // self.n))
+
+    def add_session(self, machine, sess, evs, filt, seed):
+        """One session's events, unless it did no work or the filter leaves it out."""
         # Opened, ran /clear or /model, closed: no request, no model call, no work to count.
         if all(e['kind'] == 'prompt' and not_a_prompt(e['text']) for e in evs):
-            continue
+            return
         agent = evs[0]['agent']
         projects = collections.Counter(e['project'] for e in evs if e['project'])
         project = main_project(projects)
-        if any(want is not None and want != have
-               for want, have in zip(filt, (agent, machine, project))):
-            continue
+        if any(want is not None and want != have for want, have in zip(filt, (agent, machine, project))):
+            return
         key = f'{machine}|{sess}'
         times = [e['ts'] for e in evs]
-        hourly['sessions'][hour_of(times[0])] += 1
-        project_hour[project] = min(project_hour.get(project, 23), hour_of(times[0]))
+        self.hourly['sessions'][self.hour_of(times[0])] += 1
+        self.project_hour[project] = min(self.project_hour.get(project, 23), self.hour_of(times[0]))
         bursts = bursts_of(times, {e['ts'] for e in evs if e['kind'] == 'prompt' and (e['text'] or '').startswith(SCHEDULED)})
         dims = (('project', project), ('machine', machine), ('agent', agent))
-        models = collections.Counter()
         s = new_bucket()
-        own_models = collections.Counter()  # the session's own calls name its model, not its subagents'
-        first_prompt = None
-        turn, since = (seeds or {}).get((machine, sess), ('unattended', 0))
+        walk = {'s': s, 'dims': dims, 'key': key, 'models': collections.Counter(),
+                'own_models': collections.Counter(),  # the session's own calls name its model, not its subagents'
+                'first_prompt': None, 'turn': seed[0], 'since': seed[1]}
         for e in evs:
             if e['kind'] == 'prompt':
-                if not_a_prompt(e['text']):
-                    first_prompt = first_prompt or e['text']  # a label of last resort
-                    if (e['text'] or '').startswith(SCHEDULED):
-                        turn, since = 'unattended', 0
-                    continue
-                turn, since = 'human', 0
-                kind = PROMPT_FIELD[prompt_kind(e['text'])]
-                s['prompts'] += 1
-                s[kind] += 1
-                total[kind] += 1
-                # A leading /clear, /model or scheduled re-fire says nothing about the session;
-                # label it with the first real request, falling back to that.
-                if not first_prompt or (weak_label(first_prompt) and not weak_label(e['text'])):
-                    first_prompt = e['text'] or first_prompt
-                for k, v in dims:
-                    tables[k][v]['prompts'] += 1
-                    tables[k][v][kind] += 1
-                total['prompts'] += 1
-                hourly['prompts'][hour_of(e['ts'])] += 1
-                continue
-            c = call_cost(e)
-            if turn == 'unattended':
-                layer = 'unattended'
-            elif e.get('subagent'):
-                layer = 'subagent'
+                self.add_prompt(walk, e)
             else:
-                layer = 'driven' if since < DRIVEN_CALLS else 'solo'
-                since += e.get('calls') or 1
-            hourly['calls'][hour_of(e['ts'])] += e.get('calls') or 1
-            hourly['cost'][hour_of(e['ts'])] += c[0]
-            models[e['model']] += e.get('calls') or 1
-            if not e.get('subagent'):
-                own_models[e['model']] += e.get('calls') or 1
-            cost_by_family[pricing.family(e['model'])] += c[0]
-            add_call(s, e, c, layer)
-            add_call(total, e, c, layer)
-            add_call(tables['model'][e['model']], e, c, layer)
-            tables['model'][e['model']]['sessions'].add(key)
-            for k, v in dims:
-                add_call(tables[k][v], e, c, layer)
+                self.add_call_event(walk, e)
         for k, v in dims:
-            tables[k][v]['sessions'].add(key)
-            intervals[k][v].extend(bursts)
-        total['sessions'].add(key)
+            self.tables[k][v]['sessions'].add(key)
+            self.intervals[k][v].extend(bursts)
+        self.total['sessions'].add(key)
         s['sessions'].add(key)
-        s['active_min'] = len(minutes_covered(bursts, start, n))
+        s['active_min'] = len(minutes_covered(bursts, self.start, self.n))
+        models, own_models = walk['models'], walk['own_models']
         s.update({
             'key': key, 'id': sess, 'machine': machine, 'agent': agent, 'project': project,
             'model': (own_models or models).most_common(1)[0][0] if models else None,
-            'models': dict(models), 'own_models': dict(own_models), 'projects': dict(projects), 'start': times[0], 'end': bursts[-1][1],
-            'bursts': [[a, b] for a, b in bursts], 'first_prompt': first_prompt,
+            'models': dict(models), 'own_models': dict(own_models), 'projects': dict(projects), 'start': times[0],
+            'end': bursts[-1][1], 'bursts': [[a, b] for a, b in bursts], 'first_prompt': walk['first_prompt'],
             'subagent_calls': sum(e.get('calls') or 1 for e in evs if e.get('subagent') and e['kind'] == 'call'),
         })
-        sessions[key] = s
+        self.sessions[key] = s
 
-    # Minute-by-minute concurrency, split by agent.
-    conc = [0] * n
-    conc_agent = collections.defaultdict(lambda: [0] * n)
-    # Minutes of sessions whose calls are mostly priced: API value per hour divides by these,
-    # not by hours on agents that log no price.
-    priced = [0] * n
-    for s in sessions.values():
-        mostly_priced = s['calls'] and s['unpriced_calls'] * 2 < s['calls']
-        for m in minutes_covered(s['bursts'], start, n):
-            conc[m] += 1
-            conc_agent[s['agent']][m] += 1
-            if mostly_priced:
-                priced[m] = 1
-    for k, groups in intervals.items():
-        for name, iv in groups.items():
-            tables[k][name]['active_min'] = len(minutes_covered(iv, start, n))
-    hours, priced_hours = [0] * 24, [0] * 24
-    for m, c in enumerate(conc):
-        if c:
-            hours[min(23, m * 24 // n)] += 1  # n is 1380/1500 on DST days; close enough
-            priced_hours[min(23, m * 24 // n)] += priced[m]
-    total['active_min'] = sum(hours)
-    peak = max(conc) if conc else 0
-    return {
-        'minutes': n, 'total': total, 'tables': tables, 'cost_by_family': cost_by_family,
-        'sessions': sessions, 'conc': conc, 'conc_agent': dict(conc_agent), 'hours': hours,
-        'priced_hours': priced_hours,
-        'hourly': hourly, 'project_hour': project_hour,
-        'peak': peak, 'peak_ts': start + conc.index(peak) * 60 if peak else None,
-    }
+    def add_prompt(self, walk, e):
+        """A prompt: his own message starts a human turn; a /command or scheduled re-fire only labels."""
+        s = walk['s']
+        if not_a_prompt(e['text']):
+            walk['first_prompt'] = walk['first_prompt'] or e['text']  # a label of last resort
+            if (e['text'] or '').startswith(SCHEDULED):
+                walk['turn'], walk['since'] = 'unattended', 0
+            return
+        walk['turn'], walk['since'] = 'human', 0
+        kind = PROMPT_FIELD[prompt_kind(e['text'])]
+        s['prompts'] += 1
+        s[kind] += 1
+        self.total[kind] += 1
+        # A leading /clear, /model or scheduled re-fire says nothing about the session;
+        # label it with the first real request, falling back to that.
+        first = walk['first_prompt']
+        if not first or (weak_label(first) and not weak_label(e['text'])):
+            walk['first_prompt'] = e['text'] or first
+        for k, v in walk['dims']:
+            self.tables[k][v]['prompts'] += 1
+            self.tables[k][v][kind] += 1
+        self.total['prompts'] += 1
+        self.hourly['prompts'][self.hour_of(e['ts'])] += 1
+
+    def add_call_event(self, walk, e):
+        """A model call, counted in the layer it belongs to: unattended, subagent, driven by him or solo."""
+        c = call_cost(e)
+        calls = e.get('calls') or 1
+        if walk['turn'] == 'unattended':
+            layer = 'unattended'
+        elif e.get('subagent'):
+            layer = 'subagent'
+        else:
+            layer = 'driven' if walk['since'] < DRIVEN_CALLS else 'solo'
+            walk['since'] += calls
+        self.hourly['calls'][self.hour_of(e['ts'])] += calls
+        self.hourly['cost'][self.hour_of(e['ts'])] += c[0]
+        walk['models'][e['model']] += calls
+        if not e.get('subagent'):
+            walk['own_models'][e['model']] += calls
+        self.cost_by_family[pricing.family(e['model'])] += c[0]
+        add_call(walk['s'], e, c, layer)
+        add_call(self.total, e, c, layer)
+        add_call(self.tables['model'][e['model']], e, c, layer)
+        self.tables['model'][e['model']]['sessions'].add(walk['key'])
+        for k, v in walk['dims']:
+            add_call(self.tables[k][v], e, c, layer)
+
+    def result(self):
+        """The aggregate, with minute-by-minute concurrency (split by agent) and active hours."""
+        n, start = self.n, self.start
+        conc = [0] * n
+        conc_agent = collections.defaultdict(lambda: [0] * n)
+        # Minutes of sessions whose calls are mostly priced: API value per hour divides by these,
+        # not by hours on agents that log no price.
+        priced = [0] * n
+        for s in self.sessions.values():
+            mostly_priced = s['calls'] and s['unpriced_calls'] * 2 < s['calls']
+            for m in minutes_covered(s['bursts'], start, n):
+                conc[m] += 1
+                conc_agent[s['agent']][m] += 1
+                if mostly_priced:
+                    priced[m] = 1
+        for k, groups in self.intervals.items():
+            for name, iv in groups.items():
+                self.tables[k][name]['active_min'] = len(minutes_covered(iv, start, n))
+        hours, priced_hours = [0] * 24, [0] * 24
+        for m, c in enumerate(conc):
+            if c:
+                hours[min(23, m * 24 // n)] += 1  # n is 1380/1500 on DST days; close enough
+                priced_hours[min(23, m * 24 // n)] += priced[m]
+        self.total['active_min'] = sum(hours)
+        peak = max(conc) if conc else 0
+        return {
+            'minutes': n, 'total': self.total, 'tables': self.tables, 'cost_by_family': self.cost_by_family,
+            'sessions': self.sessions, 'conc': conc, 'conc_agent': dict(conc_agent), 'hours': hours,
+            'priced_hours': priced_hours,
+            'hourly': self.hourly, 'project_hour': self.project_hour,
+            'peak': peak, 'peak_ts': start + conc.index(peak) * 60 if peak else None,
+        }
 
 
 def merge(aggs):
