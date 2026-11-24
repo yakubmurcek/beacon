@@ -39,7 +39,7 @@ const ICONS = {
 };
 const ic = (name, cls) => h('span', { class: 'ic' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true',
   html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>` });
-const SECTION_IC = [[/mail/i, 'mail'], [/application/i, 'file'], [/role/i, 'briefcase'], [/contact/i, 'user'], [/source/i, 'link'],
+const SECTION_IC = [[/mail/i, 'mail'], [/application/i, 'file'], [/found/i, 'target'], [/role/i, 'briefcase'], [/contact/i, 'user'], [/source/i, 'link'],
   [/website/i, 'globe'], [/review/i, 'star'], [/ads/i, 'megaphone'], [/walk/i, 'door'], [/./, 'building']];
 const LABEL_IC = [[/^(person|decision maker|contact)/i, 'user'], [/mail/i, 'mail'], [/phone|tel/i, 'phone'], [/found on|source/i, 'link'],
   [/web|site|domain/i, 'globe'], [/career|role|hiring/i, 'briefcase'], [/where|address|seat|town|branch/i, 'pin'],
@@ -160,7 +160,7 @@ function leadCard(r) {
   else if (src.link) links.push(h('a', { href: src.link }, src.label || 'Source'));
   if (src.url && src.link) links.push(h('a', { href: src.link, class: 'sub' }, src.path_label || 'notes'));
   if (r.web) links.push(h('a', { href: r.web, target: '_blank', rel: 'noopener', class: 'sub' }, r.web.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')));
-  const roles = ((r.detail || []).find((x) => /role/i.test(x.title || '')) || { rows: [] }).rows.length;
+  const roles = ((r.detail || []).find((x) => /open roles/i.test(x.title || '')) || { rows: [] }).rows.length;
   const mail = (r.detail || []).some((x) => x.mail);
   return h('article', { class: 'lead', style: `--c:${pcolor(r.project)}`, tabindex: '0', role: 'button', 'aria-label': `${r.name}: open the detail`,
     onclick: (e) => { if (!e.target.closest('a')) openLead(r); },
@@ -206,7 +206,7 @@ function openLead(r, quiet) {
   const section = (sec) => {
     const icon = (SECTION_IC.find(([re]) => re.test(sec.title || '')) || [])[1];
     const head = h('h4', null, ic(icon), sec.title);
-    if (/role/i.test(sec.title || '')) {  // open roles: one card each, with how well it fits
+    if (/open roles/i.test(sec.title || '')) {  // open roles: one card each, with how well it fits
       return h('section', { class: 'ld-sec' }, head, h('div', { class: 'roles' }, sec.rows.map((x) => h(x.url ? 'a' : 'div', { class: 'role', ...(x.url ? { href: x.url, ...ext(x.url) } : {}) },
         h('span', { class: 'role-t' }, x.text),
         h('span', { class: 'role-m' }, x.fit ? meter(x.fit) : null, x.note || ''),
