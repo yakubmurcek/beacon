@@ -21,6 +21,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -134,7 +135,11 @@ class Outreach:
             try:
                 spec = importlib.util.spec_from_file_location('outreach_sources', path)
                 mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
+                was, sys.dont_write_bytecode = sys.dont_write_bytecode, True  # no cache file in the brain's checkout
+                try:
+                    spec.loader.exec_module(mod)
+                finally:
+                    sys.dont_write_bytecode = was
             except Exception as e:  # a broken sources.py hides its lists, never the page
                 print(f'outreach: {path}: {e}', flush=True)
                 mod = None
