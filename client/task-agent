@@ -843,6 +843,42 @@ def work(task, dry=False):
 
 
 def finish(task, sid, claimed, where, repo, conf=None, base=None):
+    """Run the agent on a claimed task, then act on what the task shows: check a claimed fix, queue a run that
+    could not start, give back a run that left nothing, and tell him the result."""
+    run = start_run(task, sid, claimed, where, repo, conf)
+    run.update(task_outcome(task['id'], claimed, run['sid'], conf))
+    run['writes'] = studio_writes(conf, run['proof'], claimed) if conf else None
+    run['check'] = None
+    if conf and conf.get('checker') and run['asked'] and claims_fix(run['mine'][-1]['text']) and run['writes'][0]:
+        check_the_fix(task, conf, claimed, base, run)
+    if conf and wants_retry(run['out']) and run['after']['status'] == 'doing' and not (run['asked'] or run['opened']):
+        # It could not start (Studio busy, the machine not ready): queued again quietly, not one of the day's runs.
+        if not run['writes'][0] and requeue(task, run['after'], claimed, phone(run['out'])):
+            return 0
+        if not run['writes'][0]:
+            why = phone(run['out'])
+            return give_back(task, 'could not start', why, conf, claimed,
+                             cz=f'dnes už {RETRIES_A_DAY}× nemohl začít' + (f": {why.rstrip('.')}" if why else ''))
+    # What the task shows decides, not how the process ended: a PR opened, a question asked or the
+    # task closed stands even if the run errored after it; anything else would sit doing with
+    # nobody on it, so it goes back.
+    if not (run['asked'] or run['opened'] or run['after']['status'] in ('done', 'dropped')):
+        why = run['err'] or ('it ended without a note on the task' if not run['said']
+                             else 'it ended without a PR, a question or closing the task')
+        return give_back(task, why + (f" ({run['left']})" if run['left'] else ''), phone(run['out']), conf, claimed)
+    if run['left']:
+        note(task['id'], f"⚠️ {run['left']}")
+    if conf:
+        check, good = run['check'], not run['check'] or run['check']['verdict'] == 'pass'
+        outcome(task, good, '' if good else f"kontrola: {check['verdict']}")
+        score(task['id'], verdict=('ověřeno' if good else 'neověřeno') if check
+              else ('předáno' if run['asked'] else run['after']['status']))
+    report(task, run, conf)
+    return 0
+
+
+def start_run(task, sid, claimed, where, repo, conf):
+    """Link the session, note the pickup, run the agent and tidy its worktree: the run's raw results."""
     tid = task['id']
     if conf:
         score(tid, title=task['title'])
@@ -854,86 +890,82 @@ def finish(task, sid, claimed, where, repo, conf=None, base=None):
     text = brief_prompt(task, where, conf, context, proof) if conf else prompt(task, where, repo, context)
     out, err = run_claude(task, sid, where, text, conf, proof)
     collect_shots(conf, proof, claimed)
-    left = tidy(where, repo, conf, proof)
-    sender = (conf or {}).get('from', '')
+    return {'sid': sid, 'out': out, 'err': err, 'proof': proof, 'left': tidy(where, repo, conf, proof)}
+
+
+def task_outcome(tid, claimed, sid, conf):
+    """What the task shows after the run: its notes since the claim, the agent's own, a question asked, a PR."""
     after = cli.call(f'/api/tasks/{tid}', auth=False)
     said = [c for c in after['comments'] if c['at'] >= claimed and c['author'] != ME]
     mine = [c for c in said if c['author'] == f'Claude Code {sid[:8]}'] if conf else said
-    asked = after['status'] == 'doing' and bool(mine) and mine[-1]['text'].startswith('⏳')
-    opened = after['status'] == 'doing' and any(PR_URL.search(c['text']) for c in said)
-    writes = studio_writes(conf, proof, claimed) if conf else None
-    check = None
-    if conf and conf.get('checker') and asked and claims_fix(mine[-1]['text']) and writes[0]:
-        hold_questions(tid)  # nobody tests a fix the checker may still reject: asked again after the check
-        check = checked(task, conf, claimed, proof, 1, base)
-        if check['verdict'] == 'reject':
-            # Back to the fixer once, with the checker's evidence as a note; then a fresh checker on the whole diff.
-            note(tid, reject_note(check))
-            used = attempts(cli.call(f'/api/tasks/{tid}', auth=False)['comments']) >= MAX_ATTEMPTS
-            redo = None if used else refix(task, conf, claimed)
-            if used:
-                check = dict(check, then=f'{MAX_ATTEMPTS} pokusy vyčerpány, další už ne')
-            elif not redo:
-                check = dict(check, then='agent ji nestihl opravit znovu')
-            else:
-                out, err, sid, mine, after, asked, left2 = redo
-                left = left or left2
-                said = [c for c in after['comments'] if c['at'] >= claimed and c['author'] != ME]
-                opened = after['status'] == 'doing' and any(PR_URL.search(c['text']) for c in said)
-                writes = studio_writes(conf, proof, claimed)
-                if asked and claims_fix(mine[-1]['text']) and writes[0]:
-                    check = checked(task, conf, claimed, proof, 2, base)
-                else:  # the retry reverted, gave up or asked something else: what it did, in its own phone line
-                    check = dict(check, then=phone(out) or 'oprava se znovu neověřila')
-        note(tid, check_note(check))
-        if asked:  # the question again, after the verdict (its first copy was held while the check ran)
-            note(tid, mine[-1]['text'])
-    if conf and wants_retry(out) and after['status'] == 'doing' and not (asked or opened):
-        # It could not start (Studio busy, the machine not ready): queued again quietly, not one of the day's runs.
-        if not writes[0] and requeue(task, after, claimed, phone(out)):
-            return 0
-        if not writes[0]:
-            return give_back(task, 'could not start', phone(out), conf, claimed,
-                             cz=f'dnes už {RETRIES_A_DAY}× nemohl začít' + (f": {phone(out).rstrip('.')}" if phone(out) else ''))
-    # What the task shows decides, not how the process ended: a PR opened, a question asked or the
-    # task closed stands even if the run errored after it; anything else would sit doing with
-    # nobody on it, so it goes back.
-    if not (asked or opened or after['status'] in ('done', 'dropped')):
-        why = err or ('it ended without a note on the task' if not said
-                      else 'it ended without a PR, a question or closing the task')
-        return give_back(task, why + (f' ({left})' if left else ''), phone(out), conf, claimed)
-    if left:
-        note(tid, f'⚠️ {left}')
-    if conf:
-        good = not check or check['verdict'] == 'pass'
-        outcome(task, good, '' if good else f"kontrola: {check['verdict']}")
-        score(tid, verdict=('ověřeno' if good else 'neověřeno') if check else ('předáno' if asked else after['status']))
-    words = phone(out) or f"{after['status']}: see the task"
-    changed = f'\n🛠️ Změny v testovací kopii: {writes_line(writes)}.' if conf else ''
-    pics = photos(proof)
+    return {'after': after, 'said': said, 'mine': mine,
+            'asked': after['status'] == 'doing' and bool(mine) and mine[-1]['text'].startswith('⏳'),
+            'opened': after['status'] == 'doing' and any(PR_URL.search(c['text']) for c in said)}
+
+
+def check_the_fix(task, conf, claimed, base, run):
+    """The fixer says a dev-copy fix works: an independent checker verifies it; a reject goes back to the fixer
+    once, then a fresh checker judges the whole diff. Updates `run` with the retry's results and the verdict."""
+    tid = task['id']
+    hold_questions(tid)  # nobody tests a fix the checker may still reject: asked again after the check
+    check = checked(task, conf, claimed, run['proof'], 1, base)
+    if check['verdict'] == 'reject':
+        note(tid, reject_note(check))
+        check = refix_after_reject(task, conf, claimed, base, run, check)
+    run['check'] = check
+    note(tid, check_note(check))
+    if run['asked']:  # the question again, after the verdict (its first copy was held while the check ran)
+        note(tid, run['mine'][-1]['text'])
+
+
+def refix_after_reject(task, conf, claimed, base, run, check):
+    """The fixer's one retry with the checker's evidence as a note; returns the final check."""
+    used = attempts(cli.call(f"/api/tasks/{task['id']}", auth=False)['comments']) >= MAX_ATTEMPTS
+    redo = None if used else refix(task, conf, claimed)
+    if used:
+        return dict(check, then=f'{MAX_ATTEMPTS} pokusy vyčerpány, další už ne')
+    if not redo:
+        return dict(check, then='agent ji nestihl opravit znovu')
+    out, err, sid, mine, after, asked, left2 = redo
+    said = [c for c in after['comments'] if c['at'] >= claimed and c['author'] != ME]
+    run.update(out=out, err=err, sid=sid, mine=mine, after=after, asked=asked, left=run['left'] or left2, said=said,
+               opened=after['status'] == 'doing' and any(PR_URL.search(c['text']) for c in said),
+               writes=studio_writes(conf, run['proof'], claimed))
+    if asked and claims_fix(mine[-1]['text']) and run['writes'][0]:
+        return checked(task, conf, claimed, run['proof'], 2, base)
+    # the retry reverted, gave up or asked something else: what it did, in its own phone line
+    return dict(check, then=phone(out) or 'oprava se znovu neověřila')
+
+
+def report(task, run, conf):
+    """Tell him how it ended: a question first, a PR to merge, or quiet news."""
+    sender = (conf or {}).get('from', '')
+    after, check = run['after'], run['check']
+    words = phone(run['out']) or f"{after['status']}: see the task"
+    changed = f"\n🛠️ Změny v testovací kopii: {writes_line(run['writes'])}." if conf else ''
+    pics = photos(run['proof'])
     if check:
         changed += '\n' + check_line(check)
         if check['verdict'] != 'pass':
             words = f'⚠️ Neověřeno: {words}'
         pics = check['photos'] or pics
-    if asked:
+    if run['asked']:
         # It needs him: back on his list (without the tag, so it isn't picked up again until he
         # answers, which hands it back).
-        cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': [t for t in after['tags'] if t != TAG]})
-        ask = mine[-1]['text'].lstrip('⏳').strip()
+        cli.call(f"/api/tasks/{task['id']}", {'status': 'todo', 'tags': [t for t in after['tags'] if t != TAG]})
+        ask = run['mine'][-1]['text'].lstrip('⏳').strip()
         ask = ask[len("Needs you:"):].strip() if ask.startswith("Needs you:") else ask
         if conf:  # a report, not a question: his phone line, then what it needs from him, never cut short
             tell(task, f'{short(words, TELL_CHARS, CZ_MORE)}\n👉 {short(ask, ASK_CHARS, CZ_MORE)}{changed}',
                  conf_hint(ask), sender=sender, photos=pics, limit=None)
         else:
             tell(task, f'One question first: {ask}', 'Answer here and the work carries on, or say mine.')
-    elif opened:
+    elif run['opened']:
         tell(task, PR_URL.sub(lambda m: 'PR #' + m.group(0).rsplit('/', 1)[-1], words), 'Merge it, or tell me what to change.')
     elif conf:  # finished, nothing asked of him: news, no sound
         tell(task, short(words, TELL_CHARS, CZ_MORE) + changed, sender=sender, photos=pics, limit=None, quiet=True)
     else:
-        tell(task, words, sender=sender, photos=photos(proof), quiet=True)
-    return 0
+        tell(task, words, sender=sender, photos=photos(run['proof']), quiet=True)
 
 
 def collect_shots(conf, proof, since, src_key='proof_from'):
