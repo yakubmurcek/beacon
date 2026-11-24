@@ -18,8 +18,8 @@ Direct API callers (no log of their own) show the model their script names and "
 import bisect
 import datetime
 import json
-import re
 import logging
+import re
 import time
 
 from settings import OWNER
@@ -222,8 +222,10 @@ def call_group(r, owners, groups):
 class Groups:
     """The week's runs, grouped by (machine, job group), with their calls, cost, models and days."""
 
-    def __init__(self, days):
+    def __init__(self, days, first, local_date):
         self.days = days
+        self.first = first  # (machine, session) -> its first prompt (text, ts)
+        self.local_date = local_date
         self.all = {}
 
     def get(self, gid, machine, label=None):
@@ -236,11 +238,12 @@ class Groups:
                 'sample': None, 'starts': {}, 'bare_models': {}, 'bare_efforts': {}}
         return g
 
-    @staticmethod
-    def add_call(g, r, run, cost, priced, first, day):
-        """One model call into its group."""
+    def add_call(self, g, r, run, priced_cost):
+        """One model call into its group; `priced_cost` is call_cost()'s answer."""
+        cost, _, priced = priced_cost
+        day = self.local_date(r['ts'])
         if run not in g['sessions']:
-            g['starts'][run] = (first.get((r['machine'], r['session'])) or (None, r['ts']))[1]
+            g['starts'][run] = (self.first.get((r['machine'], r['session'])) or (None, r['ts']))[1]
         g['starts'][run] = min(g['starts'].get(run) or r['ts'], r['ts'])
         g['sessions'].add(run)
         g['sample'] = g['sample'] or r['session']
@@ -347,18 +350,19 @@ class AIJobs:
         linked, bare, linked_runs = run_links(links)
         owners = {'linked': linked, 'typed': typed, 'timeline': timeline, 'first': first,
                   'launched': launched_sessions(listed, first, linked), 'by_prompt': prompt_owners(linked, first)}
-        groups = Groups(days)
+        groups = Groups(days, first, self.store.local_date)
         total_cost, total_calls, all_cost = 0.0, 0, 0.0
         with_calls = set()
         for r in calls:
-            cost, _, priced = call_cost(dict(r))
+            priced_cost = call_cost(dict(r))
+            cost = priced_cost[0]
             all_cost += cost
             placed = call_group(r, owners, groups)
             if placed is None:  # his own turn, not a job's
                 continue
             g, run = placed
             with_calls.add((r['machine'], r['session']))
-            groups.add_call(g, r, run, cost, priced, first, self.store.local_date(r['ts']))
+            groups.add_call(g, r, run, priced_cost)
             total_cost += cost
             total_calls += 1
         # A linked run that logged no calls (`claude -p --no-session-persistence`: the hub's own titles and Labs,
