@@ -12,7 +12,6 @@ import io
 import json
 import os
 import re
-import sys
 import unittest
 from unittest import mock
 

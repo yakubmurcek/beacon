@@ -2328,14 +2328,20 @@ def hook_prompt(stdin):
         print(f'tasks hook-prompt: {e}', file=sys.stderr)
 
 
-def main(argv=None):
-    for stream in (sys.stdout, sys.stderr):  # a Windows console is cp1252: titles carry → and emoji
+def utf8_console():
+    """A Windows console is cp1252: titles carry → and emoji."""
+    for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding='utf-8', errors='replace')
         except (AttributeError, ValueError):
             pass
-    ap = argparse.ArgumentParser(prog='tasks', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = ap.add_subparsers(dest='cmd')
+
+
+def question_id(v):
+    return int(v.lstrip('?#'))
+
+
+def task_parsers(sub):
     ls = sub.add_parser('ls', help='list open tasks')
     ls.add_argument('-p', '--project')
     ls.add_argument('--claude', action='store_true', help='only tasks tagged claude (his go-ahead)')
@@ -2345,6 +2351,7 @@ def main(argv=None):
     ls.add_argument('--all', action='store_true', help='closed and parked ones too')
     ls.add_argument('--parked', action='store_true', help="include tasks tagged parked (hidden by default)")
     ls.add_argument('--json', action='store_true')
+    ls.set_defaults(run=cmd_ls)
     add = sub.add_parser('add', help='file a task')
     add.add_argument('title')
     add.add_argument('-b', '--body', help='markdown body; - reads stdin')
@@ -2356,30 +2363,41 @@ def main(argv=None):
     add.add_argument('--doing', action='store_true',
                      help="this session is doing it: filed as doing, so it is never routed to the task agent")
     add.add_argument('--json', action='store_true')
+    add.set_defaults(run=cmd_add)
     stp = sub.add_parser('step', help='mark the step of the task\'s ## Steps you are on now (shown on the Team card)')
     stp.add_argument('id', type=int)
     stp.add_argument('n', type=int)
-    for name in ('show', 'doing', 'todo'):
+    stp.set_defaults(run=cmd_step)
+    for name, run in (('show', cmd_show), ('doing', cmd_doing), ('todo', cmd_status)):
         p = sub.add_parser(name)
         p.add_argument('id', type=int)
         p.add_argument('--json', action='store_true')
+        p.set_defaults(run=run)
     for name in ('done', 'drop'):
         p = sub.add_parser(name)
         p.add_argument('id', type=int)
         p.add_argument('-m', '--note', help='what happened (kept as a note)')
+        p.set_defaults(run=cmd_status)
     st = sub.add_parser('set')
     st.add_argument('id', type=int)
     st.add_argument('pairs', nargs='+')
+    st.set_defaults(run=cmd_set)
     ho = sub.add_parser('handoff', help='what is left goes to the task agent (todo + claude, unless auto)')
     ho.add_argument('id', type=int)
     ho.add_argument('text', help='the next step, concrete; - reads stdin')
+    ho.set_defaults(run=cmd_handoff)
     nt = sub.add_parser('note')
     nt.add_argument('id', type=int)
     nt.add_argument('text')
+    nt.set_defaults(run=cmd_note)
     lk = sub.add_parser('link')
     lk.add_argument('id', type=int)
     lk.add_argument('session', nargs='?')
-    sub.add_parser('auth')
+    lk.set_defaults(run=cmd_link)
+    sub.add_parser('auth').set_defaults(run=cmd_auth)
+
+
+def ask_parser(sub):
     ak = sub.add_parser('ask', aliases=['decide'], help='ask him to decide something at http://beacon/decisions and keep working')
     ak.add_argument('question', help=f'only the question, under {ASK_MAX} chars; details go in -c. The card shows the '
                     'project on top: don\'t start with its name')
@@ -2407,19 +2425,28 @@ def main(argv=None):
                          'after a "---" line in -c, never in the question or the options')
     ak.add_argument('--no-see', metavar='WHY', help='a look-sounding question with truly nothing to see, and why')
     ak.add_argument('--json', action='store_true')
+    ak.set_defaults(run=cmd_ask)
+
+
+def question_parsers(sub):
+    ask_parser(sub)
     bl = sub.add_parser('block', help='a question already asked turns blocking: you hold the work until he answers '
                         '(the same card; never withdraw and ask it again, he sees it twice)')
-    bl.add_argument('id', type=lambda v: int(v.lstrip('?#')))
+    bl.add_argument('id', type=question_id)
+    bl.set_defaults(run=cmd_block)
     se = sub.add_parser('see', help='add a link or screenshot to a question already asked')
-    se.add_argument('id', type=lambda v: int(v.lstrip('?#')))
+    se.add_argument('id', type=question_id)
     se.add_argument('refs', nargs='+', metavar='LINK|PICTURE')
+    se.set_defaults(run=cmd_see)
     sp = sub.add_parser('steps', help='set the by-hand checklist on a question already asked (replaces its steps)')
-    sp.add_argument('id', type=lambda v: int(v.lstrip('?#')))
+    sp.add_argument('id', type=question_id)
     sp.add_argument('steps', nargs='+', metavar='"TEXT [:: LINK]"')
+    sp.set_defaults(run=cmd_steps)
     wt = sub.add_parser('wait', help='wait a few minutes while he is chatting live; otherwise end your turn')
-    wt.add_argument('ids', nargs='+', type=lambda v: int(v.lstrip('?#')))
+    wt.add_argument('ids', nargs='+', type=question_id)
     wt.add_argument('--timeout', type=float, default=WAIT_MAX, help=f'seconds, at most {WAIT_MAX:.0f}')
     wt.add_argument('--every', type=float, default=5, help=argparse.SUPPRESS)
+    wt.set_defaults(run=cmd_wait)
     qs = sub.add_parser('questions', help='open questions, or the decision log')
     qs.add_argument('--answered', action='store_true', help='the decision log')
     qs.add_argument('--all', action='store_true')
@@ -2428,8 +2455,9 @@ def main(argv=None):
     qs.add_argument('--since', type=float, help='days back')
     qs.add_argument('--kinds', action='store_true', help='per kind: answered, took the default, standing')
     qs.add_argument('--json', action='store_true')
+    qs.set_defaults(run=cmd_questions)
     an = sub.add_parser('answer', help='answer a question (him, or Hermes passing his words on)')
-    an.add_argument('id', type=lambda v: int(v.lstrip('?#')))
+    an.add_argument('id', type=question_id)
     an.add_argument('text')
     an.add_argument('-m', '--note')
     an.add_argument('--always', action='store_true',
@@ -2437,348 +2465,476 @@ def main(argv=None):
                          'rules otherwise come from his repeated answers, proposed to him)')
     an.add_argument('--chat', action='store_true',
                     help='he answered in the asking session\'s chat: log it, nobody else carries it out')
+    an.set_defaults(run=cmd_answer)
     wd = sub.add_parser('withdraw', help='the question is moot')
-    wd.add_argument('id', type=lambda v: int(v.lstrip('?#')))
+    wd.add_argument('id', type=question_id)
     wd.add_argument('-m', '--note', help='why')
-    sub.add_parser('hook-ask', help=argparse.SUPPRESS)
-    sub.add_parser('hook-stop', help=argparse.SUPPRESS)
-    sub.add_parser('hook-prompt', help=argparse.SUPPRESS)
-    sub.add_parser('hook-gate', help=argparse.SUPPRESS)
+    wd.set_defaults(run=cmd_withdraw)
+
+
+def hook_parsers(sub):
+    """The Claude Code hooks: each reads its event from stdin."""
+    for name, hook in (('hook-ask', hook_ask), ('hook-stop', hook_stop), ('hook-prompt', hook_prompt)):
+        sub.add_parser(name, help=argparse.SUPPRESS).set_defaults(run=lambda a, hook=hook: hook(sys.stdin))
+    sub.add_parser('hook-gate', help=argparse.SUPPRESS).set_defaults(run=lambda a: sys.exit(hook_gate(sys.stdin)))
     hn = sub.add_parser('hook-name', help=argparse.SUPPRESS)
     hn.add_argument('--bg', nargs=2, metavar=('SESSION', 'LOG'))
     hn.add_argument('--headless', action='store_true')
-    a = ap.parse_args(argv)
+    hn.set_defaults(run=cmd_hook_name)
 
-    if a.cmd in (None, 'ls'):
-        q = {'status': 'all' if getattr(a, 'all', False) else 'open'}
-        for k, v in (('project', getattr(a, 'project', None)), ('due', getattr(a, 'due', None)),
-                     ('q', getattr(a, 'query', None))):
-            if v:
-                q[k] = v
-        if getattr(a, 'stale', False):
-            q['stale'] = '1'
-        tasks = call('/api/tasks?' + urllib.parse.urlencode(q), auth=False)['tasks']
-        if getattr(a, 'claude', False):
-            tasks = [t for t in tasks if 'claude' in t['tags']]
-        if not (getattr(a, 'stale', False) or getattr(a, 'all', False) or getattr(a, 'parked', False)):
-            tasks = [t for t in tasks if 'parked' not in t['tags']]  # set aside, like the Now view
-        # Overdue by more than a week is a decision, not today's work (same rule as Lighthouse /today):
-        # live tasks first, then priority, then the soonest due.
-        week_ago = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
-        tasks.sort(key=lambda t: ((t.get('due') or '9')[:10] < week_ago, t.get('priority') or 5,
-                                  t.get('due') or '9', -t['updated_at']))
-        if getattr(a, 'json', False):
-            print(json.dumps(tasks, ensure_ascii=False, indent=1))
-        else:
-            for t in tasks:
-                print(line(t))
-            if not tasks:
-                print('nothing open')
+
+def build_parser():
+    ap = argparse.ArgumentParser(prog='tasks', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest='cmd')
+    task_parsers(sub)
+    question_parsers(sub)
+    hook_parsers(sub)
+    return ap
+
+
+# ------------------------------------------------------------------ task commands
+
+def urgency(t, week_ago):
+    """Overdue by more than a week is a decision, not today's work (same rule as Lighthouse /today):
+    live tasks first, then priority, then the soonest due."""
+    return (t.get('due') or '9')[:10] < week_ago, t.get('priority') or 5, t.get('due') or '9', -t['updated_at']
+
+
+def ls_query(flag):
+    q = {'status': 'all' if flag('all') else 'open'}
+    q.update({k: v for k, v in (('project', flag('project')), ('due', flag('due')), ('q', flag('query'))) if v})
+    if flag('stale'):
+        q['stale'] = '1'
+    return q
+
+
+def ls_shown(tasks, flag):
+    if flag('claude'):
+        tasks = [t for t in tasks if 'claude' in t['tags']]
+    if not (flag('stale') or flag('all') or flag('parked')):
+        tasks = [t for t in tasks if 'parked' not in t['tags']]  # set aside, like the Now view
+    week_ago = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+    return sorted(tasks, key=lambda t: urgency(t, week_ago))
+
+
+def cmd_ls(a):
+    """`tasks` alone lists too, so every flag is read with a default."""
+    flag = vars(a).get
+    tasks = ls_shown(call('/api/tasks?' + urllib.parse.urlencode(ls_query(flag)), auth=False)['tasks'], flag)
+    if flag('json'):
+        print(json.dumps(tasks, ensure_ascii=False, indent=1))
         return
-    if a.cmd == 'auth':
-        print(call('/api/tasks/auth').get('writer'))
-        return
-    if a.cmd == 'hook-ask':
-        hook_ask(sys.stdin)
-        return
-    if a.cmd == 'hook-stop':
-        hook_stop(sys.stdin)
-        return
-    if a.cmd == 'hook-prompt':
-        hook_prompt(sys.stdin)
-        return
-    if a.cmd == 'hook-name':
-        name_session(*a.bg, headless=a.headless) if a.bg else hook_name(sys.stdin)
-        return
-    if a.cmd == 'hook-gate':
-        sys.exit(hook_gate(sys.stdin))
-    if a.cmd in ('ask', 'decide'):
-        if manual_here() and session_id():
-            sys.exit('tasks: refused: this session runs on a machine outside Beacon (he explores here by hand). '
-                     'Ask him in this chat instead.')
-        if len(a.question.strip()) > ASK_MAX:  # the card's title (2026-11-22: a wall of bold text is unreadable)
-            sys.exit(f'tasks: refused: the question is {len(a.question.strip())} chars, keep it under {ASK_MAX}: only the '
-                     'question itself. Put the rest in -c as 2-4 short markdown bullets, each starting with an emoji '
-                     '("- 💰 costs 0 Kč", "- ⏱️ 10 min of your time"), and option details in -o "Label :: detail".')
-        opts = [option(o) for o in a.option]
-        look = needs_look('\n'.join([a.question, *[o if isinstance(o, str) else o['label'] + ' ' + (o.get('detail') or '')
-                                                    for o in opts]]),
-                          KIND_SLUG.sub('-', (a.kind or '').lower()).strip('-'))
-        if look and not a.see and not a.no_see:
-            sys.exit(f'tasks: refused: "{look}" means he has to look at or try something to decide, and he decides on '
-                     'his phone without opening Claude. Add what he looks at: --see <preview link> (http://<project> on '
-                     'the tailnet, or a public Vercel preview that opens logged out) and/or --see <screenshot.png> '
-                     '(390 px wide, cropped to the part he decides on; a frame for a video). Several --see are fine. Nothing to see at all? '
-                     '--no-see "why".')
-        hands = needs_hands('\n'.join([a.question, *[o if isinstance(o, str) else o['label'] + ' ' + (o.get('detail') or '')
-                                                      for o in opts]]),
-                            KIND_SLUG.sub('-', (a.kind or '').lower()).strip('-'))
-        steps = step_items(a.step)
-        if hands and not any(x.get('url') for x in steps):
-            sys.exit(f'tasks: refused: "{hands}" means he has to do something by hand, on his phone, without opening '
-                     'Claude. Give him a checklist: --step "Open Agreements :: <exact page link>" --step "Tap Accept on Paid '
-                     'Apps" … (2-6 short steps in plain words; open the link first and check it lands on that page). Keep the '
-                     'question one plain line ("Sign Apple\'s Paid Apps agreement?"), one short option ("Done"; never "Not now": his Later button puts it off without waking an agent), and '
-                     'put ids, error codes and script names after a "---" line in -c. Not by hand after all? Add a --step anyway.')
-        body = {'question': a.question, 'options': opts, 'kind': a.kind, 'project_asked': bool(a.project),
-                'blocking': a.blocking, 'project': a.project or current_project(), 'strict': True}
-        if a.see:
-            body['see'] = see_items(a.see)
-        if a.no_see:
-            body['see_none'] = a.no_see
-        if steps:
-            body['steps'] = steps
-        for k, v in (('default', a.default), ('context', read_text(a.context) if a.context else None), ('task_id', a.task)):
-            if v:
-                body[k] = v
-        sid = session_id()
-        if sid:
-            body['session_id'], body['author'] = sid, author()
+    for t in tasks:
+        print(line(t))
+    if not tasks:
+        print('nothing open')
+
+
+def cmd_auth(a):
+    print(call('/api/tasks/auth').get('writer'))
+
+
+def cmd_add(a):
+    body = {'title': a.title, 'project': a.project or current_project(), 'tags': a.tag}
+    if a.body is not None:
+        body['body'] = read_text(a.body)
+    body.update({k: v for k, v in (('priority', a.priority), ('due', a.due)) if v})
+    guard_progress(body)
+    if a.doing:  # in the same request: a todo task, even for a second, is the router's to hand out
+        body['status'] = 'doing'
+    sid = None if a.no_link else session_id()
+    if sid:  # the session link is the provenance (source is unique, a session files many)
+        body['author'] = author()
+    t = call('/api/tasks', body)
+    if sid:
+        t = call(f"/api/tasks/{t['id']}/sessions", {'session_id': sid})
+    print(json.dumps(t, ensure_ascii=False, indent=1) if a.json else f"{line(t)}\n{SITE}/#/task/{t['id']}")
+
+
+def cmd_show(a):
+    t = call(f'/api/tasks/{a.id}', auth=False)
+    if a.json:
+        print(json.dumps(t, ensure_ascii=False, indent=1))
+    else:
+        show(t)
+
+
+STATUS_OF = {'done': 'done', 'drop': 'dropped', 'doing': 'doing', 'todo': 'todo'}
+
+
+def set_status(a):
+    if getattr(a, 'note', None):
+        call(f'/api/tasks/{a.id}/comments', {'text': a.note, 'author': author()})
+    return call(f'/api/tasks/{a.id}', {'status': STATUS_OF[a.cmd]})
+
+
+def cmd_status(a):
+    print(line(set_status(a)))
+
+
+def cmd_doing(a):
+    """Taking a task: back in the list if it was parked, linked to this session, the session named after it,
+    and its plan's first step marked."""
+    t = set_status(a)
+    if 'parked' in t.get('tags', []):
+        t = call(f'/api/tasks/{a.id}', {'tags': [g for g in t['tags'] if g != 'parked']})
+    sid = session_id()
+    if sid:  # taking a task links the session working it, not only the one that filed it
+        call(f'/api/tasks/{a.id}/sessions', {'session_id': sid})
+    rename_for_task(t['title'])
+    if t.get('plan') and not t.get('step'):
+        t = call(f'/api/tasks/{a.id}', {'step': 1})
+    print(line(t))
+    print(plan_lines(t))
+
+
+def cmd_step(a):
+    t = call(f'/api/tasks/{a.id}', auth=False)
+    if not 1 <= a.n <= len(t.get('plan') or []):
+        sys.exit(f"tasks: #{a.id} has {len(t.get('plan') or [])} steps in ## Steps; write the plan there first")
+    print(plan_lines(call(f'/api/tasks/{a.id}', {'step': a.n})))
+
+
+def cmd_set(a):
+    fields = parse_set(a.pairs)
+    guard_progress(fields)
+    print(line(call(f'/api/tasks/{a.id}', fields)))
+
+
+HELD = {'auto': 'auto: waits for his OK (he adds claude)', 'parked': 'parked: stays parked until he takes it back',
+        'needs-spec': 'needs-spec: waits for his answers on http://beacon/decisions'}
+
+
+def cmd_handoff(a):
+    t = call(f'/api/tasks/{a.id}', auth=False)
+    if t['status'] in ('done', 'dropped'):
+        sys.exit(f"tasks: #{a.id} is {t['status']}; file the rest as a new task")
+    if t['status'] == 'doing' and 'claude' in t['tags']:
+        sys.exit(f"tasks: the task agent is running #{a.id} now; `tasks note {a.id} \"…\"` instead")
+    wait = [g for g in HELD if g in t['tags']]  # no go-ahead to inherit
+    tags = list(t['tags']) if wait else list(dict.fromkeys([*t['tags'], 'claude']))
+    call(f'/api/tasks/{a.id}/comments', {'text': '↪ Left for the task agent: ' + read_text(a.text), 'author': author()})
+    print(line(call(f'/api/tasks/{a.id}', {'status': 'todo', 'tags': tags})))
+    print(HELD[wait[0]] if wait else 'the task agent picks it up (claude)')
+
+
+def cmd_note(a):
+    call(f'/api/tasks/{a.id}/comments', {'text': read_text(a.text), 'author': author()})
+    print(f'noted on #{a.id}')
+
+
+def cmd_link(a):
+    sid = a.session or session_id()
+    if not sid:
+        sys.exit('tasks: no session id given and not inside a Claude Code session')
+    call(f'/api/tasks/{a.id}/sessions', {'session_id': sid if ':' in sid else f'Claude Code:{sid}'})
+    print(f'#{a.id} linked to {sid}')
+
+
+def cmd_hook_name(a):
+    if a.bg:
+        name_session(*a.bg, headless=a.headless)
+    else:
+        hook_name(sys.stdin)
+
+
+# ------------------------------------------------------------------ question commands
+
+def refuse_unfit_ask(a, opts):
+    """A card he can't decide from his phone is refused before it is sent: too long, nothing to look at, or
+    by-hand work without a checklist."""
+    if manual_here() and session_id():
+        sys.exit('tasks: refused: this session runs on a machine outside Beacon (he explores here by hand). '
+                 'Ask him in this chat instead.')
+    if len(a.question.strip()) > ASK_MAX:  # the card's title: a wall of bold text is unreadable
+        sys.exit(f'tasks: refused: the question is {len(a.question.strip())} chars, keep it under {ASK_MAX}: only the '
+                 'question itself. Put the rest in -c as 2-4 short markdown bullets, each starting with an emoji '
+                 '("- 💰 costs 0 Kč", "- ⏱️ 10 min of your time"), and option details in -o "Label :: detail".')
+    refuse_unseen(a, opts)
+
+
+def ask_words(a, opts):
+    """The ask's question and options as one text, and its kind as a slug: what the look and hands rules read."""
+    text = '\n'.join([a.question, *[o if isinstance(o, str) else o['label'] + ' ' + (o.get('detail') or '') for o in opts]])
+    return text, KIND_SLUG.sub('-', (a.kind or '').lower()).strip('-')
+
+
+def refuse_unseen(a, opts):
+    """A look-or-try decision without what to look at, or by-hand work without a checklist."""
+    text, kind = ask_words(a, opts)
+    look = needs_look(text, kind)
+    if look and not a.see and not a.no_see:
+        sys.exit(f'tasks: refused: "{look}" means he has to look at or try something to decide, and he decides on '
+                 'his phone without opening Claude. Add what he looks at: --see <preview link> (http://<project> on '
+                 'the tailnet, or a public Vercel preview that opens logged out) and/or --see <screenshot.png> '
+                 '(390 px wide, cropped to the part he decides on; a frame for a video). Several --see are fine. Nothing to see at all? '
+                 '--no-see "why".')
+    hands = needs_hands(text, kind)
+    if hands and not any(x.get('url') for x in step_items(a.step)):
+        sys.exit(f'tasks: refused: "{hands}" means he has to do something by hand, on his phone, without opening '
+                 'Claude. Give him a checklist: --step "Open Agreements :: <exact page link>" --step "Tap Accept on Paid '
+                 'Apps" … (2-6 short steps in plain words; open the link first and check it lands on that page). Keep the '
+                 'question one plain line ("Sign Apple\'s Paid Apps agreement?"), one short option ("Done"; never "Not now": his Later button puts it off without waking an agent), and '
+                 'put ids, error codes and script names after a "---" line in -c. Not by hand after all? Add a --step anyway.')
+
+
+def ask_body(a, opts):
+    body = {'question': a.question, 'options': opts, 'kind': a.kind, 'project_asked': bool(a.project),
+            'blocking': a.blocking, 'project': a.project or current_project(), 'strict': True}
+    steps = step_items(a.step)
+    extra = (('see', see_items(a.see) if a.see else None), ('see_none', a.no_see), ('steps', steps),
+             ('default', a.default), ('context', read_text(a.context) if a.context else None), ('task_id', a.task))
+    body.update({k: v for k, v in extra if v})
+    sid = session_id()
+    if sid:
+        body['session_id'], body['author'] = sid, author()
+    return body
+
+
+RESUME_NOTE = (' If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k '
+               'tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.')
+
+
+def explain_asked(q, a):
+    """After an ask: whose task it is on, who carries out his answer, and what the asker does meanwhile."""
+    if q.get('task_id') and not a.task:
+        print(f"On task #{q['task_id']} (your session's task, or one filed for it): his answer resumes it.")
+    if q.get('task_id'):
         try:
-            q = call('/api/questions', body)
+            why = other_work(q, call(f"/api/tasks/{q['task_id']}", auth=False))
         except SystemExit:
-            card_rules()  # refused: the rules it must keep come with the reason
-            raise
-        if a.json:
-            print(json.dumps(q, ensure_ascii=False, indent=1))
-            return
-        print(f"{qline(q)}\n{PAGE}#/q/{q['id']}")
-        bad_lately(q['id'])
-        card_rules()
-        if q.get('task_id') and not a.task:
-            print(f"On task #{q['task_id']} (your session's task, or one filed for it): his answer resumes it.")
-        if q.get('task_id'):
-            try:
-                why = other_work(q, call(f"/api/tasks/{q['task_id']}", auth=False))
-            except SystemExit:
-                why = ''
-            if why:
-                print(f"His answer runs in a fresh session ({why}): it gets task #{q['task_id']}, its last notes and this "
-                      f"card only. Make the card's context say what each answer means there (repo, PR, checks).")
-        if q['blocking']:
-            print("Blocking: hold the work that depends on it, do everything else, then end your turn. Don't run "
-                  "`tasks wait`: when he answers, answer-dispatcher resumes this session with his answer."
-                  ' If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.')
-        else:
-            print(f"Go on with {q['default_answer']!r} now. Don't run `tasks wait`: if he picks otherwise, "
-                  "answer-dispatcher resumes this session with his answer."
-                  ' If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.')
-            if q.get('gate_blocking'):  # shadow gate: it would hold this; an asker that holds it anyway must say so
-                print(f"The approval gate would hold this one (it only records for now). If you hold the work until he "
-                      f"answers, run `tasks block {q['id']}` (the same card turns blocking, never ask it twice), so his "
-                      f"answer is carried out, not dropped.")
+            why = ''
+        if why:
+            print(f"His answer runs in a fresh session ({why}): it gets task #{q['task_id']}, its last notes and this "
+                  f"card only. Make the card's context say what each answer means there (repo, PR, checks).")
+    if q['blocking']:
+        print("Blocking: hold the work that depends on it, do everything else, then end your turn. Don't run "
+              "`tasks wait`: when he answers, answer-dispatcher resumes this session with his answer." + RESUME_NOTE)
         return
-    if a.cmd == 'wait':
-        start, left = time.time(), list(dict.fromkeys(a.ids))
-        parent, beat, misses, hmisses = os.getppid(), 0, 0, 0
+    print(f"Go on with {q['default_answer']!r} now. Don't run `tasks wait`: if he picks otherwise, "
+          "answer-dispatcher resumes this session with his answer." + RESUME_NOTE)
+    if q.get('gate_blocking'):  # shadow gate: it would hold this; an asker that holds it anyway must say so
+        print(f"The approval gate would hold this one (it only records for now). If you hold the work until he "
+              f"answers, run `tasks block {q['id']}` (the same card turns blocking, never ask it twice), so his "
+              f"answer is carried out, not dropped.")
+
+
+def cmd_ask(a):
+    opts = [option(o) for o in a.option]
+    refuse_unfit_ask(a, opts)
+    try:
+        q = call('/api/questions', ask_body(a, opts))
+    except SystemExit:
+        card_rules()  # refused: the rules it must keep come with the reason
+        raise
+    if a.json:
+        print(json.dumps(q, ensure_ascii=False, indent=1))
+        return
+    print(f"{qline(q)}\n{PAGE}#/q/{q['id']}")
+    bad_lately(q['id'])
+    card_rules()
+    explain_asked(q, a)
+
+
+def still_open(ids):
+    if ids:
+        print(f"still open: {' '.join('?%d' % x for x in ids)} (end your turn; the dispatcher brings those answers back)")
+
+
+class AnswerWait:
+    """`tasks wait`: polls the questions until one is answered, withdrawn or handed to a fresh session, while
+    telling the hub a live asker is waiting. Each answered state has its own step; a step returns DONE (the
+    answer is printed), NEXT (look at the next question) or AGAIN (the hub hiccupped: poll again later)."""
+    DONE, NEXT, AGAIN = 'done', 'next', 'again'
+    TRIES = 6  # hub hiccups in a row before a claim or a handoff stops waiting for it
+
+    def __init__(self, ids, timeout, every):
+        self.start, self.left = time.time(), list(dict.fromkeys(ids))
+        self.parent, self.beat, self.misses, self.hmisses = os.getppid(), 0, 0, 0
+        self.timeout, self.every = min(timeout or WAIT_MAX, WAIT_MAX), every
+
+    def run(self):
         while True:
-            if os.name != 'nt' and os.getppid() != parent:  # its session is gone: never swallow his answer
+            if os.name != 'nt' and os.getppid() != self.parent:  # its session is gone: never swallow his answer
                 sys.exit(4)
-            if time.time() - beat >= 15:  # a live asker: the answer dispatcher leaves the answer to this chat
-                beat = time.time()
-                for qid in left:
-                    try:
-                        call(f'/api/questions/{qid}/waiting', {})
-                    except SystemExit:
-                        pass
-            for qid in left:
-                try:
-                    q = call(f'/api/questions/{qid}', auth=False)
-                except SystemExit as e:  # the hub restarting or the network gone a while: keep waiting
-                    if 'unreachable' not in str(e) and 'server error' not in str(e):
-                        raise
-                    break
-                if q['status'] == 'answered' and q.get('applied_at') and str(qid) in os.environ.get('BEACON_QID', '').split(','):
-                    print(said(q) + '\nThis run was started to carry it out: do it now.', flush=True)
-                    return
-                if q['status'] == 'answered' and q.get('applied_at'):
-                    # carried out already: in this chat (a button), or by the answer dispatcher while this
-                    # machine slept. Say so, so the session never does it a second time.
-                    print(f"?{qid} answered: {q['answer']}\nAlready carried out "
-                          + ('in this chat' if q.get('answered_via') == 'chat' else 'elsewhere (answer-dispatcher; he got a Telegram and a note on the task)')
-                          + ': check its result, do not repeat it.', flush=True)
-                    rest = [x for x in left if x != qid]
-                    if rest:
-                        print(f"still open: {' '.join('?%d' % x for x in rest)} (end your turn; the dispatcher brings those answers back)")
-                    return
-                if q['status'] == 'answered' and not q.get('handoff_at') and hmisses < 6:
-                    try:
-                        task = call(f"/api/tasks/{q['task_id']}", auth=False) if q.get('task_id') else None
-                    except SystemExit:
-                        task = None
-                    size, idle = session_size()
-                    # quiet only when nothing here must change course (else it would build on its old default)
-                    why = hand_off_why(q, task, size, idle)
-                    quiet = bool(too_big_idle(q, size, idle)) and not switch_line(q)
-                    if why:
-                        try:
-                            call(f'/api/questions/{qid}/handoff', {'reason': why})
-                        except SystemExit:  # a hub blip, or a hub without handoffs yet: after a few, carry it out here
-                            hmisses += 1
-                            break
-                        left = [x for x in left if x != qid]
-                        if quiet:
-                            continue  # waking a big idle session only to say "handed" costs what the handoff saves
-                        print(handed(q, why), flush=True)
-                        if left:
-                            print(f"still open: {' '.join('?%d' % x for x in left)} (end your turn; the dispatcher brings those answers back)")
-                        return
-                if q['status'] == 'answered' and q.get('handoff_at'):
-                    print(handed(q, q.get('handoff_reason') or 'it was handed off'), flush=True)
-                    rest = [x for x in left if x != qid]
-                    if rest:
-                        print(f"still open: {' '.join('?%d' % x for x in rest)} (end your turn; the dispatcher brings those answers back)")
-                    return
-                if q['status'] == 'answered':
-                    try:  # claimed, so the dispatcher never starts a second run on it
-                        won = call(f'/api/questions/{qid}/claim', {'by': session_id() or 'tasks wait'}).get('won', True)
-                    except SystemExit:  # a hub blip: try again; only a hub gone for good still hands it over
-                        misses += 1
-                        won = misses >= 6
-                        if not won:
-                            break
-                    if not won:
-                        continue  # the dispatcher took it this second: the next poll says so
-                    print(said(q), flush=True)
-                    rest = [x for x in left if x != qid]
-                    if rest:
-                        print(f"still open: {' '.join('?%d' % x for x in rest)} (end your turn; the dispatcher brings those answers back)")
-                    return
-                if q['status'] == 'withdrawn':
-                    print(f"?{qid} withdrawn" + (f": {q['answer_note']}" if q.get('answer_note') else ''))
-                    sys.exit(3)
-            if time.time() - start >= min(a.timeout or WAIT_MAX, WAIT_MAX):
-                if left:  # nothing left = all quietly handed off: the session is not woken to hear it
-                    print(f"no answer yet: {' '.join('?%d' % x for x in left)}. Stop waiting: don't run `tasks wait` "
+            self.heartbeat()
+            if self.poll() == self.DONE:
+                return
+            if time.time() - self.start >= self.timeout:
+                if self.left:  # nothing left = all quietly handed off: the session is not woken to hear it
+                    print(f"no answer yet: {' '.join('?%d' % x for x in self.left)}. Stop waiting: don't run `tasks wait` "
                           f"again, end your turn now with no text. When he answers, answer-dispatcher resumes this "
                           f"session with his answer.")
                 sys.exit(2)
-            time.sleep(a.every)
-    if a.cmd == 'questions':
-        if a.kinds:
-            q = {'since': time.time() - a.since * 86400} if a.since else {}
-            kinds = call('/api/questions/kinds?' + urllib.parse.urlencode(q), auth=False)['kinds']
-            if a.json:
-                print(json.dumps(kinds, ensure_ascii=False, indent=1))
-            for k in [] if a.json else kinds:
-                print(f"{k['kind']:<16} answered {k['answered']:>3}  took the agent's default {k['took_default']:>3}  standing {k['standing']}")
+            time.sleep(self.every)
+
+    def heartbeat(self):
+        """A live asker: the answer dispatcher leaves the answer to this chat."""
+        if time.time() - self.beat < 15:
             return
-        q = {'status': 'all' if a.all else 'answered' if a.answered else 'open', 'limit': 2000}
-        for k, v in (('kind', a.kind), ('project', a.project)):
-            if v:
-                q[k] = v
-        if a.since:
-            q['since'] = time.time() - a.since * 86400
-        rows = call('/api/questions?' + urllib.parse.urlencode(q), auth=False)['questions']
-        if a.json:
-            print(json.dumps(rows, ensure_ascii=False, indent=1))
-        else:
-            for x in rows:
-                print(qline(x))
-            if not rows:
-                print('nothing open' if q['status'] == 'open' else 'nothing logged')
+        self.beat = time.time()
+        for qid in self.left:
+            try:
+                call(f'/api/questions/{qid}/waiting', {})
+            except SystemExit:
+                pass
+
+    def poll(self):
+        for qid in list(self.left):
+            try:
+                q = call(f'/api/questions/{qid}', auth=False)
+            except SystemExit as e:  # the hub restarting or the network gone a while: keep waiting
+                if 'unreachable' not in str(e) and 'server error' not in str(e):
+                    raise
+                return self.AGAIN
+            got = self.settle(qid, q)
+            if got != self.NEXT:
+                return got
+        return self.NEXT
+
+    def rest(self, qid):
+        return [x for x in self.left if x != qid]
+
+    def settle(self, qid, q):
+        if q['status'] == 'withdrawn':
+            print(f"?{qid} withdrawn" + (f": {q['answer_note']}" if q.get('answer_note') else ''))
+            sys.exit(3)
+        if q['status'] != 'answered':
+            return self.NEXT
+        if q.get('applied_at'):
+            return self.applied(qid, q)
+        if not q.get('handoff_at') and self.hmisses < self.TRIES:
+            got = self.hand_off(qid, q)
+            if got:
+                return got
+        if q.get('handoff_at'):
+            print(handed(q, q.get('handoff_reason') or 'it was handed off'), flush=True)
+            still_open(self.rest(qid))
+            return self.DONE
+        return self.claim(qid, q)
+
+    def applied(self, qid, q):
+        if str(qid) in os.environ.get('BEACON_QID', '').split(','):
+            print(said(q) + '\nThis run was started to carry it out: do it now.', flush=True)
+            return self.DONE
+        # carried out already: in this chat (a button), or by the answer dispatcher while this machine slept.
+        # Say so, so the session never does it a second time.
+        print(f"?{qid} answered: {q['answer']}\nAlready carried out "
+              + ('in this chat' if q.get('answered_via') == 'chat' else 'elsewhere (answer-dispatcher; he got a Telegram and a note on the task)')
+              + ': check its result, do not repeat it.', flush=True)
+        still_open(self.rest(qid))
+        return self.DONE
+
+    def hand_off(self, qid, q):
+        """His answer goes to a fresh session when it is other work or this one is too big and idle; None when
+        this session carries it out."""
+        try:
+            task = call(f"/api/tasks/{q['task_id']}", auth=False) if q.get('task_id') else None
+        except SystemExit:
+            task = None
+        size, idle = session_size()
+        why = hand_off_why(q, task, size, idle)
+        if not why:
+            return None
+        # quiet only when nothing here must change course (else it would build on its old default)
+        quiet = bool(too_big_idle(q, size, idle)) and not switch_line(q)
+        try:
+            call(f'/api/questions/{qid}/handoff', {'reason': why})
+        except SystemExit:  # a hub blip, or a hub without handoffs yet: after a few, carry it out here
+            self.hmisses += 1
+            return self.AGAIN
+        self.left = self.rest(qid)
+        if quiet:
+            return self.NEXT  # waking a big idle session only to say "handed" costs what the handoff saves
+        print(handed(q, why), flush=True)
+        still_open(self.left)
+        return self.DONE
+
+    def claim(self, qid, q):
+        """Claimed, so the dispatcher never starts a second run on it."""
+        try:
+            won = call(f'/api/questions/{qid}/claim', {'by': session_id() or 'tasks wait'}).get('won', True)
+        except SystemExit:  # a hub blip: try again; only a hub gone for good still hands it over
+            self.misses += 1
+            won = self.misses >= self.TRIES
+            if not won:
+                return self.AGAIN
+        if not won:
+            return self.NEXT  # the dispatcher took it this second: the next poll says so
+        print(said(q), flush=True)
+        still_open(self.rest(qid))
+        return self.DONE
+
+
+def cmd_wait(a):
+    AnswerWait(a.ids, a.timeout, a.every).run()
+
+
+def cmd_question_kinds(a):
+    q = {'since': time.time() - a.since * 86400} if a.since else {}
+    kinds = call('/api/questions/kinds?' + urllib.parse.urlencode(q), auth=False)['kinds']
+    if a.json:
+        print(json.dumps(kinds, ensure_ascii=False, indent=1))
         return
-    if a.cmd == 'answer':
-        body = {'answer': a.text, 'standing': a.always}
-        if a.chat:
-            body['via'] = 'chat'
-        if a.note:
-            body['note'] = a.note
-        print(qline(call(f'/api/questions/{a.id}/answer', body)))
+    for k in kinds:
+        print(f"{k['kind']:<16} answered {k['answered']:>3}  took the agent's default {k['took_default']:>3}  standing {k['standing']}")
+
+
+def questions_query(a):
+    q = {'status': 'all' if a.all else 'answered' if a.answered else 'open', 'limit': 2000}
+    q.update({k: v for k, v in (('kind', a.kind), ('project', a.project)) if v})
+    if a.since:
+        q['since'] = time.time() - a.since * 86400
+    return q
+
+
+def cmd_questions(a):
+    if a.kinds:
+        cmd_question_kinds(a)
         return
-    if a.cmd == 'withdraw':
-        print(qline(call(f'/api/questions/{a.id}/withdraw', {'note': a.note})))
+    q = questions_query(a)
+    rows = call('/api/questions?' + urllib.parse.urlencode(q), auth=False)['questions']
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=1))
         return
-    if a.cmd == 'see':
-        q = call(f'/api/questions/{a.id}/see', {'see': see_items(a.refs)})
-        print(f"{qline(q)}\n  👀 {len(q['see'])} to look at on the card")
-        return
-    if a.cmd == 'block':
-        q = call(f'/api/questions/{a.id}/see', {'blocking': True})
-        print(f"{qline(q)}\n  ⏸️ blocking: hold the work that depends on it and end your turn; his answer resumes you")
-        return
-    if a.cmd == 'steps':
-        q = call(f'/api/questions/{a.id}/see', {'steps': step_items(a.steps)})
-        print(f"{qline(q)}\n  ☑️ {len(q['steps'])} steps on the card")
-        return
-    if a.cmd == 'add':
-        body = {'title': a.title, 'project': a.project or current_project(), 'tags': a.tag}
-        if a.body is not None:
-            body['body'] = read_text(a.body)
-        if a.priority:
-            body['priority'] = a.priority
-        if a.due:
-            body['due'] = a.due
-        guard_progress(body)
-        if a.doing:  # in the same request: a todo task, even for a second, is the router's to hand out
-            body['status'] = 'doing'
-        sid = None if a.no_link else session_id()
-        if sid:  # the session link is the provenance (source is unique, a session files many)
-            body['author'] = author()
-        t = call('/api/tasks', body)
-        if sid:
-            t = call(f"/api/tasks/{t['id']}/sessions", {'session_id': sid})
-        print(json.dumps(t, ensure_ascii=False, indent=1) if a.json else f"{line(t)}\n{SITE}/#/task/{t['id']}")
-        return
-    if a.cmd == 'show':
-        t = call(f'/api/tasks/{a.id}', auth=False)
-        print(json.dumps(t, ensure_ascii=False, indent=1)) if a.json else show(t)
-        return
-    if a.cmd in ('done', 'drop', 'doing', 'todo'):
-        status = {'done': 'done', 'drop': 'dropped', 'doing': 'doing', 'todo': 'todo'}[a.cmd]
-        if getattr(a, 'note', None):
-            call(f'/api/tasks/{a.id}/comments', {'text': a.note, 'author': author()})
-        t = call(f'/api/tasks/{a.id}', {'status': status})
-        if a.cmd == 'doing' and 'parked' in t.get('tags', []):  # taken again: back in the list
-            t = call(f'/api/tasks/{a.id}', {'tags': [g for g in t['tags'] if g != 'parked']})
-        sid = session_id() if a.cmd == 'doing' else None
-        if sid:  # taking a task links the session working it, not only the one that filed it
-            call(f'/api/tasks/{a.id}/sessions', {'session_id': sid})
-        if a.cmd == 'doing':
-            rename_for_task(t['title'])
-            if t.get('plan') and not t.get('step'):
-                t = call(f'/api/tasks/{a.id}', {'step': 1})
-        print(line(t))
-        if a.cmd == 'doing':
-            print(plan_lines(t))
-        return
-    if a.cmd == 'step':
-        t = call(f'/api/tasks/{a.id}', auth=False)
-        if not 1 <= a.n <= len(t.get('plan') or []):
-            sys.exit(f"tasks: #{a.id} has {len(t.get('plan') or [])} steps in ## Steps; write the plan there first")
-        t = call(f'/api/tasks/{a.id}', {'step': a.n})
-        print(plan_lines(t))
-        return
-    if a.cmd == 'set':
-        fields = parse_set(a.pairs)
-        guard_progress(fields)
-        print(line(call(f'/api/tasks/{a.id}', fields)))
-        return
-    if a.cmd == 'handoff':
-        t = call(f'/api/tasks/{a.id}', auth=False)
-        if t['status'] in ('done', 'dropped'):
-            sys.exit(f"tasks: #{a.id} is {t['status']}; file the rest as a new task")
-        if t['status'] == 'doing' and 'claude' in t['tags']:
-            sys.exit(f"tasks: the task agent is running #{a.id} now; `tasks note {a.id} \"…\"` instead")
-        wait = [g for g in ('auto', 'parked', 'needs-spec') if g in t['tags']]  # no go-ahead to inherit
-        tags = list(t['tags']) if wait else list(dict.fromkeys([*t['tags'], 'claude']))
-        call(f'/api/tasks/{a.id}/comments', {'text': '↪ Left for the task agent: ' + read_text(a.text), 'author': author()})
-        t = call(f'/api/tasks/{a.id}', {'status': 'todo', 'tags': tags})
-        print(line(t))
-        print({'auto': 'auto: waits for his OK (he adds claude)', 'parked': 'parked: stays parked until he takes it back',
-               'needs-spec': 'needs-spec: waits for his answers on http://beacon/decisions'}[wait[0]] if wait
-              else 'the task agent picks it up (claude)')
-        return
-    if a.cmd == 'note':
-        call(f'/api/tasks/{a.id}/comments', {'text': read_text(a.text), 'author': author()})
-        print(f'noted on #{a.id}')
-        return
-    if a.cmd == 'link':
-        sid = a.session or session_id()
-        if not sid:
-            sys.exit('tasks: no session id given and not inside a Claude Code session')
-        call(f'/api/tasks/{a.id}/sessions', {'session_id': sid if ':' in sid else f'Claude Code:{sid}'})
-        print(f'#{a.id} linked to {sid}')
+    for x in rows:
+        print(qline(x))
+    if not rows:
+        print('nothing open' if q['status'] == 'open' else 'nothing logged')
+
+
+def cmd_answer(a):
+    body = {'answer': a.text, 'standing': a.always}
+    if a.chat:
+        body['via'] = 'chat'
+    if a.note:
+        body['note'] = a.note
+    print(qline(call(f'/api/questions/{a.id}/answer', body)))
+
+
+def cmd_withdraw(a):
+    print(qline(call(f'/api/questions/{a.id}/withdraw', {'note': a.note})))
+
+
+def cmd_see(a):
+    q = call(f'/api/questions/{a.id}/see', {'see': see_items(a.refs)})
+    print(f"{qline(q)}\n  👀 {len(q['see'])} to look at on the card")
+
+
+def cmd_block(a):
+    q = call(f'/api/questions/{a.id}/see', {'blocking': True})
+    print(f"{qline(q)}\n  ⏸️ blocking: hold the work that depends on it and end your turn; his answer resumes you")
+
+
+def cmd_steps(a):
+    q = call(f'/api/questions/{a.id}/see', {'steps': step_items(a.steps)})
+    print(f"{qline(q)}\n  ☑️ {len(q['steps'])} steps on the card")
+
+
+def main(argv=None):
+    utf8_console()
+    a = build_parser().parse_args(argv)
+    getattr(a, 'run', cmd_ls)(a)
 
 
 if __name__ == '__main__':
