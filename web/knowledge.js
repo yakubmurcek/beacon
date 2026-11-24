@@ -349,10 +349,11 @@ function pill(ctx, x, text, X, ty, scale) {  // the lit dot's name on a paper pi
   ctx.stroke();
 }
 
-function label(x, ctx, scale, X, Y, r) {
+function label(x, ctx, scale, X, Y, r, top) {  // the lit dot's own name is drawn last (top), over every other dot
+  const isFocus = x === focusNode();
+  if (isFocus !== !!top) return;
   const fade = labelFade(x, scale);
   if (fade < 0.03) return;
-  const isFocus = x === focusNode();
   const text = x.label.length > 42 ? `${x.label.slice(0, 40)}…` : x.label;
   ctx.font = `${isFocus ? 600 : 500} ${(isFocus ? 13 : 11.5) / scale}px Inter, system-ui, sans-serif`;
   ctx.textAlign = 'center';
@@ -627,6 +628,10 @@ function build() {
     .warmupTicks(0)
     .cooldownTicks(0)  // the layout is ours (settle): force-graph only draws, so nothing ever jumps on its own
     .onRenderFramePre((_ctx, scale) => step(scale))
+    .onRenderFramePost((ctx, scale) => {
+      const f = focusNode();
+      if (f && !hiddenGroups.has(f.group)) label(f, ctx, scale, px(f), py(f), radius(f) * (f.s || 1), true);
+    })
     .onNodeDragEnd(() => savePositions());
   fg.d3Force('charge', null).d3Force('center', null);  // no forces inside force-graph: a drag moves just that dot
   // the mouse's place feeds the lean; a wheel, a drag of the paper or a pinch means he set the view himself
