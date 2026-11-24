@@ -105,6 +105,15 @@
 .bdg .ic { width: 13px; height: 13px; color: var(--muted); }
 .bdg.mailready { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); color: var(--accent-ink); }
 .bdg.mailready .ic { color: var(--accent-ink); }
+.aichip { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; font: 650 12px/1 var(--sans); padding: 4px 9px 4px 7px; border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--cyan) 14%, var(--panel)); color: color-mix(in srgb, var(--cyan) 55%, var(--text)); }
+.aichip .ic { width: 13px; height: 13px; color: var(--cyan); }
+.aichip.lv3 { background: color-mix(in srgb, var(--cyan) 26%, var(--panel)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cyan) 45%, transparent); }
+.aichip.lv0 { background: var(--panel-2); color: var(--muted); }
+.aichip.lv0 .ic { color: var(--dim); }
+.ld-why.ld-ai { background: color-mix(in srgb, var(--cyan) 10%, var(--panel)); }
+.ld-why.ld-ai .ic { color: var(--cyan) }
+.role-q { font-size: 12.5px; line-height: 1.4; color: var(--muted); font-style: italic; }
 .meter { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
 .meter i { width: 4px; border-radius: 2px; background: color-mix(in srgb, var(--dim) 45%, transparent); }
 .meter i:nth-child(1) { height: 5px; } .meter i:nth-child(2) { height: 8px; } .meter i:nth-child(3) { height: 12px; }
@@ -167,7 +176,7 @@ a.role:hover { border-color: var(--pop-line); }
 .role.other { opacity: .55; }
 .role .fld { flex: none; font: 700 11px/1 var(--sans); padding: 3px 7px; border-radius: var(--r-pill); background: var(--panel-2); color: var(--text); }
 .role-t { font: 650 14.5px/1.35 var(--sans); }
-.role-m { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; }
+.role-m { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--muted); font-size: 12.5px; }
 .role .go { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--accent-ink); width: 18px; height: 18px; }
 .srcs { display: flex; flex-wrap: wrap; gap: 6px; }
 .src { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px 4px 4px; border-radius: var(--r-pill); border: 1px solid var(--line);

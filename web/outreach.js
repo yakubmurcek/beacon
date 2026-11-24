@@ -36,6 +36,7 @@ const ICONS = {
   pin: '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.7 1.8L21.5 17.5l-1.8.7L19 20l-.7-1.8-1.8-.7 1.8-.7z"/>',
 };
 const ic = (name, cls) => h('span', { class: 'ic' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true',
   html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>` });
@@ -62,6 +63,13 @@ function avatar(name, url, big) {  // the firm's own logo when its site has one,
 const meter = (level) => {  // chance as three bars: high fills three, medium two, low one
   const n = { high: 3, mid: 2, low: 1 }[level] || 0;
   return h('span', { class: 'meter', style: `--cc:${(CHANCE[level] || [])[1] || 'var(--dim)'}` }, [1, 2, 3].map((i) => h('i', { class: i <= n ? 'on' : '' })));
+};
+// how much AI a role asks for, read from its ad: three bars like the chance, in their own colour
+const AI = { native: [3, 'AI-native'], daily: [2, 'AI daily'], mentioned: [1, 'AI mentioned'], none: [0, 'No AI'] };
+const aiChip = (level) => {
+  const [n, word] = AI[level] || [0, level];
+  return h('span', { class: 'aichip lv' + n }, ic('spark'),
+    h('span', { class: 'meter', style: '--cc:var(--cyan)' }, [1, 2, 3].map((i) => h('i', { class: i <= n ? 'on' : '' }))), word);
 };
 const chanceChip = (level) => h('span', { class: 'chance' }, meter(level), (CHANCE[level] || [level])[0] + ' chance');
 
@@ -148,7 +156,7 @@ function more(total, key) {
 
 const SRANK = Object.fromEntries(STATUS.map(([k], i) => [k, i]));
 // filters: what a list's reader tags each lead with (r.facets), plus chance, type and town where they split the group
-const FACET_IC = { Where: 'pin', Field: 'briefcase', 'Open role': 'briefcase', Chance: 'target', Type: 'building', Town: 'pin' };
+const FACET_IC = { AI: 'spark', Where: 'pin', Field: 'briefcase', 'Open role': 'briefcase', Chance: 'target', Type: 'building', Town: 'pin' };
 function facetsOf(r) {
   const f = { ...(r.facets || {}) };
   if (r.chance && !f.Chance) f.Chance = [(CHANCE[r.chance] || [r.chance])[0] + ' chance'];
@@ -207,9 +215,10 @@ function refreshFacets() {
 // only the developer under IT)
 function openRoles(r) {
   const rows = ((r.detail || []).find((x) => /open roles/i.test(x.title || '')) || { rows: [] }).rows;
-  const f = st.facets.Field;
-  return f ? rows.filter((x) => !x.field || x.field === f) : rows;
+  const f = st.facets.Field, a = st.facets.AI;
+  return rows.filter((x) => (!f || !x.field || x.field === f) && (!a || !x.ai || (AI[x.ai] || [])[1] === a));
 }
+const bestAi = (rows) => rows.map((x) => x.ai).filter((x) => AI[x]).sort((a, b) => AI[b][0] - AI[a][0])[0] || '';
 
 function leadCard(r) {
   const src = r.source || {};
@@ -220,7 +229,9 @@ function leadCard(r) {
   if (r.web) links.push(h('a', { href: r.web, target: '_blank', rel: 'noopener', class: 'sub' }, r.web.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')));
   const matching = openRoles(r);
   const roles = matching.length;
-  const segment = st.facets.Field && matching.length ? matching[0].text : r.segment;
+  const filtered = st.facets.Field || st.facets.AI;
+  const segment = filtered && matching.length ? matching[0].text : r.segment;
+  const ai = filtered ? bestAi(matching) || r.ai : r.ai;
   const mail = (r.detail || []).some((x) => x.mail);
   return h('article', { class: 'lead', style: `--c:${pcolor(r.project)}`, tabindex: '0', role: 'button', 'aria-label': `${r.name}: open the detail`,
     onclick: (e) => { if (!e.target.closest('a')) openLead(r); },
@@ -231,10 +242,11 @@ function leadCard(r) {
         h('h3', null, r.name),
         h('div', { class: 'where' }, [st.project ? null : pname(r.project), segment, r.town].filter(Boolean).join(' · '))),
       h('span', { class: 'st', style: `--sc:${SCOLOR[r.status] || 'var(--dim)'}` }, SWORD[r.status] || r.status)),
-    r.chance || r.person || roles || mail ? h('div', { class: 'badges' },
+    r.chance || r.person || roles || mail || r.ai ? h('div', { class: 'badges' },
       r.chance ? chanceChip(r.chance) : null,
+      ai ? aiChip(ai) : null,
       mail ? h('span', { class: 'bdg mailready' }, ic('mail'), 'Mail ready') : null,
-      roles ? h('span', { class: 'bdg' }, ic('briefcase'), (roles === 1 ? '1 open role' : roles + ' open roles') + (st.facets.Field ? ' in ' + st.facets.Field : '')) : null,
+      roles ? h('span', { class: 'bdg' }, ic('briefcase'), (roles === 1 ? '1 open role' : roles + ' open roles') + (filtered ? ' that match' : '')) : null,
       r.person ? h('span', { class: 'bdg' }, ic('user'), r.person) : null) : null,
     r.know ? h('p', { class: 'know' }, r.know) : null,
     h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
@@ -267,11 +279,12 @@ function openLead(r, quiet) {
     const icon = (SECTION_IC.find(([re]) => re.test(sec.title || '')) || [])[1];
     const head = h('h4', null, ic(icon), sec.title);
     if (/open roles/i.test(sec.title || '')) {  // open roles: one card each, with how well it fits
-      const f = st.facets.Field;
-      const sorted = f ? [...sec.rows].sort((a, b) => (b.field === f) - (a.field === f)) : sec.rows;
-      return h('section', { class: 'ld-sec' }, head, h('div', { class: 'roles' }, sorted.map((x) => h(x.url ? 'a' : 'div', { class: 'role' + (f && x.field && x.field !== f ? ' other' : ''), ...(x.url ? { href: x.url, ...ext(x.url) } : {}) },
+      const keep = new Set(openRoles(r));
+      const sorted = [...sec.rows].sort((a, b) => keep.has(b) - keep.has(a) || ((AI[b.ai] || [0])[0] - (AI[a.ai] || [0])[0]));
+      return h('section', { class: 'ld-sec' }, head, h('div', { class: 'roles' }, sorted.map((x) => h(x.url ? 'a' : 'div', { class: 'role' + (keep.has(x) ? '' : ' other'), ...(x.url ? { href: x.url, ...ext(x.url) } : {}) },
         h('span', { class: 'role-t' }, x.text),
-        h('span', { class: 'role-m' }, x.field ? h('span', { class: 'fld' }, x.field) : null, x.fit ? meter(x.fit) : null, x.note || ''),
+        h('span', { class: 'role-m' }, x.field ? h('span', { class: 'fld' }, x.field) : null, x.ai ? aiChip(x.ai) : null, x.fit ? meter(x.fit) : null, x.note || ''),
+        x.ai_quote ? h('span', { class: 'role-q' }, x.ai_quote) : null,
         x.url ? ic('arrow', 'go') : null))));
     }
     if (sec.rows.every((x) => x.url && !x.label)) {  // sources: chips with each site's own icon
@@ -293,10 +306,12 @@ function openLead(r, quiet) {
       h('div', { class: 'tags' },
         h('span', { class: 'st', style: `--sc:${SCOLOR[r.status] || 'var(--dim)'}` }, SWORD[r.status] || r.status),
         r.chance ? chanceChip(r.chance) : null,
+        r.ai ? aiChip(r.ai) : null,
         h('span', { class: 'grp' }, h('i', { class: 'dot', style: `background:${pcolor(r.project)}` }), pname(r.project)),
         r.touched ? h('span', { class: 'when' }, fmtDate(r.touched)) : null)),
     tiles.length ? h('div', { class: 'tiles' }, tiles.map(([icn, k, v, url]) => h('a', { class: 'tile', href: url, ...ext(url) }, ic(icn), h('b', null, k), h('small', null, v)))) : null,
     h('div', { class: 'ld-next' + (r.next ? '' : ' none') }, ic('send'), h('div', null, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet'))),
+    r.ai && r.ai_why ? h('div', { class: 'ld-why ld-ai' }, ic('spark'), h('div', null, h('b', null, `AI in this job: ${AI[r.ai][1]}`), h('p', null, r.ai_why))) : null,
     ...det.filter((x) => x.mail).map((sec) => mailBlock(sec.title, sec.mail)),
     r.chance_why ? h('div', { class: 'ld-why' }, ic('target'), h('div', null, h('b', null, `Why the chance is ${(CHANCE[r.chance] || [r.chance])[0].toLowerCase()}`), h('p', null, r.chance_why))) : null,
     r.know && !det.length ? h('p', { class: 'know' }, r.know) : null,
