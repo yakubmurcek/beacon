@@ -48,3 +48,31 @@ class Cap(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Helpers(unittest.TestCase):
+    def test_clip_collapses_space_and_cuts_with_an_ellipsis(self):
+        self.assertEqual(cc.clip('a   b\n c', 20), 'a b c')
+        self.assertEqual(cc.clip('abcdef', 4), 'abc…')
+        self.assertEqual(cc.clip(None, 4), '')
+
+    def test_ago_uses_hours_then_days(self):
+        self.assertEqual(cc.ago(NOW - 3600 * 5, NOW), '5 h')
+        self.assertEqual(cc.ago(NOW - 3600 * 72, NOW), '3 days')
+
+    def test_day_of_a_missing_time_is_a_question_mark(self):
+        self.assertEqual(cc.day(None), '?')
+        self.assertRegex(cc.day(NOW), r'^\d{4}-\d\d-\d\d$')
+
+    def test_task_lines_newest_notes_first_and_none_when_missing(self):
+        self.assertEqual(cc.task_lines(None), ['   task: none'])
+        task = {'id': 7, 'status': 'doing', 'title': 'T', 'body': 'B',
+                'comments': [{'at': NOW - 100, 'text': 'old'}, {'at': NOW, 'text': 'new'}]}
+        lines = cc.task_lines(task)
+        self.assertIn('task #7 [doing] T', lines[0])
+        self.assertIn('new', lines[2])
+        self.assertIn('old', lines[3])
+
+    def test_get_refuses_a_non_web_address(self):
+        with mock.patch.object(cc, 'URL', 'file:///etc/passwd'), self.assertRaises(ValueError):
+            cc.get('/x')
