@@ -50,6 +50,10 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 _spec = importlib.util.spec_from_loader('tasks_cli', importlib.machinery.SourceFileLoader('tasks_cli', os.path.join(HERE, 'tasks')))
 cli = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cli)
+_aloader = importlib.machinery.SourceFileLoader('beacon_agent', os.path.join(HERE, 'beacon-agent'))
+agent = importlib.util.module_from_spec(importlib.machinery.ModuleSpec('beacon_agent', _aloader, origin=_aloader.path))
+agent.__file__ = _aloader.path
+_aloader.exec_module(agent)  # Beacon's live agents (task 1996): their channel takes their answers
 
 ME = 'answer-dispatcher'
 PROJECTS = os.environ.get('DISPATCH_PROJECTS', settings.p('projects'))
@@ -377,7 +381,9 @@ def taken_file(qid):
 
 def reap():
     """A run that took an answer and died without a word (killed, rebooted): the answer counts as taken, so
-    nothing else will pick it up. One alarm each, so a taken answer is never lost quietly."""
+    nothing else will pick it up. One alarm each, so a taken answer is never lost quietly. Idle Beacon agents end
+    here too; their conversation reopens on his next answer."""
+    agent.reap()
     folder = os.path.join(STATE, 'taken')
     try:
         names = os.listdir(folder)
@@ -546,6 +552,47 @@ def watchdog(q, now):
     return True
 
 
+def asker_takes(q, task, now, dry):
+    """The asker carries his answer itself: a live `tasks wait` claims it, a live Beacon agent's channel pushes it
+    within seconds (the watchdog still alarms if it never lands), an ended Beacon agent is reopened live for it."""
+    if q.get('waited_at') and now - q['waited_at'] < BEAT:
+        return True
+    if agent.is_live(q.get('session_id')):
+        if not dry:
+            watchdog(q, now)
+        return True
+    return not dry and was_agent(q) and reopen(q, task)
+
+
+def was_agent(q):
+    """The asking session was one of Beacon's live agents (it has a folder there), now ended."""
+    sid = (q.get('session_id') or '').split(':', 1)[-1]
+    return bool(sid) and '/' not in sid and bool(agent.read(sid, 'meta.json'))
+
+
+def reopen(q, task):
+    """His answer reopens the ended agent as the same live chat (`claude --resume`, not a copy); False when it
+    can't (too big, folder gone, too many live, a failed start): the old path carries the answer out instead."""
+    path, cwd = session_log(q.get('session_id'))
+    sid = agent.bare(q['session_id'])
+    meta = agent.read(sid, 'meta.json') or {}
+    if agent.broken_lately(sid):
+        return False  # broken in the last hour: the old path carries it out
+    if agent.unit_running(sid) or time.time() - (meta.get('started') or 0) < 300:
+        return True  # its start is under way (this answer or the one before it): the channel delivers once ready
+    size, _ = cli.session_size(sid)
+    if not path or not cwd or not os.path.isdir(cwd) or (size and size >= cli.BIG_CONTEXT) \
+            or session_open(sid):
+        return False  # too big, gone, or the chat is open elsewhere: the old path, never a second copy
+    try:
+        agent.start(task=(task or {}).get('id') or meta.get('task'), resume=sid, cwd=cwd, name=meta.get('name'))
+    except (SystemExit, subprocess.CalledProcessError, OSError) as e:
+        print(f"?{q['id']}: its agent didn't reopen ({e}), the old way instead")
+        return False
+    print(f"?{q['id']}: reopened its Beacon agent {sid[:8]} live")
+    return True
+
+
 def tick(dry=False):
     now = time.time()
     pending = cli.call('/api/questions?status=answered&pending=1&limit=5000', auth=False).get('questions') or []
@@ -565,8 +612,8 @@ def tick(dry=False):
         # Other work than its task's session (cli.other_work: another project the asker named), or the asker let it
         # go (`tasks wait`: too big and idle): same work stays with the chat that has its context, else a fresh run.
         fresh = q.get('handoff_at') or cli.other_work(q, task)
-        if not fresh and q.get('waited_at') and now - q['waited_at'] < BEAT:
-            continue  # its asker is waiting in a live chat: it claims the answer itself
+        if not fresh and asker_takes(q, task, now, dry):
+            continue
         if not fresh and q.get('session_id'):
             if live is None:
                 live = live_sessions()

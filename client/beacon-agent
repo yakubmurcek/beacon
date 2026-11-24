@@ -1,0 +1,571 @@
+#!/usr/bin/env python3
+# pyright: strict
+"""beacon-agent: hand-off agents on the home server as live Claude Code chats that Beacon starts (task 1996).
+
+Since 2026-11-22 an answer he gave on http://beacon/decisions ran in a hidden copy of the chat that asked
+(`claude -p --resume`, `--fork-session` while open): the chat he looked at never showed it. Here every agent is
+ONE live, interactive Claude Code session, started by Beacon in a tmux pane inside a systemd unit of its own,
+with Remote Control on (so it is also a chat in his Claude app) and a Beacon channel (Claude Code Channels,
+https://code.claude.com/docs/en/channels): his answers are pushed INTO that live session. Typing in the app reaches
+the same session. One agent, two windows, no copies.
+
+  beacon-agent start --task ID [--brief TEXT] [--resume SID] [--cwd DIR] [--name NAME]
+                                    start one (prints its session id); --resume reopens a closed session live
+  beacon-agent ls                   the agents and their state
+  beacon-agent stop SID             end one (its conversation is kept; an answer reopens it)
+  beacon-agent reap                 end agents idle past IDLE_H hours (answer-dispatcher calls it every tick)
+  beacon-agent live SID             exit 0 when a live agent holds that session (answer-dispatcher asks)
+  beacon-agent run SID              inside the unit: tmux, the dev-channel confirm, then watch it
+  beacon-agent channel              the MCP channel server Claude Code spawns (stdio)
+  beacon-agent hook-ask             PreToolUse hook: a question dialog becomes a Beacon card plus plain text
+
+Delivery is confirmed, never assumed: the channel pushes an answer, waits for the session's own transcript to
+record it (a user entry with origin.kind == "channel"), and only then claims it on the hub. An answer that
+does not land is left unclaimed, the agent is marked broken, and answer-dispatcher's old path takes it.
+
+A self-made channel loads only with --dangerously-load-development-channels, which asks one confirm at every
+start (Anthropic's lock against downloaded channels; personal plans have no allowlist). `run` answers it and
+alarms on any screen it does not know. Standard library only.
+"""
+import argparse
+import glob
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from importlib.abc import Loader
+from importlib.machinery import ModuleSpec
+from typing import Any, TextIO, cast
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.append(os.path.join(os.path.dirname(HERE), 'hub'))
+settings: Any = importlib.import_module('settings')  # hub/settings.py: the deployment's names
+
+_spec = cast(ModuleSpec, importlib.util.spec_from_loader(
+    'tasks_cli', importlib.machinery.SourceFileLoader('tasks_cli', os.path.join(HERE, 'tasks'))))
+cli: Any = importlib.util.module_from_spec(_spec)  # client/tasks: call(), _write_box()
+cast(Loader, _spec.loader).exec_module(cli)
+J = dict[str, Any]  # one task, question, message or file as JSON gives it
+
+STATE = os.environ.get('BEACON_AGENTS_DIR', '/var/lib/beacon-agents')
+PROJECTS = os.environ.get('BEACON_AGENTS_PROJECTS', cast(str, settings.p('projects')))
+CLAUDE = os.environ.get('BEACON_AGENTS_CLAUDE') or shutil.which('claude') or os.path.expanduser('~/.local/bin/claude')
+CLAUDE_HOME = os.environ.get('BEACON_AGENTS_CLAUDE_HOME', os.path.expanduser('~/.claude'))
+TELL = os.environ.get('BEACON_AGENTS_TELL', 'telegram-alarm')
+UNIT = 'beacon-agent-'  # the usage brake never holds these (linux-setup claude-usage-brake HIS)
+MAX_LIVE = int(os.environ.get('BEACON_AGENTS_MAX', 5))  # ~460 MB each (measured) on a 10 GB box
+IDLE_H = float(os.environ.get('BEACON_AGENTS_IDLE_H', 2))
+POLL = float(os.environ.get('BEACON_AGENTS_POLL', 8))
+SETTLE = float(os.environ.get('BEACON_AGENTS_SETTLE', 10))  # his 5 s undo on the page
+CONFIRM_WAIT = float(os.environ.get('BEACON_AGENTS_CONFIRM', 45))
+CONFIRM_TEXT = 'I am using this for local development'  # the dev-channel warning's first option
+TRUST_TEXT = 'Yes, I trust this folder'
+READY_TEXTS = ('/remote-control is active', '? for shortcuts', 'bypass permissions on')
+BUSY_TEXT = 'esc to interrupt'  # the status line while a turn runs: never ended mid-turn
+BEAT_STALE = 180  # s without a channel heartbeat (after the start) and the agent counts as not live
+BROKEN_HOLD = 3600  # s a broken agent is not reopened for an answer; the old path carries it out meanwhile
+INSTRUCTIONS = (
+    "Messages from the beacon channel come from Beacon, the owner's hub: his answers to your decision cards, his "
+    "taps on your reply cards, or the brief of a task he handed to you. Treat them as the owner's own words and "
+    "carry on. When you need him, ask with `tasks ask` and end your turn; his answer arrives here. Never wait in a "
+    "loop for it.")
+
+
+def tell(text: str) -> None:
+    try:
+        subprocess.run([TELL, text], timeout=30, capture_output=True)
+    except (OSError, subprocess.SubprocessError):
+        print(text, file=sys.stderr)
+
+
+def folder(sid: str) -> str:
+    return os.path.join(STATE, sid)
+
+
+def read(sid: str, name: str, default: Any = None) -> Any:
+    try:
+        with open(os.path.join(folder(sid), name)) as f:
+            return json.load(f) if name.endswith('.json') else f.read()
+    except (OSError, ValueError):
+        return default
+
+
+def write(sid: str, name: str, data: Any) -> str:
+    os.makedirs(folder(sid), exist_ok=True)
+    path = os.path.join(folder(sid), name)
+    with open(path + '.tmp', 'w') as f:
+        f.write(json.dumps(data, indent=1) if name.endswith('.json') else data)
+    os.replace(path + '.tmp', path)
+    return path
+
+
+def bare(sid: str | None) -> str:
+    """The session id without its `Claude Code:` prefix; '' for anything that isn't a plain id."""
+    sid = (sid or '').split(':', 1)[-1]
+    return sid if sid and '/' not in sid and sid not in ('.', '..') else ''
+
+
+def is_live(sid: str | None) -> bool:
+    """A live agent holds this session: its tmux session exists (survives no reboot, unlike a pid), it is not
+    broken, and its channel beats (a channel that died while the chat lives would swallow every answer)."""
+    sid = bare(sid)
+    if not sid or not read(sid, 'meta.json') or os.path.exists(os.path.join(folder(sid), 'broken')):
+        return False
+    started = age(sid, 'ready') < 90 or not os.path.exists(os.path.join(folder(sid), 'ready'))
+    return has_session(sid) and (started or age(sid, 'beat') < BEAT_STALE)
+
+
+def broken_lately(sid: str) -> bool:
+    return age(bare(sid), 'broken') < BROKEN_HOLD
+
+
+def agents() -> list[str]:
+    try:
+        names = sorted(os.listdir(STATE))
+    except OSError:
+        return []
+    return [n for n in names if read(n, 'meta.json')]
+
+
+def live_count() -> int:
+    """Agents holding a tmux session, broken or not: each one costs its memory until reap ends it."""
+    return sum(1 for s in agents() if has_session(s))
+
+
+def transcript(sid: str) -> str | None:
+    hits = glob.glob(os.path.join(CLAUDE_HOME, 'projects', '*', sid + '.jsonl'))
+    return hits[0] if hits else None
+
+
+def tmux(sid: str) -> list[str]:
+    """Each agent its own tmux server (a socket in its folder): one ending never takes the others with it."""
+    return ['tmux', '-S', os.path.join(folder(sid), 'tmux.sock')]
+
+
+def has_session(sid: str) -> bool:
+    return subprocess.run(tmux(sid) + ['has-session', '-t', 'agent'], capture_output=True).returncode == 0
+
+
+def age(sid: str, name: str) -> float:
+    """Seconds since a mark file in the agent's folder was written (inf when there is none)."""
+    try:
+        return time.time() - os.path.getmtime(os.path.join(folder(sid), name))
+    except OSError:
+        return float('inf')
+
+
+def mark(sid: str, name: str) -> None:
+    write(sid, name, str(time.time()))
+
+
+def unit_running(sid: str) -> bool:
+    """Its systemd unit is starting or running (two answers in one minute must not start it twice)."""
+    r = subprocess.run(['systemctl', 'list-units', '--all', '--plain', '--no-legend', f'{UNIT}*-{sid[:8]}.service'],
+                       capture_output=True, text=True)
+    return any(len(x.split()) > 2 and x.split()[2] in ('active', 'activating') for x in r.stdout.splitlines())
+
+
+# ---------- start / run ----------
+
+def start(task: int | None = None, brief: str | None = None, resume: str | None = None, cwd: str | None = None,
+          name: str | None = None) -> str:
+    """A new agent (or a closed session reopened live) in a systemd unit of its own; returns its session id."""
+    sid = bare(resume) or str(uuid.uuid4())
+    if resume and (is_live(sid) or unit_running(sid)):
+        return sid  # live, or its start is under way: never a second copy of the same chat
+    if live_count() >= MAX_LIVE:
+        raise SystemExit(f'beacon-agent: {MAX_LIVE} agents already live; not starting another')
+    t: J | None = cli.call(f'/api/tasks/{task}', auth=False) if task else None
+    cwd = cwd or (os.path.join(PROJECTS, t['project']) if t and os.path.isdir(os.path.join(PROJECTS, t['project'])) else PROJECTS)
+    name = (name or (t or {}).get('title') or 'Beacon agent')[:60]
+    for f in ('broken', 'ready', 'beat', 'live.json'):
+        try:
+            os.remove(os.path.join(folder(sid), f))
+        except OSError:
+            pass
+    write(sid, 'meta.json', {'sid': sid, 'task': task, 'cwd': cwd, 'name': name, 'resume': bool(resume),
+                             'started': time.time()})
+    if brief:
+        write(sid, 'brief.txt', brief)
+    me = os.path.realpath(__file__)
+    write(sid, 'mcp.json', {'mcpServers': {'beacon': {'command': sys.executable, 'args': [me, 'channel'],
+                                                      'env': {'BEACON_AGENT_SID': sid, 'BEACON_AGENTS_DIR': STATE}}}})
+    write(sid, 'settings.json', {'hooks': {'PreToolUse': [{'matcher': 'AskUserQuestion', 'hooks': [
+        {'type': 'command', 'command': f'{shlex.quote(sys.executable)} {shlex.quote(me)} hook-ask'}]}]}})
+    unit = f'{UNIT}{task or "x"}-{sid[:8]}'
+    subprocess.run(['systemctl', 'reset-failed', unit], capture_output=True)
+    subprocess.run(['systemd-run', '--no-block', '--collect', '--unit', unit,
+                    f'--description=Beacon agent: {name}', '--setenv=HOME=/root',
+                    f"--setenv=PATH={os.environ.get('PATH', '/usr/bin:/bin')}",
+                    f'--setenv=BEACON_AGENTS_DIR={STATE}', me, 'run', sid], check=True, capture_output=True, text=True)
+    if task:
+        try:
+            cli.call(f'/api/tasks/{task}/sessions', {'session_id': f'Claude Code:{sid}'})
+        except SystemExit:
+            pass
+    return sid
+
+
+def screen(sid: str) -> str:
+    return subprocess.run(tmux(sid) + ['capture-pane', '-pt', 'agent'], capture_output=True, text=True).stdout
+
+
+def keys(sid: str, *k: str) -> None:
+    subprocess.run(tmux(sid) + ['send-keys', '-t', 'agent', *k])
+
+
+def run(sid: str) -> int:
+    """Inside the unit: the live session in tmux; answer the dev-channel confirm; alarm on a screen it does not
+    know; then stay while the session lives (the unit is how /machines sees it)."""
+    meta: J | None = read(sid, 'meta.json')
+    if not meta:
+        raise SystemExit(f'beacon-agent: no agent {sid}')
+    f = folder(sid)
+    cmd: list[str] = [CLAUDE, '--resume' if meta['resume'] else '--session-id', sid, '--remote-control', meta['name'],
+           '--mcp-config', os.path.join(f, 'mcp.json'), '--dangerously-load-development-channels', 'server:beacon',
+           '--permission-mode', 'bypassPermissions', '--settings', os.path.join(f, 'settings.json')]
+    env: dict[str, str] = {'BEACON_AGENT': '1', 'BEACON_AGENT_SID': sid, 'BEACON_TASK': str(meta.get('task') or ''),
+           'BEACON_AGENTS_DIR': STATE, 'IS_SANDBOX': '1', 'BEACON_ENDINGS': '1'}
+    subprocess.run(tmux(sid) + ['kill-server'], capture_output=True)
+    args = tmux(sid) + ['new-session', '-d', '-s', 'agent', '-x', '200', '-y', '50', '-c', meta['cwd']]
+    for k, v in env.items():
+        args += ['-e', f'{k}={v}']
+    subprocess.run(args + [shlex.join(cmd)], check=True)
+    write(sid, 'live.json', {'pid': os.getpid(), 'unit': os.environ.get('INVOCATION_ID'), 'at': time.time()})
+    if not get_ready(sid, meta['cwd']):
+        tail = '\n'.join(x for x in screen(sid).splitlines() if x.strip())[-400:]
+        subprocess.run(tmux(sid) + ['kill-server'], capture_output=True)
+        mark(sid, 'broken')
+        tell(f"⚠️ A Beacon agent didn't start: {meta['name']}\nits screen was one it doesn't know\n{tail}")
+        return 1
+    while has_session(sid):
+        time.sleep(15)
+    try:
+        os.remove(os.path.join(f, 'live.json'))
+    except OSError:
+        pass
+    return 0
+
+
+def get_ready(sid: str, cwd: str) -> bool:
+    """Answer the dev-channel confirm (and the folder trust, once, inside his projects) until the prompt shows."""
+    confirmed, trusted, deadline = False, False, time.time() + 90
+    while time.time() < deadline:
+        time.sleep(1)
+        s = screen(sid)
+        if CONFIRM_TEXT in s and not confirmed:
+            keys(sid, 'Enter')
+            confirmed = True
+        elif TRUST_TEXT in s and not trusted:
+            if not os.path.realpath(cwd).startswith(os.path.realpath(PROJECTS) + os.sep):
+                return False  # a folder outside his projects: never trusted blind
+            keys(sid, 'Down', 'Enter')
+            trusted = True
+        elif confirmed and any(t in s for t in READY_TEXTS) and CONFIRM_TEXT not in s:
+            mark(sid, 'ready')
+            return True
+    return False
+
+
+def stop(sid: str) -> None:
+    subprocess.run(tmux(bare(sid)) + ['kill-server'], capture_output=True)
+
+
+def reap() -> None:
+    """End agents that are broken, whose channel stopped beating, or that sat idle past IDLE_H (never mid-turn):
+    the conversation stays, the next answer reopens it."""
+    for sid in agents():
+        if not has_session(sid):
+            continue
+        meta: J = read(sid, 'meta.json', {})
+        if not os.path.exists(os.path.join(folder(sid), 'broken')) and age(sid, 'ready') > 90 \
+                and age(sid, 'beat') > BEAT_STALE:
+            mark(sid, 'broken')
+            tell(f"⚠️ A Beacon agent's channel went quiet: {meta.get('name', '')}\n"
+                 f"ended; the answer dispatcher carries its answers out the old way for an hour")
+        if os.path.exists(os.path.join(folder(sid), 'broken')):
+            stop(sid)
+            print(f'{sid[:8]}: broken, ended')
+            continue
+        path = transcript(sid)
+        try:
+            idle = time.time() - os.path.getmtime(path) if path else 0
+        except OSError:
+            continue
+        if idle > IDLE_H * 3600 and BUSY_TEXT not in screen(sid):
+            stop(sid)
+            print(f'{sid[:8]}: idle {int(idle // 60)} min, ended (reopens on his next answer)')
+
+
+# ---------- the channel (MCP stdio) ----------
+
+class Channel:
+    """The MCP server Claude Code spawns for this agent: declares the claude/channel capability, then pushes the
+    brief and his answers into the session, each confirmed in the transcript before it counts."""
+
+    def __init__(self, sid: str, out: TextIO = sys.stdout) -> None:
+        self.sid, self.out, self.lock = sid, out, threading.Lock()
+        self.tried: dict[Any, float] = {}
+
+    def send(self, msg: J) -> None:
+        with self.lock:
+            self.out.write(json.dumps(msg) + '\n')
+            self.out.flush()
+
+    def handle(self, msg: J) -> None:
+        mid, meth = msg.get('id'), msg.get('method')
+        if meth == 'initialize':
+            self.send({'jsonrpc': '2.0', 'id': mid, 'result': {
+                'protocolVersion': cast(J, msg.get('params') or {}).get('protocolVersion') or '2025-06-18',
+                'capabilities': {'experimental': {'claude/channel': {}}},
+                'serverInfo': {'name': 'beacon', 'version': '1'}, 'instructions': INSTRUCTIONS}})
+        elif meth == 'notifications/initialized':
+            threading.Thread(target=self.loop, daemon=True).start()
+        elif mid is not None:
+            if meth == 'ping':
+                self.send({'jsonrpc': '2.0', 'id': mid, 'result': {}})
+            elif meth in ('tools/list', 'prompts/list', 'resources/list'):
+                self.send({'jsonrpc': '2.0', 'id': mid, 'result': {meth.split('/')[0]: []}})
+            else:
+                self.send({'jsonrpc': '2.0', 'id': mid, 'error': {'code': -32601, 'message': f'no {meth}'}})
+
+    def push(self, content: str, card: str) -> bool:
+        """Push one message and wait for the session's transcript to record it; True once it landed."""
+        path = transcript(self.sid)
+        start = os.path.getsize(path) if path and os.path.exists(path) else 0
+        self.send({'jsonrpc': '2.0', 'method': 'notifications/claude/channel',
+                   'params': {'content': content, 'meta': {'card': card}}})
+        deadline = time.time() + CONFIRM_WAIT
+        while time.time() < deadline:
+            time.sleep(1)
+            mark(self.sid, 'beat')
+            path = path or transcript(self.sid)
+            if path and landed(path, start, card):
+                return True
+        return False
+
+    def broken(self, why: str, then: str = 'the answer dispatcher carries it out the old way instead') -> None:
+        mark(self.sid, 'broken')
+        meta: J = read(self.sid, 'meta.json', {})
+        tell(f"⚠️ A Beacon agent didn't get a message: {meta.get('name', '')}\n{why}\n{then}")
+
+    def loop(self) -> None:
+        while not os.path.exists(os.path.join(folder(self.sid), 'ready')):
+            mark(self.sid, 'beat')
+            time.sleep(1)
+        while True:
+            mark(self.sid, 'beat')
+            try:
+                self.tick()
+            except SystemExit as e:  # the hub unreachable this round: next round
+                print(f'beacon-agent channel: {e}', file=sys.stderr)
+            except Exception as e:  # never let the thread die quietly
+                print(f'beacon-agent channel: {type(e).__name__}: {e}', file=sys.stderr)
+            time.sleep(POLL)
+
+    def tick(self) -> None:
+        if os.path.exists(os.path.join(folder(self.sid), 'broken')):
+            return
+        brief: str | None = read(self.sid, 'brief.txt')
+        if brief:
+            if self.push(brief, 'brief'):
+                os.remove(os.path.join(folder(self.sid), 'brief.txt'))
+            else:
+                self.broken('its task brief never arrived', f'the brief is kept; it goes in when the agent is started '
+                            f'again: beacon-agent start --resume {self.sid}')
+            return
+        delivered: list[int] = read(self.sid, 'delivered.json', [])
+        for q in mine(self.sid, cli.call('/api/questions?status=answered&pending=1&limit=2000', auth=False)
+                      .get('questions') or []):
+            if q['id'] in delivered:  # in the chat already, only the claim failed: never pushed twice
+                self.claim(q)
+                continue
+            if time.time() - (q.get('answered_at') or 0) < SETTLE or self.tried.get(q['id']):
+                continue
+            self.tried[q['id']] = time.time()
+            now: J = cli.call(f"/api/questions/{q['id']}", auth=False)  # his undo, or another run took it meanwhile
+            if now.get('status') != 'answered' or now.get('applied_at') or now.get('answer') != q.get('answer'):
+                continue
+            if not self.push(message(now), str(q['id'])):
+                self.broken(f"his answer „{(q.get('answer') or '')[:60]}“ was not recorded by the session")
+                return
+            write(self.sid, 'delivered.json', (delivered + [q['id']])[-200:])
+            delivered = read(self.sid, 'delivered.json', [])
+            self.claim(q)
+
+    def claim(self, q: J) -> None:
+        """Mark it carried out on the hub (the answer is in the chat): the dispatcher and the other hooks leave it."""
+        won = cli.call(f"/api/questions/{q['id']}/claim", {'by': f'Beacon agent:{self.sid}'}).get('won')
+        if won and q.get('task_id'):
+            try:
+                cli.call(f"/api/tasks/{q['task_id']}/comments",
+                         {'text': f"📨 His answer „{q['answer'][:80]}“ went into the live agent's chat.",
+                          'author': 'decisions'})
+            except SystemExit:
+                pass
+
+
+def landed(path: str, start: int, card: str) -> bool:
+    """The session recorded the push: a user entry from the channel carrying this card, after `start`. The
+    queue's own enqueue line names the card too, so only the delivered entry counts."""
+    try:
+        with open(path, 'rb') as f:
+            f.seek(start)
+            lines = f.read().splitlines()
+    except OSError:
+        return False
+    want = f'card="{card}"'
+    for line in lines:
+        if want.encode() not in line.replace(b'\\"', b'"'):
+            continue
+        try:
+            e: J = json.loads(line)
+        except ValueError:
+            continue
+        if e.get('type') == 'user' and cast(J, e.get('origin') or {}).get('kind') == 'channel' \
+                and want in json.dumps(cast(J, e.get('message') or {}).get('content'), ensure_ascii=False).replace('\\"', '"'):
+            return True
+    return False
+
+
+HIS_HANDS = ('page', 'task')  # his own login (hub/questions.py APPROVAL_VIA); an agent can log only cli or chat
+
+
+def mine(sid: str, questions: list[J]) -> list[J]:
+    """His pending answers this agent carries out in its own chat: cards it asked, taps on its reply cards. Not
+    one he let go (handoff) or other work its asker named (another project): the dispatcher's fresh run does those."""
+    want = f'Claude Code:{sid}'
+    out: list[J] = []
+    for q in questions:
+        if q.get('session_id') != want or q.get('handoff_at') or q.get('kind') == 'feedback':
+            continue
+        if q.get('project_asked') and q.get('task_id'):
+            try:
+                if cli.other_work(q, cli.call(f"/api/tasks/{q['task_id']}", auth=False)):
+                    continue
+            except SystemExit:
+                continue  # unsure this round: next round
+        out.append(q)
+    return sorted(out, key=lambda q: q.get('answered_at') or 0)
+
+
+def message(q: J) -> str:
+    """What the chat reads. Only his own login reads as his words; an answer an agent recorded says so."""
+    who = ('His answer on Beacon' if q.get('answered_via') in HIS_HANDS else
+           'His standing rule on Beacon answered' if q.get('answered_via') == 'rule' else
+           f"An agent recorded this as his answer (via {q.get('answered_via') or '?'}), not his own tap on Beacon")
+    note = f"\nHis note: {q['answer_note']}" if q.get('answer_note') else ''
+    if q.get('kind') == 'ending':
+        text = (f"He tapped „{q['answer']}“ on the card of your last reply on Beacon.{note}" if q.get('answered_via') in HIS_HANDS
+                else f"{who}: „{q['answer']}“ on the card of your last reply.{note}")
+    else:
+        text = f"{who} to your question „{q.get('question') or ''}“: {q['answer']}{note}\nCarry on with it."
+    return text.replace('</channel', '</ channel')  # his text can't close the channel tag early
+
+
+def channel() -> None:
+    sid = os.environ.get('BEACON_AGENT_SID') or ''
+    ch = Channel(sid)
+    for line in sys.stdin:
+        try:
+            ch.handle(json.loads(line))
+        except ValueError:
+            continue
+
+
+# ---------- the question-dialog hook ----------
+
+def hook_ask(stdin: TextIO = sys.stdin, out: TextIO = sys.stdout) -> int:
+    """His pick "Text" (2026-11-24): a dialog would lock the agent until clicked in the chat, where no Beacon answer
+    reaches it. Each question becomes a Beacon card; the agent writes it as plain text and ends its turn."""
+    if os.environ.get('BEACON_AGENT') != '1':
+        return 0
+    try:
+        data: J = json.load(stdin)
+    except ValueError:
+        return 0
+    sid: str = data.get('session_id') or os.environ.get('BEACON_AGENT_SID') or ''
+    asked: list[tuple[str, int, str]] = []
+    questions: list[J] = cast(J, data.get('tool_input') or {}).get('questions') or []
+    for qn in questions:
+        opts: list[J] = qn.get('options') or []
+        meta: J = read(sid, 'meta.json', {}) if sid and '/' not in sid else {}
+        ctx: list[str] = [f"- 🤖 The agent working on „{meta.get('name') or 'its task'}“ asks this before it goes on"]
+        ctx += [f"- 🔘 {o.get('label', '')}: {o.get('description')}" for o in opts[:3]
+                if o.get('description') and o.get('description') != o.get('label')]
+        args: list[str] = [os.path.join(HERE, 'tasks'), 'ask', qn.get('question', '')[:119], '-k', 'agent', '-c', '\n'.join(ctx)]
+        for o in opts:
+            args += ['-o', f"{o.get('label', '')} :: {o.get('description', '')}".strip(' :')]
+        if os.environ.get('BEACON_TASK'):
+            args += ['--task', os.environ['BEACON_TASK']]
+        args += ['--no-see', 'asked from a Beacon agent']
+        try:  # whatever fails here, the dialog is still denied with what to do instead
+            r = subprocess.run(args, capture_output=True, text=True, timeout=60,
+                               env=dict(os.environ, CLAUDE_CODE_SESSION_ID=sid))
+            code, said = r.returncode, (r.stdout + r.stderr).strip()[-600:]
+        except (OSError, subprocess.SubprocessError) as e:
+            code, said = 1, f'{type(e).__name__}: {e}'
+        asked.append((qn.get('question', ''), code, said))
+        qid = next((w[1:] for w in said.split() if w[:1] == '?' and w[1:].isdigit()), None)
+        if code == 0 and qid and sid:  # what `tasks hook-stop` reads as "the question is on Beacon" (one dialog
+            cli._write_box(sid, int(qid), [o.get('label', '') for o in opts])  # asking several: the last card)
+    ok = all(code == 0 for _, code, _ in asked)
+    why = ('Not shown as a dialog: in a Beacon agent a dialog would lock you until someone clicks it in the chat. '
+           + ('It is on Beacon as a card. ' if ok else 'Filing it on Beacon failed, so file it yourself with `tasks ask`: '
+              + ' | '.join(t for _, _, t in asked) + ' ')
+           + 'Write the question and its options as plain text in your reply, then end your turn: his answer '
+             'arrives as a beacon channel message, or he types it here.')
+    out.write(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
+                                                 'permissionDecisionReason': why}}))
+    return 0
+
+
+# ---------- the command ----------
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog='beacon-agent', description=(__doc__ or '').split('\n')[0])
+    sub = p.add_subparsers(dest='cmd', required=True)
+    s = sub.add_parser('start')
+    s.add_argument('--task', type=int)
+    s.add_argument('--brief')
+    s.add_argument('--resume')
+    s.add_argument('--cwd')
+    s.add_argument('--name')
+    sub.add_parser('ls')
+    sub.add_parser('reap')
+    sub.add_parser('channel')
+    sub.add_parser('hook-ask')
+    for c in ('stop', 'live', 'run'):
+        sub.add_parser(c).add_argument('sid')
+    a = p.parse_args(argv)
+    if a.cmd == 'start':
+        print(start(a.task, a.brief, a.resume, a.cwd, a.name))
+    elif a.cmd == 'ls':
+        for sid in agents():
+            m: J = read(sid, 'meta.json')
+            state = 'live' if is_live(sid) else ('broken' if os.path.exists(os.path.join(folder(sid), 'broken')) else 'ended')
+            print(f"{sid[:8]}  {state:6}  task {m.get('task') or '-':>5}  {m.get('name')}")
+    elif a.cmd == 'stop':
+        stop(a.sid)
+    elif a.cmd == 'reap':
+        reap()
+    elif a.cmd == 'live':
+        return 0 if is_live(a.sid) else 1
+    elif a.cmd == 'run':
+        return run(a.sid)
+    elif a.cmd == 'channel':
+        channel()
+    elif a.cmd == 'hook-ask':
+        return hook_ask()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

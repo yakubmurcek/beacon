@@ -276,6 +276,7 @@ SHOW = ('Id', 'Description', 'ActiveState', 'SubState', 'Result', 'ExecMainStatu
         'Transient', 'TriggeredBy', 'FragmentPath', 'UnitFileState', 'Type', 'ExecStart')
 # His own units live in /etc/systemd/system (linux-setup installs them); packages own /usr/lib.
 OWN_UNIT = '/etc/systemd/system/'
+LIVE_AGENT = 'beacon-agent-'  # Beacon's live agents (client/beacon-agent): transient, yet his work, so listed
 
 
 def show(units):
@@ -386,7 +387,8 @@ def linux_jobs():
     daemon_units = set()
     for unit in sorted(daemons):
         p = info.get(unit) or {}
-        if (not (p.get('FragmentPath') or '').startswith(OWN_UNIT) or p.get('Transient') == 'yes'
+        live_agent = unit.startswith(LIVE_AGENT) and p.get('Transient') == 'yes'
+        if not live_agent and (not (p.get('FragmentPath') or '').startswith(OWN_UNIT) or p.get('Transient') == 'yes'
                 or p.get('Type') == 'oneshot' or unit.startswith(('alarm@', 'snap.')) or p.get('TriggeredBy')):
             continue  # a package's daemon, or a boot-time one-shot: not a long-running job of his
         daemon_units.add(unit)

@@ -1714,7 +1714,7 @@ def hook_ask_shown(ev):
     so he can answer in either place (he said so 2026-11-24: buttons in the app, and the page, both). A card a
     `tasks ask` already filed for the same question is reused, never doubled."""
     sid = ev.get('session_id')
-    if not sid or hooks_off():
+    if not sid or hooks_off() or os.environ.get('BEACON_AGENT') == '1':  # a Beacon agent's own hook filed it
         return
     for i, (q, labels) in enumerate(chat_questions(ev)):
         if open_question_for_box(sid, q['question'], labels):
@@ -2620,7 +2620,10 @@ def _first_time(sid, what):
 
 
 def _answers_news(sid, prompt):
-    """What this prompt's session must know about answers to its questions ('' when nothing)."""
+    """What this prompt's session must know about answers to its questions ('' when nothing). Not in a live Beacon
+    agent: its channel pushes each answer in, so a claim here would hand the same answer in twice (task 1996)."""
+    if os.environ.get('BEACON_AGENT') == '1':
+        return ''
     try:
         seen = box_answer(sid, prompt)
     except Exception:  # the hub away: the box question stays open on the page
@@ -3058,6 +3061,10 @@ def explain_asked(q, a):
         if why:
             print(f"His answer runs in a fresh session ({why}): it gets task #{q['task_id']}, its last notes and this "
                   f"card only. Make the card's context say what each answer means there (repo, PR, checks).")
+    if os.environ.get('BEACON_AGENT') == '1':  # a live Beacon agent (client/beacon-agent): the answer comes to it
+        print("You are a live Beacon agent: end your turn now (do what doesn't depend on it first). His answer arrives "
+              "in this chat as a beacon channel message, or he types it here. Don't run `tasks wait`.")
+        return
     if q['blocking']:
         print("Blocking: hold the work that depends on it, do everything else, then end your turn. Don't run "
               "`tasks wait`: when he answers, answer-dispatcher resumes this session with his answer." + RESUME_NOTE)

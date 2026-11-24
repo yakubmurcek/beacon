@@ -40,4 +40,5 @@ the hub, how it must look and read, past decisions). They win over defaults; the
 | Outdated copies on any machine (checkouts, files, tool versions, dead hooks) | `hub/freshness.py`, README "Outdated copies" |
 | Jobs that run a model by themselves, their model and cost | `hub/aijobs.py`, README "AI jobs" |
 | Phone pings and the inbox: what buzzes, caps, digest, Web Push | `hub/notify.py`, `hub/webpush.py`, README "Inbox and phone pings" |
+| Live agents Beacon starts: answers pushed into the chat that asked (channel, dialog hook, reopen) | `client/beacon-agent`, README "Live agents" |
 | Bad decision cards: the lint every ask passes, his 👎 flags, the one log | `hub/questions.py` (`lint`, `flag`, `bad`), README "Bad questions" |

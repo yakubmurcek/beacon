@@ -790,6 +790,32 @@ lead card. The channel is Web Push to the home-screen app (`hub/webpush.py`, `we
 `VAPID_PRIVATE_KEY`; the page must be opened on the `hub.https` name), with the old Telegram sender as the fallback
 until a phone has subscribed.
 
+## Live agents: answers land in the chat that asked (task 1996)
+
+Until now his answer on Decisions ran in a hidden copy of the asking chat (`claude -p --resume`, a fork while it was
+open), so the chat he looked at never showed it. Beacon's hand-off agents on the home server are now **live chats
+Beacon starts itself** ([client/beacon-agent](client/beacon-agent)): one interactive Claude Code session per agent,
+in a tmux pane inside a systemd unit of its own (`beacon-agent-<task>-<id>`, listed on /machines, never held by the
+usage brake), with Remote Control on (it is also a chat in his Claude app, named after the task) and a **Beacon
+channel** ([Claude Code Channels](https://code.claude.com/docs/en/channels)): an MCP server that pushes his answers
+into the running session. Typing in the app reaches the same session. One agent, two windows, no copies.
+
+- `beacon-agent start --task ID --brief "…"` starts one; the brief goes in through the channel once it is up.
+- The channel polls the hub for answers to its own session's cards (and taps on its reply cards), pushes each, waits
+  for the session's transcript to record it (`<channel source="beacon" card="ID">`), and only then claims it. One that
+  never lands marks the agent broken, alarms, and answer-dispatcher's old path carries it out: never lost.
+- answer-dispatcher leaves a live agent's answers to its channel (the 15-minute watchdog still watches them); an
+  agent that ended (idle past 2 h, a reboot) is reopened live by his answer (`claude --resume`, same conversation).
+  Five live at most (~460 MB each).
+- Question dialogs: a dialog would lock the agent until clicked in the chat, where no Beacon answer reaches it. In
+  a live agent a PreToolUse hook turns `AskUserQuestion` into a Beacon card and tells the agent to write the question
+  as plain text and end its turn (his pick, 2026-11-24).
+- A self-made channel loads only with `--dangerously-load-development-channels`, which asks one confirm at every
+  start (Anthropic's lock; personal plans have no allowlist). `beacon-agent run` answers it and alarms on any screen
+  it does not know (it never trusts a folder outside the projects folder).
+- Not covered yet: chats he opens himself in the desktop app run as `claude --print --sdk-url`, where channels are
+  ignored; their answers still go the old way.
+
 ## Endings: every session ending is a card (task 1857)
 
 The owner runs dozens of sessions an hour and never opens them to learn what they did. Every Claude Code reply is posted
