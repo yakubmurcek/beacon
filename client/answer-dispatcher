@@ -66,8 +66,8 @@ RUN_TIMEOUT = 45 * 60
 NOTES = 15  # the task's latest notes in the run's prompt
 # Never a flood (2026-11-22: "agents must not spawn uncontrolled"): at most RUNS_PER_HOUR runs, one at a time,
 # none while claude-usage-brake holds the paid brake (the soft one never holds his answers); the rest wait for the next tick (and the watchdog tells him).
-RUNS_PER_HOUR = int(os.environ.get('APPLIER_RUNS_PER_HOUR', 8))  # each answer is a run now that nobody waits live (task 1884)
-AT_ONCE = int(os.environ.get('DISPATCH_AT_ONCE', 2))
+RUNS_PER_HOUR = int(os.environ.get('APPLIER_RUNS_PER_HOUR', 30))  # each answer is a run now that nobody waits live (task 1884)
+AT_ONCE = int(os.environ.get('DISPATCH_AT_ONCE', 5))  # 2 queued 15 answers for 2 h (2026-11-24)
 QUEUED_ALARM = 2 * 3600  # answers wait and no run started this long (not the brake): he hears once, for the queue
 COLD_BIG = 100_000  # a session this big, idle past the cache life, resumes at full price: a fresh run is cheaper
 MAX_TURNS = 80

@@ -527,7 +527,7 @@ Any name serves the decisions page at `/decisions`; the old path `/questions` re
     or 100k+ and idle past the cache life: one fresh run, told why it replaces the asker;
   - the scoped task agent's task: `task-agent reply`; the default a non-blocking asker already went on with:
     only marked taken.
-  Runs go in units of their own (`answer-run-*`, 2 at a time, 8 an hour, never under the paid usage brake; the soft one, which only slows background jobs, never holds his answers); a result
+  Runs go in units of their own (`answer-run-*`, 5 at a time, 30 an hour, held only by the paid usage brake); a result
   becomes a task note, only a failure reaches Telegram. An answer queued 2 hours behind the cap (not the brake)
   sends one alarm.
   Once taken, his answer is also a note on the task (`decisions`). An answer untaken for 15 minutes sends
