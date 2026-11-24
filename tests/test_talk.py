@@ -135,6 +135,33 @@ class TalkTest(unittest.TestCase):
             if old[1] is None:
                 os.environ.pop('TALK_TTS_TOKEN', None)
 
+    def test_a_cold_own_voice_never_holds_a_line_the_quick_voice_says_it_while_it_wakes(self):
+        old = talk.TTS_URL, talk.TTS_WARM_URL, os.environ.get('TALK_TTS_TOKEN')
+        talk.TTS_URL, talk.TTS_WARM_URL = 'https://voice.example/speak', 'https://voice.example/warm'
+        os.environ['TALK_TTS_TOKEN'] = 'tok'  # never the box's own vault
+        try:
+            calls = []
+
+            def opener(req, timeout=30):
+                calls.append(req.full_url)
+                if req.full_url in (talk.TTS_URL, talk.TTS_WARM_URL):
+                    return b'own-mp3', 'audio/mpeg'
+                return self.http(req, timeout)
+            self.talk.http = opener
+            self.assertEqual(self.talk.say('One sec.')[0], b'ID3fake-mp3')  # cold: the quick voice, at once
+            import time
+            for _ in range(500):  # the wake runs on its own thread
+                if self.talk.ready:
+                    break
+                time.sleep(0.01)
+            self.assertNotIn(talk.TTS_URL, calls)
+            self.assertIn(talk.TTS_WARM_URL, calls)
+            self.assertEqual(self.talk.say('Two decisions wait.')[0], b'own-mp3')  # awake: the own voice
+        finally:
+            talk.TTS_URL, talk.TTS_WARM_URL = old[:2]
+            if old[2] is None:
+                os.environ.pop('TALK_TTS_TOKEN', None)
+
     def test_labs_keeps_an_act_card_only_with_a_decision_and_never_saves_it(self):
         ok = Labs.clean_card({'type': 'act', 'decision': 4, 'answer': 'Round', 'text': 'Answer the logo question: Round.'})
         self.assertEqual((ok['decision'], ok['answer']), (4, 'Round'))

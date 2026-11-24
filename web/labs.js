@@ -439,6 +439,7 @@
 
   const QUIET_HANGUP = 20000, END_OF_TURN = 1100, MAX_TURN = 30000, WAKE_TURN = 4000;
   const FILLER = 'One sec, pulling it together.';
+  const ACK = 'Let me check.';
   // an iPad says it is a Mac: a touch screen tells them apart
   const touchMac = /Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1;
   const device = /iPhone|iPad|Android/i.test(navigator.userAgent) || touchMac ? 'phone' : params.has('listen') ? 'wall' : 'desk';
@@ -708,8 +709,12 @@
     }
     if (BYE.test(text.trim())) { await say('Okay.'); return false; }
     if (/\bbrief\b|what'?s (up|new|going on)|catch me up/i.test(text)) { await brief(); return true; }
-    state('Thinking', 'thinking');
+    // a short line at once, so the seconds the answer takes are not silence
+    let answered = false;
+    const ack = say(ACK).then(() => { if (!answered && T.on) state('Thinking', 'thinking'); });
     const a = await ask(text);
+    answered = true;
+    await ack;
     if (!a) return true;
     let words = a.say || '';
     if (a.act && a.act.node) { T.pending = a.act; words += ' ' + a.act.text + ' Shall I?'; }

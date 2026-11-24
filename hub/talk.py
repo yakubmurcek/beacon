@@ -35,7 +35,10 @@ STYLE = os.environ.get('TALK_VOICE_STYLE', 'Warm, calm and confident. A sharp ch
                                             'update. Natural pace, no drama.')
 TTS_URL = os.environ.get('TALK_TTS_URL', '')  # a self-hosted voice: POST {"text"} -> audio, 503 when below its bar
 TTS_WARM_URL = os.environ.get('TALK_TTS_WARM_URL', '')  # POST: loads the model before the first line is needed
-TTS_TIMEOUT = float(os.environ.get('TALK_TTS_TIMEOUT', '30'))  # a cold start takes ~25 s; the page plays a filler
+TTS_TIMEOUT = float(os.environ.get('TALK_TTS_TIMEOUT', '30'))  # a cold start takes ~25-40 s
+# How long the own voice stays up after its last line (the host's idle window, 300 s, less a margin). Past it, and
+# with a warm URL to wake it, a line never waits on a cold start: the quick voice says it while the own one wakes.
+READY_WINDOW = float(os.environ.get('TALK_TTS_READY_SECONDS', '240'))
 DAY_MINUTES = float(os.environ.get('TALK_DAY_MINUTES', '30'))  # heard + spoken, per day
 # USD per minute (vendor price pages, 2026): transcribe $0.003, mini TTS ~$0.015. The own voice runs on a rented
 # GPU (L40S $1.95/h, 2026-11-24) and renders a sentence in ~0.85x its length; a warm keeps it up ~5 min more.
@@ -114,7 +117,8 @@ class Talk:
         self.http = opener or http
         self.cache = {}  # text hash -> (audio, type): the filler line and repeats cost nothing
         self.lock = threading.Lock()
-        self.warmed = 0.0
+        self.warmed = 0.0  # last wake asked (at most one a minute)
+        self.ready = 0.0  # last time the own voice answered or finished waking
         self.misses = 0  # own-voice misses in a row
         self.alarmed = ''  # the day the misses last reached Telegram
         self.send = None  # f(text) -> bool; the live hub passes telegram-alarm
@@ -240,7 +244,7 @@ class Talk:
         if hit:
             return hit
         self.check_cap()
-        audio = self.own_voice(text) if TTS_URL else None
+        audio = self.own_voice(text) if TTS_URL and self.own_voice_up() else None
         kind = 'say-own' if audio else 'say'
         if audio is None:
             key = openai_key()
@@ -276,8 +280,15 @@ class Talk:
                           f'OpenAI voice. Last error: {str(e)[:120]}',)).start()
             return None
         self.misses = 0
-        self.warmed = time.time()
+        self.warmed = self.ready = time.time()
         return audio
+
+    def own_voice_up(self):
+        """Ask the own voice only when it is awake (or cannot be woken apart): a cold start costs ~30 s of silence."""
+        if not TTS_WARM_URL or time.time() - self.ready < READY_WINDOW:
+            return True
+        self.warm()
+        return False
 
     def warm(self):
         """Wake the own voice before its first line (the talk page opened). At most once a minute; never blocks."""
@@ -289,6 +300,7 @@ class Talk:
             try:
                 self.http(urllib.request.Request(TTS_WARM_URL, data=b'{}', method='POST', headers=own_voice_headers()),
                           90)
+                self.ready = time.time()
                 self.log('warm', 0, cost=WARM_COST)
             except VoiceError as e:
                 log.warning('warming the own voice failed: %s', e)
