@@ -1,6 +1,6 @@
 // The AI Rank badge, shared by http://beacon/rank (rank.js) and the slim chip on top of Team > Results (#rank-chip).
 // Rank is a small flex, not a tab (2026-11-22): the chip is its only way in.
-export const escB = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const escB = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 export const TIERS = [
   ['IRON', 'Iron', '#7a7a78', 'Nothing yet'],
@@ -16,9 +16,9 @@ export const TIERS = [
 ];
 export const TI = Object.fromEntries(TIERS.map((t, i) => [t[0], i]));
 export const color = (tier) => TIERS[TI[tier]][2];
-export const nf = new Intl.NumberFormat('en-US');
+const nf = new Intl.NumberFormat('en-US');
 export const fmtN = (n) => (n >= 10000 ? `${nf.format(Math.round(n / 100) / 10)}k`.replace('.0k', 'k') : nf.format(Math.round(n)));
-export const fmtKc = (n) => `${n > 0 && n < 10 ? n.toFixed(1) : nf.format(Math.round(n))} Kč`;
+const fmtKc = (n) => `${n > 0 && n < 10 ? n.toFixed(1) : nf.format(Math.round(n))} Kč`;
 export const fmtV = (s, v) => (s.unit === 'kc' ? fmtKc(v) : fmtN(v));
 export const dayLabel = (d) => new Date(d + 'T12:00:00').toLocaleDateString(window.hubLocale || 'en-GB', { day: 'numeric', month: 'short' });
 

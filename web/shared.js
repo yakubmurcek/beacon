@@ -11,7 +11,7 @@ export const snap = {
 };
 // iPhone Safari keeps ~5 MB a site and every page snapshots: when it is full, the biggest other
 // snapshots go (that page loads from the hub once) and the page in front keeps its instant paint.
-export function snapPut(key, text) {
+function snapPut(key, text) {
   for (let i = 0; i < 4; i++) {
     try { localStorage.setItem(key, text); return; } catch { /* full, or blocked */ }
     let big = null, size = 0;
@@ -32,18 +32,23 @@ export function setDecisionsBadge(n) {  // the shell's Decisions count (hub.js k
 }
 export const DAY = 86400;
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// Build DOM without innerHTML, so text from agents and prompts can never become markup. `svg: true` makes an SVG
+// element; `html` is the one way in for markup and only ever gets escaped markdown().
 export function h(tag, attrs, ...kids) {
-  const el = document.createElement(tag);
+  const el = attrs?.svg ? document.createElementNS(SVG_NS, tag) : document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
-    if (v == null || v === false) continue;
+    if (v == null || v === false || k === 'svg') continue;
     if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (k === 'class') el.className = v;
-    else if (k === 'html') el.innerHTML = v;  // only ever given escaped markdown()
+    else if (k === 'html') el.innerHTML = v;
     else el.setAttribute(k, v === true ? '' : v);
   }
-  for (const k of kids.flat()) if (k != null && k !== false) el.append(k.nodeType ? k : String(k));
+  for (const k of kids.flat()) if (k != null && k !== false) el.append(k instanceof Node ? k : String(k));
   return el;
 }
+/** An SVG element: h() in the SVG namespace. */
+export const s = (tag, attrs, ...kids) => h(tag, { ...attrs, svg: true }, ...kids);
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -65,7 +70,7 @@ export function ago(ts) {
 // Markdown, the small subset agent runbooks use. Links are cut out of the raw text first and
 // every piece is escaped on its own, so nothing in a body (from ClickUp, an agent, a paste) can
 // open a tag or leave an attribute; only http(s) URLs become links.
-export const LINK = /\[([^\]\n]+)\]\((https?:\/\/[^\s()<>"']+)\)|(https?:\/\/[^\s<>"'()]*[^\s<>"'().,;:!?])/g;
+const LINK = /\[([^\]\n]+)\]\((https?:\/\/[^\s()<>"']+)\)|(https?:\/\/[^\s<>"'()]*[^\s<>"'().,;:!?])/g;
 
 export function styled(text) {  // escaped text -> code, bold, italic
   return text
@@ -74,7 +79,7 @@ export function styled(text) {  // escaped text -> code, bold, italic
     .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
 }
 
-export function inline(raw) {
+function inline(raw) {
   let out = '', last = 0, m;
   LINK.lastIndex = 0;
   while ((m = LINK.exec(raw))) {
@@ -121,7 +126,7 @@ export function markdown(src) {
 // ------------------------------------------------------------------ api
 
 export async function api(path, body) {
-  const opts = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  const opts = body === undefined ? { cache: 'no-store' } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
   // A deploy restarts the hub for a few seconds and the proxy answers 502 meanwhile: reads wait it out quietly.
   let r;
   for (let tries = body === undefined ? 5 : 1; ; ) {
@@ -147,7 +152,7 @@ export function showError(e) {
 
 // ------------------------------------------------------------------ toast + menu
 
-export let toastTimer;
+let toastTimer;
 export function toast(text, onUndo) {
   const el = $('toast');
   el.replaceChildren(...[h('span', {}, text), onUndo && h('button', { onclick: () => { el.hidden = true; onUndo(); } }, 'Undo')].filter(Boolean));
