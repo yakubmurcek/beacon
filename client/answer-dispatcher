@@ -34,6 +34,7 @@ between the two). Uses the `tasks` command's client (next to this file). Standar
 """
 import importlib.machinery
 import importlib.util
+import contextlib
 import hashlib
 import json
 import os
@@ -499,6 +500,8 @@ def carry_out(q):
     cwd = os.path.join(PROJECTS, q['project'])
     if not os.path.isdir(cwd):
         cwd = PROJECTS
+    if live_agent(q, task, cwd):
+        return 0
     sid = str(uuid.uuid4())
     link_run((task or {}).get('id'), sid)
     env = dict(os.environ, IS_SANDBOX='1', BEACON_ENDINGS='1')  # its result is a card in the feed too
@@ -520,6 +523,39 @@ def carry_out(q):
         tell(out)
     print(out)
     return 0
+
+
+# A fresh run as a live Beacon agent reads these lines instead of the hidden run's (task 1996).
+LIVE_WORDS = {
+    'Nobody is watching this run and nobody can answer a question here.':
+        'This is a live chat (a Beacon agent) he can open in his Claude app; he is not watching it now. When you '
+        'need him, `tasks ask` and end your turn: his answer comes into this chat.',
+    "Don't write a closing note yourself: your final reply becomes the task's note.":
+        'Never wait in a loop for an answer.',
+    'Your final reply goes to his phone as is:': 'Your final reply becomes a card on his Beacon feed:',
+}
+
+
+def live_agent(q, task, cwd):
+    """A fresh run as a live Beacon agent (task 1996): one chat he can open in his Claude app, his later answers
+    pushed into it. False (the hidden `claude -p` run instead) when switched off, at the cap, or the start fails."""
+    if os.environ.get('BEACON_LIVE_AGENTS', '1') != '1':
+        return False
+    brief = prompt(q, task)
+    for old, new in LIVE_WORDS.items():
+        brief = brief.replace(old, new)
+    name = (task or {}).get('title') or f"Answer: {q.get('question') or ''}"
+    try:
+        sid = agent.start(task=(task or {}).get('id'), brief=brief, cwd=cwd, name=name)
+    except (SystemExit, subprocess.CalledProcessError, OSError) as e:
+        print(f"?{q['id']}: no live agent ({e}), a hidden run instead")
+        return False
+    if task:
+        with contextlib.suppress(SystemExit):
+            note(task['id'], f"🤖 His answer ?{q['id']} („{q['answer'][:80]}“) went to a live agent: „{name[:60]}“ in "
+                             f"his Claude app")
+    print(f"?{q['id']}: live agent {sid[:8]} started")
+    return True
 
 
 def stamp(path):

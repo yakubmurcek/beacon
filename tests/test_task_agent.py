@@ -1447,6 +1447,7 @@ class AnswerDispatcherTest(TaskAgentTest):
         self.d.running = lambda: []
         self.started = []
         self.d.start_run = lambda q: (self.started.append(q['id']), self.d.run(q['id']))[0]  # inline, not systemd-run
+        self.d.live_agent = lambda q, task, cwd: False  # the hidden run these tests read; live agents: test_beacon_agent
         self.qs = self.server.Handler.questions
 
     def ask_on(self, t, text='⏳ Needs you: monthly or yearly?'):

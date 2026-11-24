@@ -801,6 +801,11 @@ channel** ([Claude Code Channels](https://code.claude.com/docs/en/channels)): an
 into the running session. Typing in the app reaches the same session. One agent, two windows, no copies.
 
 - `beacon-agent start --task ID --brief "…"` starts one; the brief goes in through the channel once it is up.
+  answer-dispatcher's fresh runs (an answer for other work, a handed-off or too-big session, feedback) start one too,
+  with the run's prompt as its brief; at the cap, or with `BEACON_LIVE_AGENTS=0`, the hidden `claude -p` run instead.
+  Answers to chats he opened himself in the desktop app still take the old way (a follow-up).
+- Only his own login (answered on the page or a task note) reads as his words in the chat; an answer an agent
+  recorded says so. The prompt hooks step aside in a live agent, so nothing is handed in twice.
 - The channel polls the hub for answers to its own session's cards (and taps on its reply cards), pushes each, waits
   for the session's transcript to record it (`<channel source="beacon" card="ID">`), and only then claims it. One that
   never lands marks the agent broken, alarms, and answer-dispatcher's old path carries it out: never lost.

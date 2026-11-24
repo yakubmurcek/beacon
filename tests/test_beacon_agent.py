@@ -213,5 +213,38 @@ class DialogHookTest(unittest.TestCase):
         box.assert_not_called()
 
 
+def load_dispatcher():
+    loader = importlib.machinery.SourceFileLoader('dispatcher', os.path.join(ROOT, 'client', 'answer-dispatcher'))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader('dispatcher', loader))
+    loader.exec_module(mod)
+    return mod
+
+
+class LiveHandoffTest(unittest.TestCase):
+    """A fresh run starts as a live agent he can open in his app; the hidden run only when that can't happen."""
+
+    def setUp(self):
+        self.d = load_dispatcher()
+        self.q = {'id': 7, 'answer': 'Go', 'question': 'Go?', 'project': 'beacon', 'kind': 'next-step'}
+        self.task = {'id': 5, 'project': 'beacon', 'status': 'doing', 'title': 'Fix it', 'body': 'b', 'comments': []}
+
+    def test_a_fresh_run_becomes_a_live_agent_with_its_brief(self):
+        with mock.patch.object(self.d.agent, 'start', return_value=SID) as start, \
+                mock.patch.object(self.d, 'note') as note:
+            self.assertTrue(self.d.live_agent(self.q, self.task, '/x'))
+        brief = start.call_args.kwargs['brief']
+        self.assertIn('live chat', brief)
+        self.assertNotIn('Nobody is watching this run', brief)
+        self.assertEqual(start.call_args.kwargs['task'], 5)
+        self.assertIn('live agent', note.call_args[0][1])
+
+    def test_at_the_cap_or_switched_off_the_hidden_run_takes_it(self):
+        with mock.patch.object(self.d.agent, 'start', side_effect=SystemExit('5 agents already live')):
+            self.assertFalse(self.d.live_agent(self.q, self.task, '/x'))
+        with mock.patch.dict(os.environ, {'BEACON_LIVE_AGENTS': '0'}), mock.patch.object(self.d.agent, 'start') as start:
+            self.assertFalse(self.d.live_agent(self.q, self.task, '/x'))
+        start.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
