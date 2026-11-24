@@ -79,7 +79,7 @@ async function systemFonts(page) {
       const text = (node.children || []).filter((c) => c.nodeType === 3).map((c) => c.nodeValue).join('').trim();
       const odd = [...new Set(text)].filter((c) => c.codePointAt(0) > 0x7e).join('');
       // emoji are drawn by each device's emoji font anyway (Apple there, Noto here); no text: generated or blank
-      if (!text || (odd && [...odd].every((c) => /\p{Emoji_Presentation}/u.test(c)))) continue;
+      if (!text || (odd && [...odd].every((c) => /\p{Extended_Pictographic}/u.test(c)))) continue;
       const where = node.localName + (cls ? '.' + cls.trim().split(/\s+/).slice(0, 2).join('.') : '')
         + ` (${f.familyName}: "${odd || text.slice(0, 24)}")`;
       found.set(where, (found.get(where) || 0) + f.glyphCount);
