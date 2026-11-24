@@ -356,3 +356,9 @@ a.role:hover { border-color: var(--pop-line); }
 .doc .wiki { color: var(--muted); }
 .doc .meta { color: var(--muted); font-size: 13px; }
 .doc hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
+
+/* Detail: the agent/moves and the Next line share one row, wrapping on a phone */
+.ld-act { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+.ld-act > * { flex: 1 1 280px; min-width: 0; margin: 0; }
+.ld-act .ld-moves:empty { display: none; }
+.ld-act .ld-moves > .agent { height: 100%; box-sizing: border-box; }
