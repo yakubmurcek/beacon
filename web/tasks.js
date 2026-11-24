@@ -188,14 +188,70 @@ function section(title, tasks, opts = {}) {
     tasks.length ? list : h('p', { class: 'muted empty' }, opts.empty || 'Nothing here.'), more);
 }
 
-function agentRow(s) {
-  return h('li', { class: 'agent' },
-    h('span', { class: `state ${s.state}` }),
-    h('span', { class: 'body' },
-      h('span', { class: 'title' }, s.title || s.project),
-      h('span', { class: 'meta' }, h('span', { class: 'proj' }, s.project), h('span', {}, s.machine),
-        s.idle_s != null && h('span', {}, `waiting ${ago(Date.now() / 1000 - s.idle_s)}`.replace(' ago', ''))),
-      s.doing && h('span', { class: 'asks' }, s.doing)));
+// What each agent is doing, as one list he reads at a glance (2026-11-24: "Agents are on it" and "Agent sessions
+// here now" told the same story twice, "beacon-7c" rows, and every row said "waiting"). One row per piece of work:
+// a task with its live session, or a session that has no task. Its state comes from the session and Decisions,
+// never from a tag: a card waiting on him is "Asks you" and opens that card.
+const WORK = {
+  asks: { icon: '❓', label: 'Asks you' },
+  working: { icon: '🟢', label: 'Working now' },
+  finished: { icon: '✓', label: 'Finished its turn' },
+  queued: { icon: '⏳', label: 'Queued, no agent yet' },
+  idle: { icon: '💤', label: 'No agent running' },
+};
+const WORK_RANK = { asks: 0, working: 1, finished: 2, queued: 3, idle: 4 };
+const LOOSE_FOR = 12 * 3600;  // a session with no task drops off this long after its last turn
+
+/** @param {any} t @param {any[]} sessions */
+function workState(t, sessions) {
+  const q = state.questions.find((x) => (t && x.task_id === t.id) || sessions.some((s) => s.id === x.session_id));
+  const latest = [...sessions].sort((a, b) => (b.last || 0) - (a.last || 0))[0];
+  if (q) return { key: 'asks', q, s: latest };
+  const busy = sessions.find((x) => x.state === 'working');
+  if (busy) return { key: 'working', s: busy };
+  if (latest) return { key: 'finished', s: latest };
+  if (t && t.status === 'todo') return { key: 'queued' };
+  return { key: 'idle' };
+}
+
+/** The work in a project: its agents' tasks, then every live session no task holds. */
+function workIn(project, tasks) {
+  const held = new Set(state.tasks.flatMap((t) => t.sessions || []));
+  const now = Date.now() / 1000;
+  const loose = liveIn(project).filter((s) => !held.has(s.id) && (s.state === 'working' || now - (s.last || 0) < LOOSE_FOR
+    || state.questions.some((q) => q.session_id === s.id)));
+  return [...tasks.map((t) => ({ t, st: workState(t, liveFor(t)) })),
+    ...loose.map((s) => ({ t: null, st: workState(null, [s]) }))]
+    .sort((a, b) => WORK_RANK[a.st.key] - WORK_RANK[b.st.key] || (b.st.s?.last || b.t?.updated_at || 0) - (a.st.s?.last || a.t?.updated_at || 0));
+}
+
+function workRow({ t, st }) {
+  const w = WORK[st.key];
+  const detail = st.key === 'asks' ? st.q.question
+    : st.key === 'working' ? st.s.now || ''
+    : st.key === 'finished' ? ago(st.s.last)
+    : st.key === 'idle' ? `last touched ${ago(t.updated_at)}` : '';
+  const body = [h('span', { class: 'title' }, t ? t.title : st.s.title || 'New session, no name yet'),
+    h('span', { class: 'meta' }, h('span', { class: `tpill work is-${st.key}` }, h('span', { 'aria-hidden': 'true' }, w.icon), h('span', {}, w.label)),
+      !t && h('span', {}, 'no task'), detail && h('span', { class: 'work-detail' }, detail))];
+  const href = st.key === 'asks' ? `/decisions#/q/${st.q.id}` : t ? `#/task/${t.id}` : null;
+  return h('li', { class: `task work is-${st.key}` }, h('span', { class: `state is-${st.key}` }),
+    href ? h('a', { class: 'body', href }, ...body) : h('span', { class: 'body' }, ...body), t && moreButton(t));
+}
+
+function workSection(rows, opts = {}) {
+  if (!rows.length) return null;
+  const n = (k) => rows.filter((r) => r.st.key === k).length;
+  const shown = rows.filter((r, i) => r.st.key === 'asks' || r.st.key === 'working' || i < (opts.limit ?? 12));
+  const list = h('ul', { class: 'tasks' }, shown.map(workRow));
+  const rest = rows.slice(shown.length);
+  return h('section', { class: 'group work-list' }, h('h2', {}, opts.title || 'Agents', h('span', { class: 'n' }, rows.length)),
+    h('div', { class: 'work-sum' }, Object.keys(WORK).filter(n).map((k) => k === 'asks'
+      ? h('a', { class: `tpill work is-${k}`, href: '/decisions' }, h('span', { 'aria-hidden': 'true' }, WORK[k].icon), h('span', {}, `${n(k)} ${n(k) === 1 ? 'asks you' : 'ask you'}`))
+      : h('span', { class: `tpill work is-${k}` }, h('span', { 'aria-hidden': 'true' }, WORK[k].icon), h('span', {}, `${n(k)} ${WORK[k].label.toLowerCase()}`)))),
+    list,
+    rest.length > 0 && h('button', { class: 'show-all', onclick: (e) => { list.append(...rest.map(workRow)); e.currentTarget.remove(); } },
+      `Show ${rest.length} more`));
 }
 
 // ------------------------------------------------------------------ views
@@ -268,11 +324,11 @@ const stat = (href, num, label, cls) => h('a', { class: `day-stat ${cls}`, href 
 
 function footJumps() {
   const stale = state.tasks.filter((t) => isStale(t) && !withAgent(t) && !agentAsks(t)).length;
-  const waiting = state.live.filter((s) => s.state === 'waiting').length;
+  const working = state.live.filter((s) => s.state === 'working').length;
   return h('nav', { class: 'jump' },
     jump('#/backlog', 'All by project', `${state.tasks.filter((t) => !isParked(t)).length} open`),
     stale > 0 && jump('#/triage', 'Clean up', `${stale} untouched for ${STALE_DAYS}+ days`),
-    waiting > 0 && jump('/usage', 'Agent sessions', `${waiting} waiting for a reply`));
+    working > 0 && jump('/usage', 'Agent sessions', `${working} working now`));
 }
 
 // What the agents hold, one line per project: how many, how many live now, and the freshest one's title.
@@ -372,24 +428,20 @@ function viewBacklog(project) {
   const all = (by.get(project) || []);
   const live = all.filter((t) => !isParked(t)).sort(cmp);
   const parked = all.filter(isParked).sort(cmp);
-  const agentsLive = liveIn(project);
   const split = sortKey === 'whose';
   const pick = (w) => live.filter((t) => whose(t) === w);
   return [
     bar,
     split ? [
       section('Yours', pick('mine'), { noProject: true, mine: true }),
-      section('Agents are on it', pick('agents'), { noProject: true, limit: 10, step: 20 }),
+      // the agents' tasks, the cards they wait on him with, and sessions no task holds: one list
+      workSection(workIn(project, [...pick('agents'), ...pick('decision')])),
       section('Late', pick('late'), { noProject: true, limit: 5, step: 20 }),
       section('Later', [...pick('later'), ...pick('stale')], { noProject: true, limit: 15, step: 30 }),
-    ] : section(pname(project) || project, live, { noProject: true, always: true, limit: 40, step: 40, empty: 'No open tasks.' }),
+    ] : [section(pname(project) || project, live, { noProject: true, always: true, limit: 40, step: 40, empty: 'No open tasks.' }),
+      workSection(workIn(project, []), { title: 'Sessions with no task' })],
     !live.length && split && h('p', { class: 'muted empty' }, 'Nothing open here.'),
-    split && pick('decision').length > 0 && h('nav', { class: 'jump' },
-      jump('/decisions', 'Decisions', `${pick('decision').length} in this project wait for your answer there`)),
     section('Parked', parked, { noProject: true, limit: 0, step: 20 }),
-    // Live sessions last and without their last words: those are often questions, which belong on Decisions.
-    agentsLive.length > 0 && h('section', { class: 'group agents' }, h('h2', {}, 'Agent sessions here now', h('span', { class: 'n' }, agentsLive.length)),
-      h('ul', { class: 'tasks' }, agentsLive.map((x) => agentRow({ ...x, doing: null })))),
   ];
 }
 

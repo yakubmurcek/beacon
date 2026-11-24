@@ -2364,8 +2364,10 @@ def tidy_name(title):
 
 
 def first_prompts(path, n=2):
-    """The first `n` things a person typed in the session (system reminders and notices left out)."""
-    out, project = [], None
+    """The first `n` things a person typed in the session (system reminders and notices left out). A session
+    another session started (a review, a helper: its only prompt is that session's brief) is named from the
+    brief instead; without it such a session kept Claude Code's own folder-and-hex name ("beacon-7c")."""
+    out, briefs, project = [], [], None
     try:
         with open(path, encoding='utf-8') as f:
             for i, raw in enumerate(f):
@@ -2379,9 +2381,13 @@ def first_prompts(path, n=2):
                 text = _typed_prompt(o)
                 if text:
                     out.append(re.sub(r'\s+', ' ', text)[:500])
+                elif len(briefs) < n:
+                    brief = _brief_prompt(o)
+                    if brief:
+                        briefs.append(re.sub(r'\s+', ' ', brief)[:500])
     except OSError:
         pass
-    return out, os.path.basename((project or '').rstrip('/\\')) or '?'
+    return out or briefs, os.path.basename((project or '').rstrip('/\\')) or '?'
 
 
 def _typed_prompt(o):
@@ -2395,6 +2401,15 @@ def _typed_prompt(o):
     if re.search(r'<command-name>(.*?)</command-name>', text, re.S):  # /clear, /model: says nothing about the work
         return None
     return text if text and not text.startswith('<') else None
+
+
+def _brief_prompt(o):
+    """The text another session or a notification put in as this session's prompt; None for anything else."""
+    if o.get('type') != 'user' or o.get('isMeta') or o.get('isSidechain'):
+        return None
+    content = _user_text((o.get('message') or {}).get('content'))
+    text = re.sub(r'<system-reminder>.*?</system-reminder>', '', content or '', flags=re.S).strip()
+    return text if len(text) >= 8 and not text.startswith('<') else None
 
 
 def _user_text(content):
@@ -2421,7 +2436,9 @@ def ask_haiku_name(project, prompts):
         # Not logged in, a usage limit, an API error: the text is a message, not a name.
         if r.returncode or out.get('is_error') or not out.get('usage', {}).get('output_tokens') or '/login' in result:
             return None
-        return tidy_name(result)
+        name = tidy_name(result)
+        # A reply that talks ("I'll read the design documents…") is not a name: a try that named nothing.
+        return name if name and len(name.split()) <= 8 and not re.match(r"(?i)i(?:'ll|'m| will| am)\b", name) else None
     except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
         return None
 
@@ -2453,19 +2470,59 @@ def name_budget(headless=False):
     return True
 
 
-def name_session(sid, path, headless=False):
-    """Background half of hook-name: the task's title, else Haiku's. Never replaces a name set meanwhile."""
+NAME_TRIES = 3  # a session whose naming failed (Haiku away, nothing to name it from yet) is tried again, this often
+
+
+def name_session(sid, path, headless=False, prompt=None):
+    """Background half of hook-name: the task's title, else Haiku's from the first prompts (or `prompt`, the
+    one the prompt hook just got, before it reaches the log). Never replaces a name set meanwhile. A try that
+    names nothing leaves the session to the next hook, up to NAME_TRIES."""
     try:
         title = task_name(sid)
     except Exception:
         title = None
     if not title:
         prompts, project = first_prompts(path)
-        if not prompts or not name_budget(headless):
-            return
-        title = ask_haiku_name(project, prompts)
+        if not prompts and prompt:
+            prompts = [re.sub(r'\s+', ' ', prompt)[:500]]
+        if prompts and name_budget(headless):
+            title = ask_haiku_name(project, prompts)
     if title and not log_titles(path):
         write_name(path, sid, title)
+    elif not title:
+        _naming_failed(sid)
+
+
+def _naming_failed(sid):
+    """Count a try that named nothing; the hooks stop asking after NAME_TRIES."""
+    import contextlib
+    marker = os.path.join(NAMES_DIR, sid)
+    try:
+        with open(marker, encoding='utf-8') as f:
+            tries = f.read().count('x')
+        with open(marker, 'a', encoding='utf-8') as f:
+            f.write('x')
+    except OSError:
+        tries = 0
+    if tries + 1 < NAME_TRIES:
+        with contextlib.suppress(OSError):
+            os.replace(marker, marker + '.retry')  # the next hook asks again
+
+
+def _start_naming(sid, path, headless=False, prompt=None):
+    """Name this session in the background, once at a time; the hook returns at once."""
+    marker = os.path.join(NAMES_DIR, sid)
+    if os.path.exists(marker):  # asked already, or a try still running
+        return
+    os.makedirs(NAMES_DIR, exist_ok=True)
+    try:
+        os.replace(marker + '.retry', marker)  # keeps the count of failed tries
+    except OSError:
+        open(marker, 'a').close()
+    kw = {'creationflags': 0x08000000 | 0x00000200} if os.name == 'nt' else {'start_new_session': True}
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), 'hook-name', '--bg', sid, path]
+                     + (['--headless'] if headless else []) + (['--prompt', prompt[:500]] if prompt else []),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
 
 
 def rename_for_task(title):
@@ -2491,19 +2548,11 @@ def hook_name(stdin):
             return
         if log_titles(path, NAME_TAIL):
             return
-        marker = os.path.join(NAMES_DIR, sid)
         known = log_titles(path)
         if known:  # named, but long ago: say it again near the end
             write_name(path, sid, known[-1])
             return
-        if os.path.exists(marker):  # asked already
-            return
-        os.makedirs(NAMES_DIR, exist_ok=True)
-        open(marker, 'a').close()
-        kw = {'creationflags': 0x08000000 | 0x00000200} if os.name == 'nt' else {'start_new_session': True}
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), 'hook-name', '--bg', sid, path]
-                         + (['--headless'] if hooks_off() else []),
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
+        _start_naming(sid, path, headless=hooks_off())
     except Exception as e:  # a broken log or hub must never hold a session
         print(f'tasks hook-name: {e}', file=sys.stderr)
 
@@ -2529,6 +2578,7 @@ def hook_prompt(stdin):
         sid, prompt = ev.get('session_id'), ev.get('prompt') or ''
         if not sid or prompt.lstrip().startswith('/') or hooks_off():
             return
+        _name_from_first_prompt(ev, prompt)
         if manual_here():  # outside Beacon: told once, on its first prompt
             if _first_time(sid, 'manual'):
                 _prompt_context(MANUAL_NOTE)
@@ -2542,6 +2592,18 @@ def hook_prompt(stdin):
         _prompt_context(_task_hint(ev, prompt))
     except Exception as e:  # a broken hub or hook must never hold a prompt
         print(f'tasks hook-prompt: {e}', file=sys.stderr)
+
+
+def _name_from_first_prompt(ev, prompt):
+    """A session gets its name as its work starts, not when its first turn ends (that can take hours, and
+    until then the pages showed Claude Code's own folder-and-hex name). Never fails the prompt."""
+    try:
+        sid, path = ev.get('session_id'), ev.get('transcript_path')
+        if (path and os.path.exists(path) and os.environ.get('TASKS_NAMES') != '0'
+                and not log_titles(path, NAME_TAIL) and not log_titles(path)):
+            _start_naming(sid, path, prompt=prompt)
+    except Exception as e:
+        print(f'tasks hook-prompt naming: {e}', file=sys.stderr)
 
 
 def _prompt_context(text):
@@ -2769,6 +2831,7 @@ def hook_parsers(sub):
     hn = sub.add_parser('hook-name', help=argparse.SUPPRESS)
     hn.add_argument('--bg', nargs=2, metavar=('SESSION', 'LOG'))
     hn.add_argument('--headless', action='store_true')
+    hn.add_argument('--prompt')
     hn.set_defaults(run=cmd_hook_name)
 
 
@@ -2922,7 +2985,7 @@ def cmd_link(a):
 
 def cmd_hook_name(a):
     if a.bg:
-        name_session(*a.bg, headless=a.headless)
+        name_session(*a.bg, headless=a.headless, prompt=a.prompt)
     else:
         hook_name(sys.stdin)
 

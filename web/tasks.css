@@ -82,6 +82,18 @@ body.on-task .capture { display: none; }
 .task .agent-line { min-width: 0; overflow: hidden; }
 .task .agent-line > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
+/* the agents' work: one list, its state in words on each row */
+.state.is-asks { background: var(--accent); } .state.is-working { background: var(--good); } .state.is-finished { background: var(--s1); }
+.state.is-queued { background: transparent; border: 1.5px solid var(--s7); }
+.state.is-idle { background: transparent; border: 1.5px solid var(--dim); }
+.tpill.work.is-asks { color: var(--accent-ink); border-color: currentColor; } .tpill.work.is-working { color: var(--good); border-color: currentColor; }
+.tpill.work.is-finished { color: var(--s1); border-color: currentColor; } .tpill.work.is-queued, .tpill.work.is-idle { color: var(--muted); }
+.work-sum { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-bottom: var(--sp-2); }
+a.tpill { text-decoration: none; }
+.work .meta { min-width: 0; }
+.work-detail { flex-basis: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.task.work.is-asks .work-detail { color: var(--text); }
+
 /* projects */
 .projects li { border-top: 1px solid var(--line); } .projects li:first-child { border-top: 0; }
 .projects a { display: flex; justify-content: space-between; gap: 10px; padding: 10px var(--sp-3); text-decoration: none;
