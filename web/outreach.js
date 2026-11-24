@@ -49,6 +49,9 @@ const ICONS = {
   door: '<path d="M4 21h16"/><path d="M6 21V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17"/><circle cx="14" cy="12" r="1"/>',
   pin: '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  pen: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  bot: '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 4v4"/><circle cx="12" cy="3" r="1"/><path d="M9 13h.01M15 13h.01"/><path d="M9.5 17h5"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.7 1.8L21.5 17.5l-1.8.7L19 20l-.7-1.8-1.8-.7 1.8-.7z"/>',
   laptop: '<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/>',
@@ -356,7 +359,9 @@ function leadCard(r) {
       r.person && !/^not found$/i.test(r.person) ? h('span', { class: 'bdg' }, ic('user'), r.person) : null,
       r.posted && r.posted !== 'unknown' ? h('span', { class: 'bdg' + (postedAge(r.posted) === POSTED[0] ? ' fresh' : ''), title: r.posted }, ic('clock'), 'Posted ' + fmtDate(r.posted)) : null) : null,
     r.know ? h('p', { class: 'know' }, r.know) : null,
-    mail || r.ad === 'closed' ? null : h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
+    movesFor(r, 'card'),
+    // the move buttons are the answer to 'Next', so a card with them drops the line (the detail keeps it)
+    mail || r.ad === 'closed' || ((r.moves || []).length && !r.agent) ? null : h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
     h('div', { class: 'foot' }, h('span', { class: 'links' }, links), r.touched ? h('span', { class: 'when', title: r.touched }, fmtDate(r.touched)) : null));
 }
 
@@ -420,6 +425,7 @@ function openLead(r, quiet) {
         h('span', { class: 'grp' }, h('i', { class: 'dot', style: `background:${pcolor(r.project)}` }), pname(r.project)),
         r.touched ? h('span', { class: 'when' }, fmtDate(r.touched)) : null)),
     tiles.length ? h('div', { class: 'tiles' }, tiles.map(([icn, k, v, url]) => h('a', { class: 'tile', href: url, ...ext(url) }, ic(icn), h('b', null, k), h('small', null, v)))) : null,
+    h('div', { class: 'ld-moves' }, movesFor(r, 'detail')),
     h('div', { class: 'ld-next' + (r.next ? '' : ' none') }, ic('send'), h('div', null, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet'))),
     r.ai && r.ai_why ? h('div', { class: 'ld-why ld-ai' }, ic('spark'), h('div', null, h('b', null, `AI in this job: ${AI[r.ai][1]}`), h('p', null, r.ai_why))) : null,
     ...det.filter((x) => x.mail).map((sec) => mailBlock(sec.title, sec.mail)),
@@ -513,6 +519,67 @@ function feedStrip() {
         h('span', { class: 'feed-w' }, f.what),
         h('span', { class: 'feed-r' }, ic('clock'), `Ran ${when(f.last_run)}`, h('span', null, '·'), `next ${when(f.next_run, true)}`));
     })));
+}
+
+// ------------------------------------------------------------ next moves
+// What the data says to do next (the list's reader offers them: no draft -> Write the draft, closed ad -> Drop it…).
+// A tap asks once, with room for a note; the hub then files it for the task agent, and the card shows that agent
+// live (queued, working with its session, needs you, done) instead of the buttons.
+const leadKey = (r) => r.project + ' / ' + r.name;
+function agentLine(a) {
+  const link = `/#/task/${a.task}`;
+  if (a.waiting) return h('a', { class: 'agent wait', href: link }, ic('bot'), h('span', null, h('b', null, 'Needs you'), a.note.replace(/^⏳\s*(Needs you:)?\s*/, '')), ic('arrow'));
+  if (a.status === 'done') return h('a', { class: 'agent done', href: link }, ic('check'), h('span', null, h('b', null, 'Agent done'), a.note.replace(/^✅\s*/, '') || a.title), ic('arrow'));
+  if (a.status === 'doing') {
+    const sx = a.session;
+    return h('a', { class: 'agent live', href: link }, h('i', { class: 'pulse' }), h('span', null, h('b', null, 'Agent working'),
+      sx ? (sx.doing || 'on ' + a.title.toLowerCase()) + (sx.machine ? ` · ${sx.machine}` : '') : a.title), ic('arrow'));
+  }
+  if (a.handed) return h('a', { class: 'agent queued', href: link }, ic('bot'), h('span', null, h('b', null, 'Queued'), 'the agent starts within a minute'), ic('arrow'));
+  return h('a', { class: 'agent wait', href: link }, ic('bot'), h('span', null, h('b', null, 'Back with you'), a.note || a.title), ic('arrow'));
+}
+function movesFor(r, where) {
+  if (r.agent && r.agent.status !== 'done') return agentLine(r.agent);
+  // a move the agent just finished stays hidden until the lead's files show its result
+  const moves = (r.moves || []).filter((m) => !(r.agent && r.agent.fresh && r.agent.move === m.id));
+  const done = r.agent ? agentLine(r.agent) : null;
+  if (!moves.length) return done;
+  const open = st.moving && st.moving.key === leadKey(r) && st.moving.where === where ? moves.find((m) => m.id === st.moving.move) : null;
+  if (open) {
+    const note = h('textarea', { class: 'mv-note', rows: '2', placeholder: open.ask || 'Anything the agent should know? (optional)',
+      oninput: (e) => { st.moving.note = e.target.value; } });
+    note.value = st.moving.note || '';
+    const go = h('button', { type: 'button', class: 'mv go' }, ic('bot'), 'Hand to the agent');
+    go.onclick = async (e) => {
+      e.stopPropagation(); go.disabled = true; go.lastChild.textContent = 'Handing over…';
+      try {
+        const res = await fetch('/api/outreach/move', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project: r.project, name: r.name, move: open.id, note: note.value }) });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(out.error || 'The hub answered ' + res.status);
+        st.moving = null; painted = ''; await load(); rerender();
+      } catch (err) { go.disabled = false; go.lastChild.textContent = 'Try again'; go.title = err.message; showError(err); }
+    };
+    return h('div', { class: 'mv-ask', onclick: (e) => e.stopPropagation() },
+      h('div', { class: 'mv-q' }, ic(open.icon || 'bot'), h('b', null, open.label), h('span', null, 'An agent does it now and shows here; nothing is sent.')),
+      note, h('div', { class: 'mv-row' }, go, h('button', { type: 'button', class: 'mv ghost', onclick: () => { st.moving = null; rerender(); } }, 'Cancel')));
+  }
+  return h('div', { class: 'moves', onclick: (e) => e.stopPropagation() }, done,
+    moves.map((m) => h('button', { type: 'button', class: 'mv' + (m.primary ? ' go' : ''),
+      onclick: () => { st.moving = { key: leadKey(r), move: m.id, where }; rerender(); } }, ic(m.icon || 'bot'), m.label)));
+}
+function rerender() {
+  renderList();
+  const d = document.getElementById('lead-drawer');
+  const r = d && st.lead && data.leads.find((x) => leadId(x) === st.lead);
+  const slot = d && d.querySelector('.ld-moves');
+  if (r && slot) slot.replaceChildren(movesFor(r, 'detail') || '');
+}
+let polling = 0;
+function keepWatching() {  // while an agent works a lead, the page refreshes itself
+  const busy = (data.leads || []).some((r) => r.agent && r.agent.status !== 'done');
+  if (busy && !polling) polling = setInterval(() => { if (!document.hidden) load(); }, 15000);
+  if (!busy && polling) { clearInterval(polling); polling = 0; }
 }
 
 function renderLeads(v) {
@@ -620,12 +687,15 @@ async function load() {
     const d = await r.json();
     $('error').hidden = true;
     const s = JSON.stringify(d);
-    if (s === painted) return;
+    if (s === painted) { keepWatching(); return; }
+    if (st.moving) { data = d; painted = s; snap.set('outreach', d); keepWatching(); return; }  // he is typing a note: redraw after
     painted = s;
     data = d;
     snap.set('outreach', d);
     try { localStorage.removeItem('outreach.snap'); } catch { /* blocked */ }  // the key before shared.js's snap
     render();
+    rerender();  // an open lead detail shows the fresh agent state too
+    keepWatching();
   } catch (e) {
     if (!data) showError(e);
   }

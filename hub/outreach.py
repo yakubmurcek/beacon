@@ -57,6 +57,15 @@ def _clip(s, n=170):
     return s if len(s) <= n else s[:n - 1].rsplit(' ', 1)[0] + '…'
 
 
+MARK = 'Outreach lead:'  # the last lines of a move's task tie it back to its card and say which move it was
+MOVE = 'Outreach move:'
+RECENT = 600  # seconds a finished move keeps its button hidden: the lead's files may take a sync to show the result
+
+
+def _mark(lead):
+    return ' '.join(f"{lead.get('project')} / {lead.get('name')}".split())
+
+
 def _lead(**kw):
     base = {'name': '', 'project': 'other', 'town': '', 'segment': '', 'know': '', 'status': 'not contacted',
             'next': '', 'touched': '', 'web': '', 'source': {'label': '', 'url': '', 'path': ''},
@@ -68,7 +77,7 @@ def _lead(**kw):
 
 
 class Outreach:
-    def __init__(self, brain=None, projects=None, questions=None, machines=None):
+    def __init__(self, brain=None, projects=None, questions=None, machines=None, tasks=None, live=None):
         self.brain = os.path.realpath(os.path.expanduser(brain or os.environ.get('OUTREACH_BRAIN') or settings.p('brain')))
         self.projects = os.path.realpath(os.path.expanduser(projects or os.environ.get('OUTREACH_PROJECTS') or settings.p('projects')))
         self.lock = threading.Lock()
@@ -77,6 +86,9 @@ class Outreach:
         self._sources = (None, None)
         self.questions = questions  # the hub's Questions, for the open cards a lead group waits on
         self.machines = machines  # the hub's Machines, for the jobs that keep a lead group fresh
+        self.tasks = tasks  # the hub's Tasks: a lead's next move becomes a task for the task agent
+        self.live = live  # () -> the live sessions view, to show the agent working a lead's task
+        self.move_lock = threading.Lock()  # two taps (two tabs) never file the same move twice
 
     # ------------------------------------------------------------ sources
 
@@ -256,7 +268,71 @@ class Outreach:
             else:
                 view = self.build()
                 self.cache = (sig, view)
-        return dict(view, waiting=self.waiting({p['id'] for p in view['projects'] if p['leads']}), feeds=self.feeds())
+        agents = self.agents()
+        leads = [dict(x, agent=agents[_mark(x)]) if _mark(x) in agents else x for x in view['leads']] if agents else view['leads']
+        return dict(view, leads=leads, waiting=self.waiting({p['id'] for p in view['projects'] if p['leads']}), feeds=self.feeds())
+
+    # ------------------------------------------------------------ next moves
+
+    def agents(self):
+        """The agent task on each lead (open, or done in the last 2 days), keyed by the lead's mark, with the
+        session working it now: what a card shows instead of its move buttons."""
+        if not self.tasks:
+            return {}
+        try:
+            rows = self.tasks.list(status='todo,doing,done', q=MARK, limit=300)
+            sessions = {}
+            if self.live:
+                for m in self.live().get('machines') or []:
+                    for x in m.get('sessions') or []:
+                        sessions[x.get('id')] = {'state': x.get('state'), 'machine': m.get('machine'), 'doing': x.get('doing')}
+        except Exception as e:  # a lead card never breaks on the task store
+            print(f'outreach: agents: {e}', flush=True)
+            return {}
+        out = {}
+        for t in rows:  # newest first
+            body = t.get('body') or ''
+            keys = re.findall('^' + re.escape(MARK) + r' (.+)$', body, re.M)
+            if not keys:
+                continue
+            key, moved = keys[-1].strip(), (re.findall('^' + re.escape(MOVE) + r' (\S+)$', body, re.M) or [''])[-1]
+            age = time.time() - (t.get('updated_at') or 0)
+            if t['status'] == 'done' and age > 2 * 86400:
+                continue
+            if key in out and not (out[key]['status'] == 'done' and t['status'] != 'done'):
+                continue  # the newest task wins, an open one over a finished one
+            note = (t.get('last_note') or {}).get('text') or ''
+            live = next((sessions[x] for x in reversed(t.get('sessions') or []) if x in sessions), None)
+            out[key] = {'task': t['id'], 'title': t['title'], 'status': t['status'], 'handed': 'claude' in (t.get('tags') or []),
+                        'waiting': bool(t.get('waiting_on_him')) or note.startswith('⏳'), 'note': note[:300], 'session': live,
+                        'move': moved, 'fresh': t['status'] == 'done' and age < RECENT}
+        return out
+
+    def move(self, project, name, move, note='', author=None):
+        """Hand a lead's next move to the task agent: a task built from the move the list's reader offers for
+        that lead (never from the page), refused while another agent task on the lead is open."""
+        if not self.tasks:
+            raise ValueError('no task store')
+        with self.move_lock:
+            lead = next((x for x in self.view()['leads'] if x['project'] == project and x['name'] == name), None)
+            if not lead:
+                raise LookupError('no such lead')
+            mv = next((m for m in lead.get('moves') or [] if m.get('id') == move), None)
+            if not mv:
+                raise ValueError(f'move: {lead["name"]} has no move {move!r} now')
+            cur = lead.get('agent') or {}
+            if cur and cur['status'] != 'done':
+                raise ValueError(f'task {cur["task"]} is already on this lead')
+            if cur.get('fresh') and cur.get('move') == move:
+                raise ValueError(f'task {cur["task"]} just did this; its result shows within minutes')
+            body = mv['brief'].rstrip()
+            note = str(note or '').strip()[:2000]
+            if note:
+                body += f"\n\n## His note (from the Outreach card)\n{note}"
+            body += f"\n\n{MARK} {_mark(lead)}\n{MOVE} {move}\n"
+            fields = {'title': mv.get('task') or f"{mv['label']}: {lead['name']}", 'body': body, 'project': mv.get('project') or project,
+                      'tags': ['claude'], 'status': 'todo', 'priority': 2}
+            return self.tasks.create(fields, author) if author else self.tasks.create(fields)
 
     def build(self):
         """Every lead, research row and group count, from the sources as they are now."""

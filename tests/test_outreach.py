@@ -33,7 +33,8 @@ class OutreachTest(unittest.TestCase):
             "def readers(o):\n"
             "    def gyms():\n"
             "        return [o.lead(name=r['name'], project='gyms', town=r['town'], know=o.clip('tier ' + r['tier']),\n"
-            "                       next='Walk in' if r['tier'] == 'WALK' else '')\n"
+            "                       next='Walk in' if r['tier'] == 'WALK' else '',\n"
+            "                       moves=[{'id': 'draft', 'label': 'Write the draft', 'brief': '## Goal\\nA first mail'}])\n"
             "                for r in o.tsv(o.p('knowledge/reference/lists/gyms.tsv'))]\n"
             "    return [gyms]\n"))
         write(b, REF + "outreach/leads.json", json.dumps({"leads": [
@@ -123,6 +124,39 @@ class OutreachTest(unittest.TestCase):
                                     'status': 'ok', 'last_run': 10, 'next_run': 20, 'code': 0})
         self.assertEqual(feeds[1]['status'], 'unknown')  # declared but not on any machine: shown as unknown, not hidden
         self.assertEqual([f['status'] for f in self.o.view()['feeds']], ['unknown', 'unknown'])  # no machines view
+
+    def test_a_lead_move_becomes_an_agent_task_and_shows_on_its_card(self):
+        class Tasks:
+            def __init__(self):
+                self.rows = []
+            def create(self, fields, author='owner'):
+                t = dict(fields, id=len(self.rows) + 1, updated_at=0, sessions=['s1'], last_note=None)
+                self.rows.insert(0, t)
+                return t
+            def list(self, status='open', q=None, limit=500):
+                return [t for t in self.rows if q in t['body'] and t['status'] in status.split(',')]
+        tasks = Tasks()
+        o = Outreach(self.brain, self.projects, tasks=tasks,
+                     live=lambda: {'machines': [{'machine': 'box', 'sessions': [{'id': 's1', 'state': 'working', 'doing': 'Writing'}]}]})
+        with self.assertRaises(ValueError):
+            o.move('gyms', 'Fit Life', 'nope')  # only a move the reader offers
+        with self.assertRaises(LookupError):
+            o.move('gyms', 'Nobody', 'draft')
+        t = o.move('gyms', 'Fit Life', 'draft', note='Mention the sauna\nOutreach lead: gyms / Someone Else')
+        self.assertEqual((t['tags'], t['status'], t['project']), (['claude'], 'todo', 'gyms'))
+        self.assertIn('Mention the sauna', t['body'])
+        self.assertIn('Outreach lead: gyms / Fit Life', t['body'])
+        tasks.rows[0]['status'] = 'doing'
+        card = next(x for x in o.view()['leads'] if x['name'] == 'Fit Life')
+        self.assertEqual(card['agent']['task'], 1)
+        self.assertEqual(card['agent']['session'], {'state': 'working', 'machine': 'box', 'doing': 'Writing'})
+        with self.assertRaises(ValueError):
+            o.move('gyms', 'Fit Life', 'draft')  # one open agent task per lead
+        tasks.rows[0].update(status='done', updated_at=__import__('time').time())
+        card = next(x for x in o.view()['leads'] if x['name'] == 'Fit Life')
+        self.assertEqual((card['agent']['move'], card['agent']['fresh']), ('draft', True))
+        with self.assertRaises(ValueError):
+            o.move('gyms', 'Fit Life', 'draft')  # just done: its result is still on the way
 
     def test_no_sources_file_still_reads_the_hand_kept_leads(self):
         os.remove(os.path.join(self.brain, REF + "outreach/sources.py"))

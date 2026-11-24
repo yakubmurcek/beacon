@@ -546,6 +546,22 @@ class Handler(BaseHTTPRequestHandler):
             return None, self.send_json(400, {'error': 'bad request: expected a JSON object'})
         return who, body
 
+    def post_outreach_move(self):
+        """A tap on a lead's next move (Write the draft, Drop it…): the hub files the task for the agent."""
+        who, body = self.writer_body()
+        if not who:
+            return
+        if who != 'owner':
+            return self.send_json(403, {'error': 'forbidden: only he hands a lead to the agent'})
+        try:
+            t = self.outreach.move(str(body.get('project') or ''), str(body.get('name') or ''), str(body.get('move') or ''),
+                                   body.get('note') or '', OWNER_ID)
+        except LookupError as e:
+            return self.send_json(404, {'error': str(e)})
+        except ValueError as e:
+            return self.send_json(400, {'error': f'bad request: {e}'})
+        return self.send_json(201, {'task': t['id'], 'title': t['title']})
+
     def post_tasks(self, path):
         who, body = self.writer_body()
         if not who:
@@ -880,6 +896,8 @@ class Handler(BaseHTTPRequestHandler):
             return apps.proxy(self, base)
         if path.startswith('/api/tasks'):
             return self.post_tasks(path)
+        if path == '/api/outreach/move':
+            return self.post_outreach_move()
         if path.startswith('/api/questions'):
             return self.post_questions(path)
         if path == '/api/feedback' and getattr(self, 'feedback', None):
@@ -974,7 +992,7 @@ def main():
     Handler.studio = Studio(Handler.store, Handler.narrator, progress=Handler.progress)
     Handler.machines = Machines(Handler.store)
     Handler.names = Names(Handler.store)
-    Handler.outreach = Outreach(questions=Handler.questions, machines=Handler.machines)
+    Handler.outreach = Outreach(questions=Handler.questions, machines=Handler.machines, tasks=Handler.tasks, live=Handler.store.live_now)
     Handler.knowledge = Knowledge()
     Handler.rank = Rank(Handler.store)
     Handler.outcomes = Outcomes(Handler.store)
