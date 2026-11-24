@@ -629,6 +629,7 @@ function sessionsSection(t) {
 }
 
 // A step the collector sent, in plain words with an icon: never a raw command, path or link.
+/** @type {[RegExp, string, string][]} */
 const COMMANDS = [
   [/\b(unittest|pytest|ruff|tsc|npm (run )?(test|check|lint)|scripts\/check)\b/, '🧪', 'Running the checks'],
   [/\bshot\b|screenshot/, '📸', 'Taking a screenshot'],
@@ -639,6 +640,7 @@ const COMMANDS = [
   [/\bcurl\b/, '🌐', 'Asking a service'],
   [/./, '🔍', 'Looking through the code'],
 ];
+/** @type {[RegExp, string][]} */
 const SAID_ICONS = [
   [/screenshot|shot\b/i, '📸'], [/\btests?\b|check/i, '🧪'], [/commit|push|merge/i, '📦'], [/deploy|restart|live/i, '🚀'],
 ];
