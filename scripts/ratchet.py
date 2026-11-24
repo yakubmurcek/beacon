@@ -55,7 +55,11 @@ def ruff_findings() -> Findings:
     return found
 
 
-def biome_findings() -> Findings:
+def biome_findings() -> Findings | None:
+    """Biome's findings on web/, or None on a machine without Node (CI always has it)."""
+    if not shutil.which("npx"):
+        print("warning: no Node here, the JS rules are not checked (CI checks them)")
+        return None
     proc = subprocess.run(
         ["npx", "-y", f"@biomejs/biome@{BIOME_VERSION}", "lint", "--reporter=github", "--max-diagnostics=none", "web"],
         cwd=ROOT, capture_output=True, text=True, check=False,
@@ -83,8 +87,9 @@ def totals(found: Findings) -> dict[str, int]:
     return {rule: sum(files.values()) for rule, files in sorted(found.items())}
 
 
-def compare(found: Findings, baseline: dict[str, int]) -> tuple[list[str], dict[str, int]]:
-    """Rules that got worse (naming the changed files that hold them), and the baseline lowered to today's counts."""
+def compare(found: Findings, baseline: dict[str, int], skipped: str = "") -> tuple[list[str], dict[str, int]]:
+    """Rules that got worse (naming the changed files that hold them), and the baseline lowered to today's counts.
+    Rules starting with `skipped` were not measured on this machine: they keep their baseline."""
     current = totals(found)
     touched = changed_files()
     worse = []
@@ -94,7 +99,7 @@ def compare(found: Findings, baseline: dict[str, int]) -> tuple[list[str], dict[
             likely = [(path, k) for path, k in files if path in touched] or files
             where = ", ".join(f"{path} ({k})" for path, k in likely[:5])
             worse.append(f"{rule}: {n}, baseline {baseline.get(rule, 0)}. In: {where}")
-    lowered = {rule: min(n, current.get(rule, 0)) for rule, n in baseline.items()}
+    lowered = {rule: n if skipped and rule.startswith(skipped) else min(n, current.get(rule, 0)) for rule, n in baseline.items()}
     return worse, {rule: n for rule, n in lowered.items() if n}
 
 
@@ -116,14 +121,17 @@ def main() -> int:
     if args.raised_since:
         return 1 if baseline_raised(args.raised_since) else 0
 
-    found = ruff_findings() | biome_findings()
+    js = biome_findings()
+    found = ruff_findings() | (js or {})
+    if js is None and args.init:
+        sys.exit("--init needs Node for the JS rules")
     if args.init:
         BASELINE.write_text(json.dumps(totals(found), indent=1) + "\n")
         print(f"baseline written: {sum(totals(found).values())} findings across {len(found)} rules")
         return 0
 
     baseline = json.loads(BASELINE.read_text())
-    worse, lowered = compare(found, baseline)
+    worse, lowered = compare(found, baseline, skipped="lint/" if js is None else "")
     if worse:
         print("Quality ratchet: this change adds lint findings. Fix the code, don't raise the baseline:")
         print("\n".join(f"  {line}" for line in worse))

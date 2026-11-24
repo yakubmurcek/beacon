@@ -15,7 +15,12 @@ step "quality ratchet: strict rules for new code, old code may not get worse"
 python3 scripts/ratchet.py
 
 step "copy-paste (jscpd, .jscpd.json)"
-npx -y jscpd@4.0.5 --config .jscpd.json . >/dev/null || { npx -y jscpd@4.0.5 --config .jscpd.json --reporters consoleFull .; exit 1; }
+if ! command -v npx >/dev/null; then
+  echo "warning: no Node here, copy-paste not checked (CI checks it)"
+elif ! npx -y jscpd@4.0.5 --config .jscpd.json . >/dev/null; then
+  npx -y jscpd@4.0.5 --config .jscpd.json --reporters consoleFull .
+  exit 1
+fi
 
 step "the checks themselves were not loosened"
 # What an agent stuck on a red check is tempted to do instead of fixing the code. Each needs a commit
