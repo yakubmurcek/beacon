@@ -1,7 +1,7 @@
 // Decisions (http://beacon/decisions): everything the agents need him to decide, on one page, and every decision he made
 // (hub/questions.py). Builds on shared.js. Views by hash: #/ (open), #/q/<id>, #/log, #/log/<kind>, #/learned[/<rule id>] (#/rules still works), #/finished.
 import { $, ago, api, h, markdown, setDecisionsBadge, showError, snap, toast } from './shared.js';
-import { projChip } from './names.js';
+import { pname, projChip } from './names.js';
 import { projectName, qCard } from './qcards.js';
 import './viewer.js';
 
@@ -181,7 +181,7 @@ function viewFinished() {
 // The deck (2026-11-22): one card at a time instead of a long list, every question in one pile,
 // newest first, no sections. Swipes and ← → only move between cards, like photos: only a tapped button answers
 // (he swiped to browse and sent 4 answers by mistake, 2026-11-22). Every answer gets the toast's undo.
-const deck = { cur: null, filter: 'all', dragging: false, busy: false, done: 0, skipped: new Set(), fresh: new Set(), primed: false };
+const deck = { cur: null, filter: 'all', proj: null, dragging: false, busy: false, done: 0, skipped: new Set(), fresh: new Set(), primed: false };
 // New decisions while he is on another card: a pill over the deck jumps to them (hub.js does it on the other pages).
 const SEEN_KEY = 'hub.decisionsSeen';
 const seenId = () => { try { return Number(localStorage.getItem(SEEN_KEY)) || 0; } catch { return 0; } };
@@ -204,6 +204,7 @@ function jumpFresh() {
   deck.fresh.clear();
   deck.skipped.delete(newest);
   deck.filter = 'all';
+  deck.proj = null;
   deck.cur = newest;
   render();
 }
@@ -213,10 +214,25 @@ function setLater(ids) { try { localStorage.setItem(LATER_KEY, JSON.stringify(id
 
 function pile() {
   const l = later();
-  const qs = state.open.filter((q) => deck.filter === 'all' || q.blocking)
+  const qs = state.open.filter((q) => (deck.filter === 'all' || q.blocking) && (!deck.proj || projKey(q) === deck.proj))
     .sort((a, b) => b.created_at - a.created_at || b.id - a.id);
   // "Later" sends a card to the bottom of the pile, in the order he put them off.
   return [...qs.filter((q) => !l.includes(q.id)), ...l.map((id) => qs.find((q) => q.id === id)).filter(Boolean)];
+}
+
+// Which projects the waiting decisions come from (2026-11-24: "all of them are Beacon, and I want to focus on the
+// game now"): one chip per project with its count, biggest first; a tap narrows the deck to it, a second tap undoes.
+const projKey = (q) => q.project || 'personal';
+function projRow() {
+  const counts = new Map();
+  for (const q of state.open) counts.set(projKey(q), (counts.get(projKey(q)) || 0) + 1);
+  if (deck.proj && !counts.has(deck.proj)) deck.proj = null;
+  if (counts.size < 2) return null;
+  const pick = (p) => { deck.proj = deck.proj === p ? null : p; deck.cur = null; deck.skipped.clear(); render(); };
+  return h('div', { class: 'proj-row', role: 'group', 'aria-label': 'Projects' },
+    ...[...counts].sort((a, b) => b[1] - a[1] || pname(a[0]).localeCompare(pname(b[0]))).map(([p, n]) =>
+      h('button', { class: `pf${deck.proj === p ? ' on' : ''}${deck.proj && deck.proj !== p ? ' off' : ''}`, 'aria-pressed': String(deck.proj === p), onclick: () => pick(p) },
+        projChip(p), h('span', { class: 'n' }, String(n)))));
 }
 
 function putOff(q) {
@@ -369,7 +385,9 @@ function viewOpen() {
   if (!state.loaded) return h('p', { class: 'muted' }, 'Loading…');
   const waiting = state.open.filter((q) => q.blocking).length;
   if (deck.filter === 'waiting' && !waiting) deck.filter = 'all';
-  const p = pile();
+  let projs = projRow();
+  let p = pile();
+  if (!p.length && deck.proj) { deck.proj = null; projs = projRow(); p = pile(); }  // waiting + a project left nothing
   const rest = finishedLink();
   if (!p.length) {
     if (rest) return [h('p', { class: 'calm' }, h('span', { class: 'tick', 'aria-hidden': 'true' }, '✓'),
@@ -408,6 +426,7 @@ function viewOpen() {
     h('div', { class: 'deck-bar' },
       h('div', { class: 'chips' }, chip('all', 'All', state.open.length), waiting > 0 && chip('waiting', 'Agent waiting', waiting)),
       h('span', { class: 'deck-count' }, `${i + 1} of ${p.length}`)),
+    projs,
     h('div', { class: 'deck-progress', 'aria-hidden': 'true' }, h('span', { style: `width:${Math.round((deck.done / total) * 100)}%` })),
     h('div', { class: 'deck' }, p.length > 2 && h('div', { class: 'ghost g2' }), p.length > 1 && h('div', { class: 'ghost g1' }), c),
     h('div', { class: 'deck-actions' },

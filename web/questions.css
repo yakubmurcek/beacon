@@ -187,6 +187,13 @@ details.more-info .qcontext { margin-top: 8px; max-height: 18em; overflow: auto;
   background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
 .chip.on { background: var(--text); border-color: var(--text); color: var(--bg); }
 .chip .n { font-size: 12px; opacity: .75; }
+.proj-row { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: -4px; }
+.pf { display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 0 8px 0 0; border-radius: var(--r-pill);
+  background: none; border: 1px solid transparent; font: 700 13px/1 var(--sans); color: var(--muted); cursor: pointer;
+  transition: opacity var(--t-fast) var(--ease); }
+.pf .proj-chip { border-color: transparent; }
+.pf.on { background: none; color: var(--text); border-color: var(--text); }
+.pf.off { opacity: .45; }
 .deck-count { font: 700 15px/1 var(--display); color: var(--muted); white-space: nowrap; }
 .deck-progress { height: 6px; border-radius: var(--r-pill); background: var(--panel-2); overflow: hidden; margin-top: -16px; }
 .deck-progress span { display: block; height: 100%; background: var(--accent); border-radius: var(--r-pill); transition: width var(--t-slow) var(--ease); }
