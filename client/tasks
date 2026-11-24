@@ -410,16 +410,16 @@ def _shared_branch(cmd, where):
         return True
     if len(args) >= 2:  # remote + branch(es), none shared
         return False
+    return _checkout_is_shared(where)
+
+
+def _checkout_is_shared(where):
+    """Is the branch checked out at `where` (or the nearest folder above holding .git) shared?
+    A detached HEAD, no repo or an unreadable one count as shared."""
     d = where or ''
     for _ in range(8):
-        head = os.path.join(d, '.git')
         try:
-            if os.path.isfile(head):
-                with open(head) as f:
-                    head = f.read().split('gitdir:', 1)[1].strip()
-            with open(os.path.join(head, 'HEAD')) as f:
-                ref = f.read().strip()
-            return bool(SHARED.search(' ' + ref.rsplit('/', 1)[-1])) if ref.startswith('ref:') else True
+            return _head_is_shared(_git_dir(d))
         except (OSError, IndexError):
             parent = os.path.dirname(d)
             if not d or parent == d:
@@ -428,14 +428,35 @@ def _shared_branch(cmd, where):
     return True
 
 
+def _git_dir(d):
+    """The git dir of a checkout at d: d/.git, or where a worktree's .git file points."""
+    git = os.path.join(d, '.git')
+    if os.path.isfile(git):
+        with open(git) as f:
+            git = f.read().split('gitdir:', 1)[1].strip()
+    return git
+
+
+def _head_is_shared(git_dir):
+    with open(os.path.join(git_dir, 'HEAD')) as f:
+        ref = f.read().strip()
+    return bool(SHARED.search(' ' + ref.rsplit('/', 1)[-1])) if ref.startswith('ref:') else True
+
+
+def _after_cd(here, line):
+    """Where the next command runs when this line is `cd X`; else unchanged."""
+    c = re.match(r'^cd\s+("[^"]+"|\'[^\']+\'|\S+)', line.strip())
+    if not c:
+        return here
+    d = os.path.expanduser(c.group(1).strip('"\''))
+    return d if os.path.isabs(d) else os.path.join(here, d)
+
+
 def _here_of(cmd, rx, cwd):
     """The folder the first command matching rx runs in: cwd moved by the cd's before it."""
     here = cwd or ''
     for part in cmd.split('\n'):
-        c = re.match(r'^cd\s+("[^"]+"|\'[^\']+\'|\S+)', part.strip())
-        if c:
-            d = os.path.expanduser(c.group(1).strip('"\''))
-            here = d if os.path.isabs(d) else os.path.join(here, d)
+        here = _after_cd(here, part)
         if rx.search(part):
             return here
     return here
@@ -484,13 +505,7 @@ def _segments(cmd):
     while i < len(cmd):
         c = cmd[i]
         if q:
-            if c == q:
-                q = None
-            elif c == '\\' and q == '"' and i + 1 < len(cmd):
-                cur.append(c)
-                i += 1
-                c = cmd[i]
-            cur.append(c)
+            q, i = _quoted_char(cmd, i, q, cur)
         elif c in '\'"':
             q = c
             cur.append(c)
@@ -498,8 +513,8 @@ def _segments(cmd):
             out.append(''.join(cur))
             cur = []
         elif c == '#' and (not cur or cur[-1] in ' \t'):
-            while i < len(cmd) and cmd[i] != '\n':
-                i += 1
+            end = cmd.find('\n', i)  # a comment runs to the end of its line
+            i = len(cmd) if end < 0 else end
             continue
         else:
             cur.append(c)
@@ -508,16 +523,92 @@ def _segments(cmd):
     return [x.strip() for x in out if x.strip()]
 
 
+def _quoted_char(cmd, i, q, cur):
+    """Take the character at i inside quote q (a backslash in double quotes takes the next one with it):
+    (the quote still open, the index of the last character taken)."""
+    c = cmd[i]
+    if c == q:
+        q = None
+    elif c == '\\' and q == '"' and i + 1 < len(cmd):
+        cur.append(c)
+        i += 1
+        c = cmd[i]
+    cur.append(c)
+    return q, i
+
+
 def _unquote_payloads(seg):
     """The quoted commands inside ssh host '...', bash -c "...", su -c '...'."""
     return [m.group(2) for m in re.finditer(r"(['\"])(.*?)\1", seg, re.S)]
+
+
+def _unquoted(seg):
+    """The segment with its quoted strings blanked: the command and flags stay, the text goes."""
+    return re.sub(r"(['\"]).*?\1", ' ', seg, flags=re.S)
+
+
+def _unwrapped(seg):
+    """The segment without VAR=x prefixes and wrappers (sudo, timeout, env, xargs …) before its command."""
+    seg = PREFIX.sub('', seg)
+    while True:
+        w = WRAPPER.match(seg)
+        if not w:
+            return seg
+        seg = PREFIX.sub('', seg[w.end():])
+
+
+def _only_text(first, words):
+    """A command whose arguments are text that never acts (echo, grep, a commit message, a heredoc to a file)."""
+    if first in TEXT_CMDS or first.startswith('__heredoc'):
+        return True
+    stash_drop = words[1:3] in (['stash', 'drop'], ['stash', 'clear'])
+    return first == 'git' and len(words) > 1 and words[1] in TEXT_GIT and not stash_drop
+
+
+SQL_CLIS = frozenset({'psql', 'sqlite3', 'mysql', 'supabase', 'turso', 'duckdb'})
+
+
+def _segment_runs(seg, bodies, depth):
+    """(shell, code) lists one segment adds to _executed's answer; bodies maps heredoc keys to their text."""
+    seg = _unwrapped(seg)
+    words = seg.split()
+    if not words:
+        return [], []
+    first = words[0].rsplit('/', 1)[-1]
+    keys = [k for k in bodies if k in seg]
+    heredocs = [bodies[k] for k in keys]
+    if _only_text(first, words):
+        return [], []  # (cat > file <<EOF drops the body with it)
+    if AGENTS.match(words[0]):
+        return [_unquoted(seg)], []
+    if CODE_CMDS.match(first):
+        return [_unquoted(seg)], heredocs + _unquote_payloads(seg)  # e.g. `npx vercel --prod` still counts
+    if first in SHELLS and depth < 3:
+        return _nested_runs(seg, heredocs, depth)
+    if first in SQL_CLIS:
+        return [seg + ' ' + ' '.join(heredocs)], []
+    if first == 'gh':  # titles and bodies are text; the command and its repo are not
+        return [_unquoted(seg)], []
+    if keys and any(CODE_CMDS.match(w.rsplit('/', 1)[-1]) for w in words[1:]):
+        return [seg], heredocs  # e.g. `PW=… python3 - <<EOF` the prefix hid: its code still runs
+    return [seg], []
+
+
+def _nested_runs(seg, heredocs, depth):
+    """A shell, ssh or eval segment: what its quoted payloads and heredocs run, then the segment itself."""
+    shell, code = [], []
+    for payload in _unquote_payloads(seg) + heredocs:
+        s2, c2 = _executed(payload, depth + 1)
+        shell.append(s2)
+        code += c2
+    shell.append(_unquoted(seg))
+    return shell, code
 
 
 def _executed(cmd, depth=0):
     """(shell, code): the parts of a Bash command that run as shell commands, and the code that
     interpreters run (python heredocs, -c strings). Text handed to echo, tasks, grep, a commit
     message or a file-writing heredoc is dropped: words in it don't act."""
-    code = []
     bodies = {}
 
     def take(m):
@@ -525,46 +616,11 @@ def _executed(cmd, depth=0):
         bodies[key] = m.group(3)
         return key
     cmd = HEREDOC.sub(take, cmd)
-    shell = []
+    shell, code = [], []
     for seg in _segments(cmd):
-        seg = PREFIX.sub('', seg)
-        while True:
-            w = WRAPPER.match(seg)
-            if not w:
-                break
-            seg = PREFIX.sub('', seg[w.end():])
-        words = seg.split()
-        if not words:
-            continue
-        first = words[0].rsplit('/', 1)[-1]
-        keys = [k for k in bodies if k in seg]
-        stash_drop = first == 'git' and words[1:3] in (['stash', 'drop'], ['stash', 'clear'])
-        if first in TEXT_CMDS or (first == 'git' and len(words) > 1 and words[1] in TEXT_GIT and not stash_drop) \
-                or first.startswith('__heredoc'):
-            continue  # its text never acts (cat > file <<EOF drops the body with it)
-        if AGENTS.match(words[0]):
-            shell.append(re.sub(r"(['\"]).*?\1", ' ', seg, flags=re.S))
-            continue
-        if CODE_CMDS.match(first):
-            code += [bodies[k] for k in keys] + _unquote_payloads(seg)
-            shell.append(re.sub(r"(['\"]).*?\1", ' ', seg, flags=re.S))  # e.g. `npx vercel --prod` still counts
-            continue
-        if first in SHELLS and depth < 3:
-            for payload in _unquote_payloads(seg) + [bodies[k] for k in keys]:
-                s2, c2 = _executed(payload, depth + 1)
-                shell.append(s2)
-                code += c2
-            shell.append(re.sub(r"(['\"]).*?\1", ' ', seg, flags=re.S))
-            continue
-        if first in ('psql', 'sqlite3', 'mysql', 'supabase', 'turso', 'duckdb'):
-            shell.append(seg + ' ' + ' '.join(bodies[k] for k in keys))
-            continue
-        if first == 'gh':  # titles and bodies are text; the command and its repo are not
-            shell.append(re.sub(r"(['\"]).*?\1", ' ', seg, flags=re.S))
-            continue
-        if keys and any(CODE_CMDS.match(w.rsplit('/', 1)[-1]) for w in words[1:]):
-            code += [bodies[k] for k in keys]  # e.g. `PW=… python3 - <<EOF` the prefix hid: its code still runs
-        shell.append(seg)
+        s, c = _segment_runs(seg, bodies, depth)
+        shell += s
+        code += c
     return '\n'.join(shell), code
 
 
@@ -575,84 +631,149 @@ def risky_call(tool, tool_input, cwd=''):
     tool = str(tool or '')
     ti = tool_input if isinstance(tool_input, dict) else {}
     if tool == 'Bash':
-        raw = _expand_vars(str(ti.get('command') or ''))
-        where = _where(raw, cwd)
-        shell, code = _executed(re.sub(r'\\\n', ' ', raw))
-        cmd = shell.lower()
+        return _BashCall(str(ti.get('command') or ''), cwd).risk()
+    if tool.startswith('mcp__'):
+        return _risky_mcp(tool.lower(), ti)
+    return None
+
+
+class _BashCall:
+    """One Bash command as the gate reads it: the raw line, what runs as shell (lowercased) and the
+    code interpreters run. Each check returns (category, what) or None; the first hit wins."""
+
+    def __init__(self, command, cwd):
+        self.cwd = cwd
+        self.raw = _expand_vars(command)
+        self.where = _where(self.raw, cwd)
+        shell, code = _executed(re.sub(r'\\\n', ' ', self.raw))
+        self.cmd = shell.lower()
+        self.body = '\n'.join(code).lower()
+
+    def risk(self):
+        return self.rule_hit() or self.inline_code_hit() or self.delete_hit() or self.script_hit()
+
+    def rule_hit(self):
         for cat, what, rx in BASH_RULES:
-            if not rx.search(cmd):
-                continue
-            if cat == 'live' and what == 'production deploy' and _internal(where):
-                continue
-            if cat == 'people' and what.startswith('GitHub'):  # only someone else's repo: named in the command, or the checkout it runs in
-                m = GH_REPO.search(cmd) or GH_API_REPO.search(cmd)
-                owner = m.group(1).lower() if m else _repo_owner(_here_of(cmd, rx, cwd))
-                if owner in (OWN, None):  # None: not a GitHub checkout, so gh has no repo to write to
-                    continue
-            if what == 'delete a project' and re.search(rf'api\.github\.com/repos/{OWN}/[^/\s]+/git/refs/heads/', cmd) \
-                    and not SHARED.search(cmd.split('/git/refs/heads/', 1)[1][:40].split()[0] if '/git/refs/heads/' in cmd else ''):
-                continue  # deleting his own merged feature branch through the API
-            if what == 'Vercel settings' and 'ssoprotection' in raw.lower():
-                continue  # his rule: preview protection off with exactly this PATCH (CLAUDE.md)
-            if what == 'production DB write' and 'database/query' in rx.pattern and not SQL_WRITE.search(raw.lower()):
-                continue  # a read through the Management API
-            if what == 'discard uncommitted work' and _scratch(_here_of(cmd, rx, cwd)):
-                continue  # scratch clones and agent worktrees hold only the agent's own work
-            if what == 'force push / remote delete' and not _shared_branch(cmd, where):
-                continue  # rewriting or deleting his own feature branch is housekeeping
-            return cat, what
-        body = '\n'.join(code).lower()
+            if rx.search(self.cmd) and not self.exempt(cat, what, rx):
+                return cat, what
+        return None
+
+    def exempt(self, cat, what, rx):
+        """A rule's hit that is his own housekeeping, not a risk."""
+        if cat == 'live' and what == 'production deploy':
+            return _internal(self.where)  # his internal tools ship straight to production
+        if cat == 'people' and what.startswith('GitHub'):
+            return self.own_repo(rx)
+        check = next((getattr(self, name) for w, name in self.EXEMPT if w == what), None)
+        return bool(check and check(rx))
+
+    def own_repo(self, rx):
+        """gh writes only to someone else's repo count: named in the command, or the checkout it runs in.
+        No GitHub checkout (owner None) leaves gh no repo to write to."""
+        m = GH_REPO.search(self.cmd) or GH_API_REPO.search(self.cmd)
+        owner = m.group(1).lower() if m else _repo_owner(_here_of(self.cmd, rx, self.cwd))
+        return owner in (OWN, None)
+
+    def own_branch_delete(self, rx):
+        """Deleting his own feature branch through the GitHub API."""
+        cmd = self.cmd
+        return bool(re.search(rf'api\.github\.com/repos/{OWN}/[^/\s]+/git/refs/heads/', cmd)
+                    and not SHARED.search(cmd.split('/git/refs/heads/', 1)[1][:40].split()[0]
+                                          if '/git/refs/heads/' in cmd else ''))
+
+    def preview_protection_off(self, rx):
+        return 'ssoprotection' in self.raw.lower()  # his rule: preview protection off with exactly this PATCH
+
+    def db_read(self, rx):
+        return 'database/query' in rx.pattern and not SQL_WRITE.search(self.raw.lower())  # a Management API read
+
+    def in_scratch(self, rx):
+        return _scratch(_here_of(self.cmd, rx, self.cwd))  # scratch clones and agent worktrees hold only its own work
+
+    def own_branch_push(self, rx):
+        return not _shared_branch(self.cmd, self.where)  # rewriting his own feature branch is housekeeping
+
+    EXEMPT = (  # (rule, the check that makes its hit housekeeping)
+        ('delete a project', 'own_branch_delete'),
+        ('Vercel settings', 'preview_protection_off'),
+        ('production DB write', 'db_read'),
+        ('discard uncommitted work', 'in_scratch'),
+        ('force push / remote delete', 'own_branch_push'),
+    )
+
+    def inline_code_hit(self):
+        body = self.body
         for cat, what, rx in SCRIPT_RULES:
             if body and rx.search(body):
                 return cat, what + ' (inline code)'
-        if 'api.hackmd.io' in raw and re.search(r'readperm\w*["\'\s:=]+["\']?guest', raw.lower()):
+        if 'api.hackmd.io' in self.raw and re.search(r'readperm\w*["\'\s:=]+["\']?guest', self.raw.lower()):
             return 'publish', 'note readable by anyone'
         if 'database/query' in body and 'api.supabase.com' in body and SQL_WRITE.search(body):
             return 'live', 'production DB write (inline code)'
-        here = cwd or ''
-        for part in cmd.split('\n'):
-            c = re.match(r'^cd\s+("[^"]+"|\'[^\']+\'|\S+)', part.strip())
-            if c:  # each command runs where the cd before it left off
-                d = os.path.expanduser(c.group(1).strip('"\''))
-                here = d if os.path.isabs(d) else os.path.join(here, d)
-            m = RM_RE.search(part)
-            if m and _rm_risky(m.groups(), here):
-                return 'delete', 'rm -r ' + m.group(2).strip()[:60]
-            if here.lower().startswith('/volumes/') and re.search(r'(^|\s)rm\s', part):
-                return 'delete', 'rm on an external drive'
-            m = FIND_DELETE.search(part)
-            if m and not SAFE_RM.search(m.group(1).strip('"\'')):
-                return 'delete', 'find -delete ' + m.group(1)[:60]
-        for m in SCRIPT_RE.finditer(raw):
-            path = os.path.join(where, os.path.expanduser(m.group(1)))
-            try:
-                if os.path.getsize(path) < 400_000:
-                    with open(path, errors='ignore') as f:
-                        body = f.read().lower()
-                    for cat, what, rx in SCRIPT_RULES:
-                        if rx.search(body):
-                            return cat, f'{what} in {os.path.basename(path)}'
-            except OSError:
-                pass
         return None
-    if tool.startswith('mcp__'):
-        name = tool.lower()
-        if 'claude-in-chrome' in name or 'claude_browser' in name:
-            return None  # clicks carry no meaning here; see the gap in the README
-        if name.split('__')[1] in INTERNAL_MCP or 'draft' in name:
-            return None  # his own agent sessions, notes and drafts reach nobody
-        if 'calendar' in name and name.endswith(('__create_event', '__update_event')):
-            att = ti.get('attendees') or ti.get('attendee_emails') or []
-            return ('people', 'calendar invite') if att else None
-        if SQL_TOOLS.search(name):
-            q = fold(ti.get('query') or ti.get('sql') or '')
-            return ('delete', 'SQL delete') if SQL_DELETE.search(q) else None
-        for cat, what, rx in MCP_RULES:
-            if rx.search(name):
-                if cat == 'send' and 'draft' in name:
-                    return None
-                return cat, what
+
+    def delete_hit(self):
+        """rm -r, rm on an external drive and find -delete, each judged where the cd's before it left off."""
+        here = self.cwd or ''
+        for part in self.cmd.split('\n'):
+            here = _after_cd(here, part)
+            hit = _line_deletes(part, here)
+            if hit:
+                return hit
+        return None
+
+    def script_hit(self):
+        """A script file the command runs that sends or pays."""
+        for m in SCRIPT_RE.finditer(self.raw):
+            hit = _script_file_hit(os.path.join(self.where, os.path.expanduser(m.group(1))))
+            if hit:
+                return hit
+        return None
+
+
+def _line_deletes(part, here):
+    m = RM_RE.search(part)
+    if m and _rm_risky(m.groups(), here):
+        return 'delete', 'rm -r ' + m.group(2).strip()[:60]
+    if here.lower().startswith('/volumes/') and re.search(r'(^|\s)rm\s', part):
+        return 'delete', 'rm on an external drive'
+    m = FIND_DELETE.search(part)
+    if m and not SAFE_RM.search(m.group(1).strip('"\'')):
+        return 'delete', 'find -delete ' + m.group(1)[:60]
     return None
+
+
+def _script_file_hit(path):
+    try:
+        if os.path.getsize(path) >= 400_000:
+            return None
+        with open(path, errors='ignore') as f:
+            body = f.read().lower()
+    except OSError:
+        return None
+    for cat, what, rx in SCRIPT_RULES:
+        if rx.search(body):
+            return cat, f'{what} in {os.path.basename(path)}'
+    return None
+
+
+def _risky_mcp(name, ti):
+    """An MCP tool call (name lowercased) that reaches people, deletes, deploys, posts or pays."""
+    if _mcp_reaches_nobody(name):
+        return None
+    if 'calendar' in name and name.endswith(('__create_event', '__update_event')):
+        att = ti.get('attendees') or ti.get('attendee_emails') or []
+        return ('people', 'calendar invite') if att else None
+    if SQL_TOOLS.search(name):
+        q = fold(ti.get('query') or ti.get('sql') or '')
+        return ('delete', 'SQL delete') if SQL_DELETE.search(q) else None
+    return next(((cat, what) for cat, what, rx in MCP_RULES if rx.search(name)), None)
+
+
+def _mcp_reaches_nobody(name):
+    if 'claude-in-chrome' in name or 'claude_browser' in name:
+        return True  # clicks carry no meaning here; see the gap in the README
+    return name.split('__')[1] in INTERNAL_MCP or 'draft' in name  # his own agent sessions, notes and drafts
 
 
 # His yes. A risky call passes when HE said it: his own words in this chat (a typed or dictated
