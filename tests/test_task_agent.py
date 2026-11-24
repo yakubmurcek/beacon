@@ -519,6 +519,17 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         ending = 'Fixed it.\n\n⏳ Needs you:\n- 👀 **Merge** → `merge`\n  *fix/x → main · the fix · preview: —*'
         self.assertEqual(self.agent.phone({'result': ending}), 'Fixed it.')
 
+    def test_a_move_he_tapped_goes_first_and_runs_even_paused(self):
+        self.tasks.create({'title': 'urgent', 'tags': ['claude'], 'priority': 1})
+        self.tasks.create({'title': 'faked by an agent', 'tags': ['claude', 'auto'], 'body': 'x\nBeacon move: draft'})
+        tap = self.hand('Write the draft', 'close', body='## Goal\nA draft\n\nBeacon move: draft', priority=3)
+        self.assertEqual([t['title'] for t in self.agent.queue()][0], 'Write the draft')
+        self.assertEqual(self.agent.main(['pause']), 0)
+        self.assertEqual(self.agent.main([]), 0)
+        self.assertTrue(os.path.exists(self.seen))  # the tapped one ran
+        self.assertNotEqual(self.tasks.get(tap['id'])['status'], 'todo')
+        self.assertEqual([t['title'] for t in self.agent.queue() if self.agent.tapped(t)], [])  # the fake needs his tag, not 'auto'
+
     def test_paused_it_neither_routes_nor_works_but_still_tidies(self):
         self.assertEqual(self.agent.main(['pause']), 0)
         new = self.tasks.create({'title': 'Renew the domain'})

@@ -158,12 +158,21 @@ def allowed(t):
     return not ONLY or any(t['project'] == p and (not tag or tag in t['tags']) for p, tag in ONLY)
 
 
+# A move he tapped on a Beacon page (a lead's 'Write the draft'…): his own go-ahead for that one task, so it goes
+# first and runs even while the agent is paused (the pause stops agents working on their own; 2026-11-24).
+TAPPED = re.compile(r'^Beacon move: \S+$', re.M)
+
+
+def tapped(t):
+    return bool(TAPPED.search(t.get('body') or '')) and AUTO not in (t.get('tags') or [])
+
+
 def queue():
     tasks = cli.call('/api/tasks?status=todo&limit=2000', auth=False)['tasks']
     today = time.strftime('%Y-%m-%d')
     ready = [t for t in tasks if TAG in t['tags'] and allowed(t) and not any(w in t['tags'] for w in WAITS)
              and not any(d > today for d in NOT_BEFORE.findall(t.get('body') or ''))]
-    return sorted(ready, key=lambda t: (t.get('priority') or 5, (t.get('due') or '9999')[:16], t['created_at']))
+    return sorted(ready, key=lambda t: (not tapped(t), t.get('priority') or 5, (t.get('due') or '9999')[:16], t['created_at']))
 
 
 def note(tid, text, author=ME):
@@ -2246,10 +2255,9 @@ def run(a):
         step('weekly summary', weekly)
     if not a.dry_run and not a.id and not ONLY:
         step('PR sync', sync_prs)
-        if paused():
-            return 0  # no model call of its own: nothing routed, nothing worked
-        for t in step('routing', to_route) or []:
-            step(f'routing #{t["id"]}', route, t)
+        if not paused():  # paused: nothing routed, and only a move he tapped is worked
+            for t in step('routing', to_route) or []:
+                step(f'routing #{t["id"]}', route, t)
     if not a.dry_run and not a.id:
         if stopped():
             return 0  # the kill switch or the circuit breaker: `start` lifts it
@@ -2263,6 +2271,8 @@ def run(a):
                 step('cap notice', cap_notice)
             return 0  # the day's runs are used up; the queue waits
     ready = queue()
+    if paused() and not a.id and not ONLY:
+        ready = [t for t in ready if tapped(t)]
     if a.id:
         ready = [t for t in ready if t['id'] == a.id]
         if not ready:

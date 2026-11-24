@@ -59,7 +59,7 @@ def _clip(s, n=170):
 
 
 MARK = 'Outreach lead:'  # the last lines of a move's task tie it back to its card and say which move it was
-MOVE = 'Outreach move:'
+MOVE = 'Beacon move:'  # the task agent runs a tapped move first, even while paused (client/task-agent TAPPED)
 RECENT = 600  # seconds a finished move keeps its button hidden: the lead's files may take a sync to show the result
 
 
