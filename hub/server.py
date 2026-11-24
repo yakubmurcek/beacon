@@ -16,6 +16,7 @@ import gzip
 import hmac
 import http.client
 import json
+import logging
 import mimetypes
 import re
 import os
@@ -56,6 +57,7 @@ from settings import CONFIG, HUB, OWNER_ID, browser as browser_settings, path as
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(ROOT, 'web')
+log = logging.getLogger('beacon.server')
 
 
 _ASSET_REF = re.compile(r'((?:href|src)=")([\w-]+\.(?:css|js))(")')
@@ -191,12 +193,8 @@ class Handler(BaseHTTPRequestHandler):
         base = apps.backend_for(url.path)
         if base:  # budget and Lighthouse, passed through from the box they run on
             return apps.proxy(self, base)
-        if url.path == '/api/power':  # the power meter takes 0.5 s: its last answer at once, a fresh one behind it
-            path = '/api/data' + ('?' + url.query if url.query else '')
-            try:
-                return self.send_json(200, CACHE.get(('power', path), lambda: apps.fetch_json(apps.POWER_URL, path), fresh=20, stale=60))
-            except (OSError, ValueError, http.client.HTTPException):
-                return self.send_json(502, {'error': 'the power meter is not answering'})
+        if url.path == '/api/power':
+            return self.get_power(url.query)
         # The build log shows Claude's replies (an ai-corpus source, gated like Knowledge) and screenshots that can
         # show his desktop: only he (his tailnet login) or an agent with the token, any other device gets a 401.
         if (url.path.startswith('/buildlog/img/') or url.path.startswith('/api/buildlog')) and not self.task_writer():
@@ -204,109 +202,110 @@ class Handler(BaseHTTPRequestHandler):
         if url.path.startswith('/buildlog/img/') and getattr(self, 'buildlog', None):
             return self.buildlog.image(self, url.path[len('/buildlog/img/'):], url.query)
         try:
-            if url.path.startswith('/api/buildlog') and getattr(self, 'buildlog', None):
-                return self.get_buildlog(url.path, q)
-            if url.path == '/api/outcomes' and getattr(self, 'outcomes', None):  # the results strip on top of Team
-                return self.send_json(200, self.outcomes.view())
-            if url.path == '/api/team':  # the Team page: what each project's AI team does, in plain words
-                return self.send_json(200, self.studio.view() if getattr(self, 'studio', None) else {'projects': [], 'resting': []})
-            if url.path == '/api/live':
-                live = self.store.live_now()
-                if getattr(self, 'titles', None):  # the session's own name or task title, never "projects-e4"
-                    self.titles.annotate([x for m in live['machines'] for x in m['sessions']])
-                if getattr(self, 'narrator', None):
-                    self.narrator.annotate(live)  # `now`: what a working agent does, in one plain sentence
-                if self.machines:
-                    live['alarms'] = self.machines.health  # the home server's hub-watch checks the alarm path is alive
-                return self.send_json(200, live)
-            if url.path == '/api/rank' and getattr(self, 'rank', None):  # AI Rank: http://beacon/rank and the Home tile
-                return self.send_json(200, self.rank.get())
-            if url.path == '/api/ai' and getattr(self, 'aijobs', None):  # AI jobs: http://beacon/ai
-                return self.send_json(200, self.aijobs.view())
-            if url.path.startswith('/api/endings') and self.endings:  # the feed's stuck and done cards (task 1857)
-                if url.path == '/api/endings/missed':
-                    return self.send_json(200, {'missed': self.endings.missed(float(q.get('hours') or 24), int(q.get('limit') or 60))})
-                if url.path == '/api/endings':
-                    return self.send_json(200, {'endings': self.endings.feed(q.get('status') == 'all', int(q.get('limit') or 200))})
-            if url.path == '/api/meta':  # 0.2 s to build: served from the last build, rebuilt behind it
-                return self.send_json(200, CACHE.get('meta', self.store.meta, fresh=10, stale=60))
-            if url.path == '/api/machines' and self.machines:
-                return self.send_json(200, self.machines.view())
-            if url.path == '/api/freshness' and self.machines:  # what a collector reports and which copies to update
-                return self.send_json(200, self.machines.freshness_for(q.get('machine') or ''))
-            if url.path == '/api/names' and self.names:
-                return self.send_json(200, self.names.view())
-            if url.path == '/api/outreach' and getattr(self, 'outreach', None):  # every lead and research report
-                return self.send_json(200, self.outreach.view())
-            if url.path == '/outreach/doc' and getattr(self, 'outreach', None):  # one research file, read-only
-                return self.send_doc(q.get('p', ''))
-            if url.path == '/outreach/logo':  # a firm's icon by its website, cached
-                got = outreach_logo(q.get('d', ''))
-                if not got:
-                    return self.send_json(404, {'error': 'no logo'})
-                self.send_response(200)
-                self.send_header('Content-Type', got[0])
-                self.send_header('Cache-Control', 'public, max-age=604800')
-                self.send_header('Content-Length', str(len(got[1])))
-                self.end_headers()
-                return self.wfile.write(got[1])
-            if url.path == '/api/day':  # 0.7 s to build: the last build at once, a fresh one behind it
-                date, filt = q.get('date') or self.store.today(), parse_filter(q)
-                return self.send_json(200, CACHE.get(('day', date, filt), lambda: self.titled(self.store.day(date, filt)),
-                                                     **FRESH(date >= self.store.today())))
-            if url.path == '/api/range':
-                a, b, filt = q['from'], q['to'], parse_filter(q)
-                return self.send_json(200, CACHE.get(('range', a, b, filt), lambda: self.titled(self.store.range(a, b, filt)),
-                                                     **FRESH(b >= self.store.today())))
-            if url.path == '/api/search':
-                return self.send_json(200, self.store.search(q['q'][:200], q['from'], q['to']))
-            if url.path == '/api/session':
-                s = self.store.session(q.get('machine'), q['session'])
-                return self.send_json(200 if s else 404, s or {'error': 'not found'})
-            if url.path.startswith('/api/knowledge/'):
-                return self.get_knowledge(url.path, q)
-            if url.path == '/mcp' or url.path.startswith('/mcp/'):  # no server-to-client stream: every answer comes back on its POST
-                return self.send_json(405, {'error': 'POST only'})
-            if url.path == '/api/labs/views':  # Labs: his saved answers (his own questions: owner only, like Knowledge)
-                if not self.task_writer():
-                    return self.send_json(401, {'error': 'unauthorized'})
-                if not getattr(self, 'labs', None):
-                    return self.send_json(200, {'views': []})
-                self.labs.warm()  # the numbers get ready while he speaks
-                return self.send_json(200, {'views': self.labs.views()})
-            if url.path.startswith('/api/tasks'):
-                return self.get_tasks(url.path, q)
-            if url.path.startswith('/api/questions/file/'):  # a screenshot for a decision: can show anything, so his login only
-                if not self.task_writer():
-                    return self.send_json(401, {'error': 'unauthorized'})
-                return self.send_file(self.questions.file(url.path[len('/api/questions/file/'):]))
-            if url.path.startswith('/api/questions'):
-                return self.get_questions(url.path, q)
-            if url.path == '/api/rules':
-                return self.send_json(200, {'rules': self.rules.list(), 'weeks': self.rules.weekly(),
-                                            'decided': self.rules.decided(), 'last_sweep': self.rules.last_sweep()}
-                                      if self.rules else {'rules': [], 'weeks': [], 'decided': [], 'last_sweep': None})
-            if url.path == '/api/gate/approval':
-                x = self.questions.approval(q.get('session'), q.get('category'))
-                return self.send_json(200, {'id': x['id'], 'answer': x['answer'], 'question': x['question']} if x else {})
-            if url.path == '/api/gate/log':
-                return self.send_json(200, self.questions.gate_report(float(q['since']) if q.get('since') else None,
-                                                                      int(q.get('limit') or 200)))
+            if self.route_get(url.path, q) is not NOT_MINE:
+                return
             if url.path.startswith('/api/'):
                 return self.send_json(404, {'error': 'not found'})
         except KeyError as e:
             if e.args and e.args[0] in ('from', 'to', 'q', 'machine', 'session', 'project'):
                 return self.send_json(400, {'error': f'bad request: missing {e.args[0]}'})
-            traceback.print_exc()  # a KeyError from inside the store is a bug, not a bad request
+            log.exception('GET %s', url.path)  # a KeyError from inside the store is a bug, not a bad request
             return self.send_json(500, {'error': 'server error'})
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
         except (BrokenPipeError, ConnectionResetError):
             raise  # the client left; answering it with a 500 would only fail again
-        except Exception:
-            traceback.print_exc()
+        except Exception:  # the last net under every route: the page gets a 500, the log the traceback
+            log.exception('GET %s', url.path)
             return self.send_json(500, {'error': 'server error'})
         self.serve_static(url.path, url.query)
+
+    def route_get(self, path, q):
+        """Answer a GET from the route tables; NOT_MINE when no route (or its service on this box) takes it."""
+        route = GET_ROUTES.get(path)
+        if route is None:
+            route = next((r for prefix, r in GET_PREFIXES if path.startswith(prefix)), None)
+        if route is None:
+            return NOT_MINE
+        service, handler = route
+        if service and not getattr(self, service, None):
+            return NOT_MINE
+        handler(self, path, q)
+        return None
+
+    def get_power(self, query):
+        """The power meter takes 0.5 s: its last answer at once, a fresh one behind it."""
+        path = '/api/data' + ('?' + query if query else '')
+        try:
+            return self.send_json(200, CACHE.get(('power', path), lambda: apps.fetch_json(apps.POWER_URL, path), fresh=20, stale=60))
+        except (OSError, ValueError, http.client.HTTPException):
+            return self.send_json(502, {'error': 'the power meter is not answering'})
+
+    def get_live(self, path, q):
+        live = self.store.live_now()
+        if getattr(self, 'titles', None):  # the session's own name or task title, never "projects-e4"
+            self.titles.annotate([x for m in live['machines'] for x in m['sessions']])
+        if getattr(self, 'narrator', None):
+            self.narrator.annotate(live)  # `now`: what a working agent does, in one plain sentence
+        if self.machines:
+            live['alarms'] = self.machines.health  # the home server's hub-watch checks the alarm path is alive
+        return self.send_json(200, live)
+
+    def get_outreach_logo(self, path, q):
+        """A firm's icon by its website, cached."""
+        got = outreach_logo(q.get('d', ''))
+        if not got:
+            return self.send_json(404, {'error': 'no logo'})
+        self.send_response(200)
+        self.send_header('Content-Type', got[0])
+        self.send_header('Cache-Control', 'public, max-age=604800')
+        self.send_header('Content-Length', str(len(got[1])))
+        self.end_headers()
+        return self.wfile.write(got[1])
+
+    def get_day(self, path, q):
+        """0.7 s to build: the last build at once, a fresh one behind it."""
+        date, filt = q.get('date') or self.store.today(), parse_filter(q)
+        return self.send_json(200, CACHE.get(('day', date, filt), lambda: self.titled(self.store.day(date, filt)),
+                                             **FRESH(date >= self.store.today())))
+
+    def get_range(self, path, q):
+        a, b, filt = q['from'], q['to'], parse_filter(q)
+        return self.send_json(200, CACHE.get(('range', a, b, filt), lambda: self.titled(self.store.range(a, b, filt)),
+                                             **FRESH(b >= self.store.today())))
+
+    def get_session(self, path, q):
+        s = self.store.session(q.get('machine'), q['session'])
+        return self.send_json(200 if s else 404, s or {'error': 'not found'})
+
+    def get_labs_views(self, path, q):
+        """Labs: his saved answers (his own questions: owner only, like Knowledge)."""
+        if not self.task_writer():
+            return self.send_json(401, {'error': 'unauthorized'})
+        if not getattr(self, 'labs', None):
+            return self.send_json(200, {'views': []})
+        self.labs.warm()  # the numbers get ready while he speaks
+        return self.send_json(200, {'views': self.labs.views()})
+
+    def get_question_file(self, path, q):
+        """A screenshot for a decision: can show anything, so his login only."""
+        if not self.task_writer():
+            return self.send_json(401, {'error': 'unauthorized'})
+        return self.send_file(self.questions.file(path[len('/api/questions/file/'):]))
+
+    def get_rules(self, path, q):
+        if not self.rules:
+            return self.send_json(200, {'rules': [], 'weeks': [], 'decided': [], 'last_sweep': None})
+        return self.send_json(200, {'rules': self.rules.list(), 'weeks': self.rules.weekly(),
+                                    'decided': self.rules.decided(), 'last_sweep': self.rules.last_sweep()})
+
+    def get_gate_approval(self, path, q):
+        x = self.questions.approval(q.get('session'), q.get('category'))
+        return self.send_json(200, {'id': x['id'], 'answer': x['answer'], 'question': x['question']} if x else {})
+
+    def get_gate_log(self, path, q):
+        return self.send_json(200, self.questions.gate_report(float(q['since']) if q.get('since') else None,
+                                                              int(q.get('limit') or 200)))
 
     # ------------------------------------------------------------ knowledge
 
@@ -976,6 +975,58 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             traceback.print_exc()
             return self.send_json(500, {'error': 'server error'})
+
+
+NOT_MINE = object()  # route_get: no route here, so the static files (or the /api/ 404) answer
+
+
+def _view(service, method):
+    """A route that answers with one service method's view, as JSON."""
+    return lambda h, path, q: h.send_json(200, getattr(getattr(h, service), method)())
+
+
+# Exact paths: (the Handler attribute that must be set on this box, or None; the handler).
+GET_ROUTES = {
+    '/api/outcomes': ('outcomes', _view('outcomes', 'view')),  # the results strip on top of Team
+    '/api/team': (None, lambda h, path, q: h.send_json(  # what each project's AI team does, in plain words
+        200, h.studio.view() if getattr(h, 'studio', None) else {'projects': [], 'resting': []})),
+    '/api/live': (None, Handler.get_live),
+    '/api/rank': ('rank', _view('rank', 'get')),  # AI Rank: http://beacon/rank and the Home tile
+    '/api/ai': ('aijobs', _view('aijobs', 'view')),  # AI jobs: http://beacon/ai
+    # the feed's stuck and done cards (task 1857)
+    '/api/endings': ('endings', lambda h, path, q: h.send_json(
+        200, {'endings': h.endings.feed(q.get('status') == 'all', int(q.get('limit') or 200))})),
+    '/api/endings/missed': ('endings', lambda h, path, q: h.send_json(
+        200, {'missed': h.endings.missed(float(q.get('hours') or 24), int(q.get('limit') or 60))})),
+    # 0.2 s to build: served from the last build, rebuilt behind it
+    '/api/meta': (None, lambda h, path, q: h.send_json(200, CACHE.get('meta', h.store.meta, fresh=10, stale=60))),
+    '/api/machines': ('machines', _view('machines', 'view')),
+    # what a collector reports and which copies to update
+    '/api/freshness': ('machines', lambda h, path, q: h.send_json(200, h.machines.freshness_for(q.get('machine') or ''))),
+    '/api/names': ('names', _view('names', 'view')),
+    '/api/outreach': ('outreach', _view('outreach', 'view')),  # every lead and research report
+    '/outreach/doc': ('outreach', lambda h, path, q: h.send_doc(q.get('p', ''))),  # one research file, read-only
+    '/outreach/logo': (None, Handler.get_outreach_logo),
+    '/api/day': (None, Handler.get_day),
+    '/api/range': (None, Handler.get_range),
+    '/api/search': (None, lambda h, path, q: h.send_json(200, h.store.search(q['q'][:200], q['from'], q['to']))),
+    '/api/session': (None, Handler.get_session),
+    # no server-to-client stream: every answer comes back on its POST
+    '/mcp': (None, lambda h, path, q: h.send_json(405, {'error': 'POST only'})),
+    '/api/labs/views': (None, Handler.get_labs_views),
+    '/api/rules': (None, Handler.get_rules),
+    '/api/gate/approval': (None, Handler.get_gate_approval),
+    '/api/gate/log': (None, Handler.get_gate_log),
+}
+# Prefixes, tried in order after the exact paths: the longer prefix first where two overlap.
+GET_PREFIXES = (
+    ('/api/buildlog', ('buildlog', Handler.get_buildlog)),
+    ('/api/knowledge/', (None, Handler.get_knowledge)),
+    ('/mcp/', GET_ROUTES['/mcp']),
+    ('/api/tasks', (None, Handler.get_tasks)),
+    ('/api/questions/file/', (None, Handler.get_question_file)),
+    ('/api/questions', (None, Handler.get_questions)),
+)
 
 
 def main():
