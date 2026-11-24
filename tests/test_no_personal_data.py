@@ -35,8 +35,9 @@ def words(cfg):
     out = set(owner.get('names') or []) | {owner.get('name') or ''} | set(owner.get('emails') or [])
     out |= set(cfg.get('machines') or {})
     https = (cfg.get('hub') or {}).get('https') or ''
-    if https:
-        out.add(re.sub(r'^https?://', '', https).split('.', 1)[-1])  # the tailnet's own name
+    host = re.sub(r'^https?://', '', https).split('/', 1)[0]
+    if '.' in host:  # beacon.<tailnet>.ts.net: the tailnet's own name; a bare short name has none
+        out.add(host.split('.', 1)[-1])
     with open(os.path.join(ROOT, 'config.example.json'), encoding='utf-8') as f:
         example = json.load(f)
     out -= set(example.get('machines') or {})
