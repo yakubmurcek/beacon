@@ -243,9 +243,9 @@ body.on-task .capture { display: none; }
 .live-now { display: flex; align-items: flex-start; gap: var(--sp-2); font-family: var(--display); font-size: var(--fs-lg); font-weight: 600;
   line-height: 1.35; color: var(--text); overflow-wrap: anywhere; }
 .live-ico { flex: none; width: 1.4em; text-align: center; }
-.live-said { margin: 0; padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--line);
-  font-size: var(--fs-sm); color: var(--muted); overflow-wrap: anywhere; }
-.live-said::before { content: '💬 '; }
+.live-plan { margin: 0; font-size: var(--fs-sm); color: var(--muted); overflow-wrap: anywhere; }
+.live-before { font-size: var(--fs-xs); color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+.live-n { flex: none; color: var(--faint); font-size: var(--fs-xs); }
 .live-steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: var(--fs-sm); color: var(--muted); }
 .live-steps li { display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
 .live-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

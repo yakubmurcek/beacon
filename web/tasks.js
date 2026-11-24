@@ -607,7 +607,8 @@ const noteItem = (c) => h('li', {}, h('span', { class: 'meta' }, `${c.author} ·
 function agentBar(t) {
   const handed = withAgent(t);
   const closed = t.status === 'done' || t.status === 'dropped';
-  if (closed && !handed) return h('span', { hidden: true });
+  // a run carrying out his answer is working it: the live card says so, no hand-off offer under it
+  if ((closed || liveRun(t)) && !handed) return h('span', { hidden: true });
   const st = handed ? agentStatus(listed(t), t.sessions.filter((s) => s.state)) : null;
   const flip = h('button', { class: handed ? '' : 'primary', onclick: async () => {
     flip.disabled = true;
@@ -662,27 +663,31 @@ function plainStep(text, said = false) {
   return { icon: hit ? hit[1] : '⚙️', label: t };
 }
 
-// The run working this task right now, on top of the page: what it does this moment in plain words,
-// and the few steps before it, so a run nobody started by hand can be watched as it works.
+// The run working this task right now, on top of the page: which step of the plan it is on, what it does
+// this moment in plain words, and what it did before (each kind once, with a count), so a run nobody
+// started by hand can be watched as it works.
+const liveRun = (t) => t.sessions.filter((x) => x.state === 'working').sort((a, b) => (b.last || 0) - (a.last || 0))[0];
 function liveCard(t) {
-  const s = t.sessions.filter((x) => x.state === 'working').sort((a, b) => (b.last || 0) - (a.last || 0))[0];
+  const s = liveRun(t);
   if (!s) return h('span', { hidden: true });
-  const steps = [];
-  for (const x of [...(s.steps || [])].reverse()) {
-    const p = plainStep(x.text, x.said);
-    if (steps.length && steps[steps.length - 1].label === p.label) continue;  // three reads in a row read as one
-    steps.push({ ...p, at: x.at });
+  const [now, ...before] = [...(s.steps || [])].reverse().map((x) => ({ ...plainStep(x.text, x.said), at: x.at }));
+  const head = now || plainStep(s.doing || 'Working');
+  const past = [];
+  for (const x of before) {
+    const seen = past.find((p) => p.label === x.label);
+    if (seen) seen.n += 1; else past.push({ ...x, n: 1 });
   }
-  const now = steps[0] || plainStep(s.doing || 'Working');
-  const lastSaid = steps.find((x) => x.said && x !== now);
+  const step = t.step && t.plan && t.plan[t.step - 1];
   return h('section', { class: 'live-run' },
     h('div', { class: 'live-head' }, h('span', { class: 'pulse' }), h('b', {}, 'Working on it now'),
-      h('span', { class: 'live-where' }, `🖥️ ${s.machine}`)),
-    h('div', { class: `live-now${now.said ? ' said' : ''}` }, h('span', { class: 'live-ico' }, now.icon), h('span', {}, now.label)),
-    lastSaid && h('p', { class: 'live-said' }, lastSaid.label),
-    steps.length > 1 && h('ol', { class: 'live-steps' }, steps.slice(1, 6).filter((x) => x !== lastSaid).map((x) => h('li', {},
-      h('span', { class: 'live-ico' }, x.icon), h('span', { class: 'live-label' }, x.label),
-      x.at && h('span', { class: 'live-ago' }, ago(x.at))))));
+      step && h('span', { class: 'live-where' }, `Step ${t.step} of ${t.plan.length}`)),
+    step && h('p', { class: 'live-plan' }, step.label),
+    h('div', { class: 'live-now' }, h('span', { class: 'live-ico' }, head.icon), h('span', {}, head.label)),
+    past.length > 0 && h('ol', { class: 'live-steps' }, h('li', { class: 'live-before' }, 'Before that'),
+      past.slice(0, 4).map((x) => h('li', {},
+        h('span', { class: 'live-ico' }, x.icon), h('span', { class: 'live-label' }, x.label),
+        x.n > 1 && h('span', { class: 'live-n' }, `×${x.n}`),
+        x.at && h('span', { class: 'live-ago' }, ago(x.at))))));
 }
 
 // ------------------------------------------------------------------ routing + render

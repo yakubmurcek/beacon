@@ -84,7 +84,7 @@ window.HUB_CS = {
     'Updating the task': 'Aktualizuje úkol', 'Working on a server': 'Pracuje na serveru', 'Asking a service': 'Ptá se služby',
     'Looking through the code': 'Prochází kód', 'Reading your answer': 'Čte tvoji odpověď', 'Changing the code': 'Upravuje kód',
     'Reading the code': 'Čte kód', 'Reading a web page': 'Čte webovou stránku', 'Searching the web': 'Hledá na webu',
-    'Handing a part to a helper': 'Předává část pomocníkovi', 'Planning the next steps': 'Plánuje další kroky', 'Working': 'Pracuje',
+    'Handing a part to a helper': 'Předává část pomocníkovi', 'Planning the next steps': 'Plánuje další kroky', 'Working': 'Pracuje', 'Before that': 'Předtím',
     'Agent sessions': 'Session agentů', 'Agent sessions here now': 'Session agentů, které tu teď běží', 'Agents are on it': 'Agenti na tom dělají',
     'All by project': 'Vše podle projektu', 'Back in a week': 'Zpátky za týden', 'Back to Today': 'Zpět na Dnes', 'Back to to do': 'Zpátky mezi úkoly',
     'Clear due date': 'Smazat termín', 'Closed': 'Uzavřené', 'Date cleared': 'Termín smazán', 'Due': 'Termín', 'Due date': 'Termín',
