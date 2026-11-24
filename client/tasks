@@ -1677,11 +1677,11 @@ def _claim_for_chat(q, sid):
         try:
             if other_work(q, quick(f"/api/tasks/{q['task_id']}", timeout=2)):
                 return None
-        except Exception:  # noqa: BLE001 - unsure: leave it to the dispatcher, which routes it
+        except Exception:  # unsure: leave it to the dispatcher, which routes it
             return None
     try:
         won = quick(f"/api/questions/{q['id']}/claim", {'by': chat_claimer(sid)}, timeout=2).get('won')
-    except Exception as e:  # noqa: BLE001 - hub slow
+    except Exception as e:  # the hub slow or away
         raise _HubSlow from e
     return said(q) if won else None
 
