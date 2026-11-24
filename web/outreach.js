@@ -110,7 +110,7 @@ const fmtDate = (d) => {
   if (days <= 0) return 'today';
   if (days === 1) return 'yesterday';
   if (days < 7) return days + ' days ago';
-  return t.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(t.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
+  return t.toLocaleDateString(window.hubLocale || 'en-GB', { day: 'numeric', month: 'short', ...(t.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
 };
 const pname = (id) => (data.projects.find((p) => p.id === id) || {}).name || id;
 const pcolor = (id) => {  // a fixed colour per project: the first ten from the palette, then spread round the wheel

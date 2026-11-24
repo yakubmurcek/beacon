@@ -25,7 +25,7 @@ function dueLabel(due) {
   if (day < today) word = `overdue · ${day.slice(5).replace('-', '/')}`;
   else if (day === today) word = 'today';
   else if (day === pragueToday(1)) word = 'tomorrow';
-  else word = new Date(day + 'T12:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  else word = new Date(day + 'T12:00').toLocaleDateString(window.hubLocale || 'en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
   return { text: time ? `${word} ${time}` : word, overdue: day < today, today: day === today };
 }
 

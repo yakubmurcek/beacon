@@ -35,11 +35,11 @@ function when(ts, withTime) {
   if (!ts) return '';
   const d = new Date(ts * 1000);
   const k = dayKey(d), today = pragueToday(), y = pragueToday(-1);
-  const time = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).format(d);
+  const time = new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).format(d);
   if (k === today) return 'today ' + time;
   if (k === y) return 'yesterday ' + time;
   const sameYear = k.slice(0, 4) === today.slice(0, 4);
-  const date = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, day: 'numeric', month: 'short', year: sameYear ? undefined : 'numeric' }).format(d);
+  const date = new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { timeZone: TZ, day: 'numeric', month: 'short', year: sameYear ? undefined : 'numeric' }).format(d);
   return withTime ? `${date}, ${time}` : date;
 }
 const num = (x) => Number(x || 0).toLocaleString('en-US');  // not `n`: the header's inline script owns that global
@@ -559,8 +559,8 @@ function callCard(c, compact) {
   const isMe = (who) => window.BEACON.owner.names.includes(who);
   const others = c.speakers.map((s) => s.who).filter((w) => !isMe(w));
   return h('a', { class: 'call-card' + (compact ? ' compact' : ''), href: '#/call/' + encodeURIComponent(c.id) },
-    h('div', { class: 'call-date' }, h('b', {}, new Intl.DateTimeFormat('en-GB', { timeZone: TZ, day: 'numeric' }).format(new Date(c.start * 1000))),
-      h('span', {}, new Intl.DateTimeFormat('en-GB', { timeZone: TZ, month: 'short' }).format(new Date(c.start * 1000))),
+    h('div', { class: 'call-date' }, h('b', {}, new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { timeZone: TZ, day: 'numeric' }).format(new Date(c.start * 1000))),
+      h('span', {}, new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { timeZone: TZ, month: 'short' }).format(new Date(c.start * 1000))),
       h('small', {}, `${c.minutes} min`)),
     h('div', { class: 'call-body' },
       h('div', { class: 'call-title' }, marked(c.title, words(filter))),

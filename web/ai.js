@@ -8,7 +8,7 @@ let showAll = false;
 
 const money = (v) => (v >= 100 ? `$${Math.round(v)}` : v >= 10 ? `$${v.toFixed(0)}` : v >= 0.995 ? `$${v.toFixed(2)}` : v > 0 ? `${Math.max(1, Math.round(v * 100))}¢` : '$0');
 const plural = (k, one, many) => `${k.toLocaleString('en')} ${k === 1 ? one : many || one + 's'}`;
-const WEEKDAY = (d) => new Date(d + 'T12:00:00').toLocaleDateString('en', { weekday: 'short' });
+const WEEKDAY = (d) => new Date(d + 'T12:00:00').toLocaleDateString(window.hubLocale || 'en', { weekday: 'short' });
 
 // One color per model family, the same on every mark.
 function modelColor(name) {
@@ -89,7 +89,7 @@ function when(j) {
   if (j.kind) bits.push(j.kind);
   if (j.schedule) bits.push(j.schedule);
   if (j.last) bits.push(`last ran ${ago(j.last)}`);
-  if (j.next_run && j.next_run > Date.now() / 1000) bits.push(`next ${new Date(j.next_run * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+  if (j.next_run && j.next_run > Date.now() / 1000) bits.push(`next ${new Date(j.next_run * 1000).toLocaleTimeString(window.hubLocale || 'en-GB', { hour: '2-digit', minute: '2-digit' })}`);
   return bits.map(esc).join(' · ');
 }
 

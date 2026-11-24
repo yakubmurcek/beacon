@@ -70,8 +70,8 @@ function fmtMin(m) {
   return Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm';
 }
 let TZ = 'Europe/Prague';
-const fmtTime = (ts) => new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).format(new Date(ts * 1000));
-const fmtDateTime = (ts) => new Intl.DateTimeFormat('en-GB', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(ts * 1000));
+const fmtTime = (ts) => new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).format(new Date(ts * 1000));
+const fmtDateTime = (ts) => new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(ts * 1000));
 // The date (in the hub's time zone) a timestamp falls on, as YYYY-MM-DD.
 const localDate = (ts) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ts * 1000));
 const fmtDur = (sec) => (sec < 60 ? Math.round(sec) + 's' : fmtMin(sec / 60));
@@ -94,10 +94,10 @@ const CLICK = matchMedia('(hover: none)').matches ? 'tap' : 'click';
 const cap = (w) => w[0].toUpperCase() + w.slice(1);
 const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 function prettyDate(date, year) {
-  return new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: year ? 'numeric' : undefined, timeZone: 'UTC' })
+  return new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: year ? 'numeric' : undefined, timeZone: 'UTC' })
     .format(new Date(date + 'T12:00:00Z'));
 }
-const shortDate = (date) => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(date + 'T12:00:00Z'));
+const shortDate = (date) => new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(date + 'T12:00:00Z'));
 function niceMax(v) {
   if (v <= 0) return 1;
   const p = 10 ** Math.floor(Math.log10(v));
@@ -1048,7 +1048,7 @@ function stackedColumns(el, days, { series, fmt, axis = fmt, nice = niceMax, tot
   }
   const every = Math.max(1, Math.ceil(days.length / Math.max(2, Math.floor((W - padL) / 64))));
   const todayLast = days.at(-1)?.date === state.meta.today && !days.at(-1).month;
-  const monthName = (x) => new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' }).format(new Date(x.date + 'T12:00:00Z'));
+  const monthName = (x) => new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { month: 'short', timeZone: 'UTC' }).format(new Date(x.date + 'T12:00:00Z'));
   days.forEach((day, i) => {
     const x = padL + i * slot + (slot - bw) / 2;
     let base = padT + plotH;
@@ -1163,7 +1163,7 @@ function renderCalendar(d) {
     if (!(day.date.endsWith('-01') || (i === 0 && Number(day.date.slice(8)) <= 21))) return;
     const col = Math.floor((i + wd0) / 7);
     if (col < cols - 1) svg.append(svgText({ x: labelW + col * (cell + gap), y: 11 },
-      new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' }).format(new Date(day.date + 'T12:00:00Z'))));
+      new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { month: 'short', timeZone: 'UTC' }).format(new Date(day.date + 'T12:00:00Z'))));
   });
   d.days.forEach((day, i) => {
     const col = Math.floor((i + wd0) / 7), row = (i + wd0) % 7;
@@ -1314,7 +1314,7 @@ const SPECIAL_PROJECTS = {
   '(projects root)': 'worked in ~/Projects itself; a session that moves into a repo for a quarter of its events counts there',
   '(home)': 'started in the home folder',
   '(no project)': 'the agent logged no working folder',
-  scratch: 'sessions in a throwaway folder (/tmp, the Claude app'"'"'s scratch workspaces), not inside any project',
+  scratch: 'sessions in a throwaway folder (/tmp, the Claude app\'s scratch workspaces), not inside any project',
   'agent config': "an agent's own config folder (~/.claude, ~/.codex…)",
 };
 const projectTitle = (p) => (SPECIAL_PROJECTS[p] ? `${p}: ${SPECIAL_PROJECTS[p]}` : null);

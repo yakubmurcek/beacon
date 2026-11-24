@@ -301,6 +301,15 @@ row (`nav.sys`) and its own views, never more (2026-11-22: the earlier fold put 
 Home, four rows deep). `scripts/nav.py` holds the only copy and writes it into `web/*.html` and the budget and
 Lighthouse `hub-header.tsx`; `--check` reports a page that drifted. Pages keep their URLs; `/system` redirects to `/usage`.
 
+## Czech: the CZ / EN switch
+
+English is the default; the CZ / EN button in the header (next to the night theme) switches the hub's own words to
+Czech and remembers it per browser. A head script on each page loads `web/i18n.js` and the word list
+`web/i18n-cs.js` before the body, and swaps whole strings as the page draws them: exact entries, plus patterns with
+numbers (`{n|den|dny|dní}` picks the Czech plural). Data the agents write (task titles, card text) stays as written.
+Dates follow the language through `window.hubLocale`. A new English label shows in English until it gets a line in
+`i18n-cs.js`. Money, Today and Wall are separate apps and stay English.
+
 ## AI Rank: http://beacon/rank
 
 The parked league-rank repo revived (task 1826): a League-style rank of build, ship, users and profit, with a badge

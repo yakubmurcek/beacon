@@ -485,8 +485,8 @@ async function viewLog(kind, search) {
 // every rule in plain words with the answers it came from, how often it answered, an on/off switch,
 // and the kinds he still answers himself.
 
-const day = (t) => (t ? new Date(t * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '');
-const weekDay = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+const day = (t) => (t ? new Date(t * 1000).toLocaleDateString(window.hubLocale || 'en-GB', { day: 'numeric', month: 'short' }) : '');
+const weekDay = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(window.hubLocale || 'en-GB', { day: 'numeric', month: 'short' });
 const RULE_STATUS = { proposed: 'Waiting for your yes', declined: 'You said no' };
 const ruleNote = (note) => (note || '').replace(/^Pravidlo #\d+:\s*(.)/, (_, c) => `Why: ${c.toUpperCase()}`);  // the hub's note names the rule by number
 
@@ -592,7 +592,7 @@ function stillAsked(kinds) {
 function sweepLine(s) {
   if (!s) return h('p', { class: 'sweep-line' }, '🌙 The nightly review runs at 23:00: it reads your answers from the last 30 days. Its first run shows here.');
   const late = Date.now() / 1000 - s.at > 36 * 3600;
-  const when = new Date(s.at * 1000).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const when = new Date(s.at * 1000).toLocaleString(window.hubLocale || 'en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   const found = [s.repeated ? `${s.repeated} ${s.repeated === 1 ? 'kind' : 'kinds'} you answered the same way 3×` : 'nothing you answered the same way 3×',
     s.risky && `${s.risky} left to you (money, sending, people…)`, s.covered && `${s.covered} already a rule`].filter(Boolean).join(', ');
   return h('div', { class: `sweep-line${late ? ' late' : ''}` },

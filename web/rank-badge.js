@@ -21,7 +21,7 @@ const nf = new Intl.NumberFormat('en-US');
 const fmtN = (n) => (n >= 10000 ? `${nf.format(Math.round(n / 100) / 10)}k`.replace('.0k', 'k') : nf.format(Math.round(n)));
 const fmtKc = (n) => `${n > 0 && n < 10 ? n.toFixed(1) : nf.format(Math.round(n))} Kč`;
 const fmtV = (s, v) => (s.unit === 'kc' ? fmtKc(v) : fmtN(v));
-const dayLabel = (d) => new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+const dayLabel = (d) => new Date(d + 'T12:00:00').toLocaleDateString(window.hubLocale || 'en-GB', { day: 'numeric', month: 'short' });
 
 function emblem(tier, size) {
   const c = color(tier), i = TI[tier];

@@ -173,6 +173,24 @@
   apply(root.dataset.theme === 'cyber');
 })();
 
+// Czech or English (i18n.js): a CZ / EN switch after the night theme; the page reloads in the other language.
+(function () {
+  const theme = document.querySelector('.top .top-row > .theme-toggle');
+  if (!theme) return;
+  const cs = window.hubLang === 'cs';
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'theme-toggle lang-toggle'; btn.lang = cs ? 'en' : 'cs';
+  btn.textContent = cs ? 'EN' : 'CZ';
+  btn.title = cs ? 'Switch to English' : 'Přepnout do češtiny';
+  btn.setAttribute('aria-label', btn.title);
+  btn.setAttribute('translate', 'no');
+  btn.addEventListener('click', () => {
+    try { localStorage.setItem('hub.lang', cs ? 'en' : 'cs'); } catch { return; }
+    location.reload();
+  });
+  theme.after(btn);
+})();
+
 // The tab icon is the Beacon tower: its windows glow. Browsers show only a still
 // frame of an animated SVG icon, so the frames are built from favicon.svg once and cycled.
 (function () {

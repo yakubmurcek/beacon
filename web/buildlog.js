@@ -8,9 +8,9 @@ const DAYS_PAGE = 10;
 let games = snap.get('buildlog.games');
 let game = null;       // {game, days} of the open game
 let shownDays = DAYS_PAGE;
-const fmtDate = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
-const fmtTime = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Prague' });
-const fmtDay = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/Prague' });
+const fmtDate = new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+const fmtTime = new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Prague' });
+const fmtDay = new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/Prague' });
 
 const img = (path, w) => `/buildlog/img/${path.split('/').map(encodeURIComponent).join('/')}?w=${w}`;
 function hours(min) {

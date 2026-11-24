@@ -82,6 +82,8 @@
 .top .tools .datenav { flex: none; }
 .top .top-row > .theme-toggle { margin-left: auto; }
 .top .tools + .theme-toggle { margin-left: 0; }
+.top .top-row > .theme-toggle + .lang-toggle { margin-left: 0; }
+.lang-toggle { font: 700 var(--fs-xs)/1 var(--sans); letter-spacing: .04em; }
 
 /* a small laptop: the main tabs drop their icons; the page's tools move under the tabs when they don't fit */
 @media (min-width: 901px) and (max-width: 1080px) {
@@ -107,6 +109,9 @@
   .top .tools .datenav { flex: 1 1 auto; }
   .top .tools .datenav button { height: 34px; }
   .top .tools + .theme-toggle { margin-left: auto; }
+  /* night theme and CZ / EN: on the logo's own line, so the page's views keep the row */
+  .top .top-row > .theme-toggle { position: absolute; top: 10px; right: calc(var(--gutter) + 44px); margin: 0; }
+  .top .top-row > .theme-toggle + .lang-toggle { right: var(--gutter); }
   .apps { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; gap: 0; height: calc(60px + env(safe-area-inset-bottom));
     padding: var(--sp-1) var(--sp-2) env(safe-area-inset-bottom); background: color-mix(in srgb, var(--bg) 94%, transparent);
     -webkit-backdrop-filter: blur(18px) saturate(1.6); backdrop-filter: blur(18px) saturate(1.6); border-top: 1px solid var(--line); }
