@@ -315,12 +315,15 @@ class ApprovalApiTest(LiveHub, unittest.TestCase):
         qs.answer(q['id'], {'answer': 'Yes, send it'}, via='task')
         self.assertEqual(qs.approval('Claude Code:s9', 'send')['id'], q['id'])
 
-    def test_the_log_is_open_and_capped(self):
-        code, _ = self.call('/api/gate/log', {'ts': time.time(), 'machine': 'devbox', 'category': 'live', 'what': 'x'})
+    def test_the_log_takes_his_servers_and_is_capped(self):
+        rec = {'ts': time.time(), 'machine': 'devbox', 'category': 'live', 'what': 'x'}
+        self.assertEqual(self.call('/api/gate/log', rec)[0], 401)  # who wrote it is tailscaled's answer, see test_auth
+        server = {'X-Forwarded-For': self.SERVER_IP}
+        code, _ = self.call('/api/gate/log', rec, server)
         self.assertEqual(code, 201)
         code, out = self.call('/api/gate/log')
         self.assertEqual((out['total'], out['by'][0]['machine'], out['by'][0]['unapproved']), (1, 'devbox', 1))
-        code, _ = self.call('/api/gate/log', raw=b'x' * 9000, headers={'Content-Type': 'application/json'})
+        code, _ = self.call('/api/gate/log', raw=b'x' * 9000, headers={'Content-Type': 'application/json', **server})
         self.assertEqual(code, 413)
 
 

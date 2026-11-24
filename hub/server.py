@@ -8,8 +8,8 @@ so only tailnet devices can reach it. Writes need the bearer token; reads don't.
   USAGE_DB      SQLite path (default: data/usage.db next to the repo root)
   USAGE_PORT    default 4829
   USAGE_TZ      overrides the settings' `timezone`
-  TASKS_OWNER   tailnet login allowed to write tasks (the Tailscale-User-Login header that
-                `tailscale serve` adds); empty turns header writes off
+  TASKS_OWNER   the tailnet login allowed to write from a browser, checked with tailscaled's whois
+                (hub/whois.py); empty turns browser writes off
   TASKS_TOKEN   bearer token agents and scripts write tasks with
 """
 import gzip
@@ -27,36 +27,36 @@ import unicodedata
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import apps  # noqa: E402
-from aijobs import AIJobs  # noqa: E402
-from beacon_mcp import BeaconMCP  # noqa: E402
-from buildlog import BuildLog  # noqa: E402
-from cardrules import CardRules  # noqa: E402
-from endings import Endings  # noqa: E402
-from feedback import Feedback  # noqa: E402
-from knowledge import Knowledge  # noqa: E402
-from labs import Labs  # noqa: E402
-from machines import Machines  # noqa: E402
+import apps
+from aijobs import AIJobs
+from beacon_mcp import BeaconMCP
+from buildlog import BuildLog
+from cardrules import CardRules
+from endings import Endings
+from feedback import Feedback
+from knowledge import Knowledge
+from labs import Labs
+from machines import Machines
 from machines import telegram as machines_telegram
-from names import Names  # noqa: E402
-from narrate import Narrator  # noqa: E402
-from outcomes import Outcomes  # noqa: E402
-from outreach import Outreach  # noqa: E402
+from names import Names
+from narrate import Narrator
+from outcomes import Outcomes
+from outreach import Outreach
 from outreach import logo as outreach_logo
-from progress import Progress, current_index, steps_of  # noqa: E402
-from questions import Questions  # noqa: E402
-from rank import Rank  # noqa: E402
-from rules import Rules  # noqa: E402
-from settings import CONFIG, HUB, OWNER_ID, TIMEZONE  # noqa: E402
+from progress import Progress, current_index, steps_of
+from questions import Questions
+from rank import Rank
+from rules import Rules
+from settings import CONFIG, HUB, OWNER_ID, TIMEZONE
 from settings import browser as browser_settings
 from settings import path as settings_path
-from store import Store, parse_filter  # noqa: E402
-from studio import Studio  # noqa: E402
-from swr import SWR  # noqa: E402
-from talk import CapReached, Talk, VoiceError  # noqa: E402
-from tasks import Tasks, agent_problem  # noqa: E402
-from titles import Titles, ask_haiku  # noqa: E402
+from store import Store, parse_filter
+from studio import Studio
+from swr import SWR
+from talk import CapReached, Talk, VoiceError
+from tasks import Tasks, agent_problem
+from titles import Titles, ask_haiku
+from whois import Whois, peer_address
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(ROOT, 'web')
@@ -170,6 +170,7 @@ class Handler(BaseHTTPRequestHandler):
     rules = None
     endings = None
     server_version = 'agent-usage'
+    whois = Whois()  # the caller's tailnet identity, asked of tailscaled (tests put a fake here)
     head = False
     timeout = 60  # a client that stalls mid-request gives its thread back instead of holding it
 
@@ -501,13 +502,18 @@ class Handler(BaseHTTPRequestHandler):
                      steps=x.get('steps') or [])
         return self.send_json(200, t)
 
+    def caller(self):
+        """The calling device's tailnet identity (whois of the address `tailscale serve` forwarded), or None."""
+        ip = peer_address(self.client_address, self.headers)
+        return self.whois(ip) if ip else None
+
     def task_writer(self):
-        """Who may write: the owner's tailnet login (set by `tailscale serve`) or the token."""
+        """Who may write: an agent with the token, or the owner's own device, as tailscaled names it."""
         auth = self.headers.get('Authorization', '')
         if TASKS_TOKEN and hmac.compare_digest(auth, 'Bearer ' + TASKS_TOKEN):
             return 'agent'
-        login = self.headers.get('Tailscale-User-Login', '')
-        if TASKS_OWNER and login and hmac.compare_digest(login, TASKS_OWNER):
+        caller = self.caller() if TASKS_OWNER else None
+        if caller and hmac.compare_digest(caller.login, TASKS_OWNER):
             return 'owner'
         return None
 
@@ -939,15 +945,8 @@ class Handler(BaseHTTPRequestHandler):
             if not (MCP_KEY and len(MCP_KEY) >= 32 and hmac.compare_digest(path[5:], MCP_KEY)):
                 return self.send_json(404, {'error': 'not found'})
             return self.post_mcp(keyed=True)
-        if path == '/api/gate/log':  # the hook's shadow log: open to the tailnet (a hook has no token at hand), append-only, capped
-            length = self.headers.get('Content-Length') or ''
-            length = int(length) if length.isdigit() else 0
-            if not 0 < length <= 8000:
-                return self.send_json(413, {'error': 'body size'})
-            try:
-                return self.send_json(201, self.questions.log_gate(json.loads(self.rfile.read(length))))
-            except ValueError as e:
-                return self.send_json(400, {'error': f'bad request: {e}'})
+        if path == '/api/gate/log':
+            return self.post_gate_log()
         if path == '/api/names' and self.names:
             return self.post_names()
         if path == '/api/rank/ingest' and getattr(self, 'rank', None):  # the ai-rank collector, with the collector's token
@@ -982,6 +981,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(500, {'error': 'server error'})
         self.send_json(200, {'ok': True, 'stored': n})
 
+
+    def post_gate_log(self):
+        """The approval hook's log, append-only and capped: a writer, or one of his tagged servers (a hook there
+        has no token at hand)."""
+        if not (self.task_writer() or getattr(self.caller(), 'tagged', False)):
+            return self.send_json(401, {'error': 'unauthorized'})
+        length = self.headers.get('Content-Length') or ''
+        length = int(length) if length.isdigit() else 0
+        if not 0 < length <= 8000:
+            return self.send_json(413, {'error': 'body size'})
+        try:
+            return self.send_json(201, self.questions.log_gate(json.loads(self.rfile.read(length))))
+        except ValueError as e:
+            return self.send_json(400, {'error': f'bad request: {e}'})
 
     def post_rank(self):
         auth = self.headers.get('Authorization', '')

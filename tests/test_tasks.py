@@ -154,8 +154,10 @@ class TasksStoreTest(unittest.TestCase):
 
 
 class LiveHub:
-    """A real hub server on a free port, with a temporary database."""
+    """A real hub server on a free port, with a temporary database. tailscaled is faked: OWNER_IP is the
+    owner's phone, SERVER_IP one of his tagged servers, any other address is unknown to it."""
     OWNER = 'me@example.com'
+    OWNER_IP, SERVER_IP = '100.100.1.1', '100.100.2.2'
 
     def setUp(self):
         import server
@@ -165,8 +167,11 @@ class LiveHub:
         server.Handler.store = Store(os.path.join(self.tmp.name, 'u.db'))
         server.Handler.tasks = Tasks(server.Handler.store)
         server.Handler.questions = Questions(server.Handler.store, server.Handler.tasks)
-        self.saved = (server.TASKS_OWNER, server.TASKS_TOKEN)
+        self.saved = (server.TASKS_OWNER, server.TASKS_TOKEN, server.Handler.whois)
         server.TASKS_OWNER, server.TASKS_TOKEN = self.OWNER, 'tok'
+        from whois import Caller
+        devices = {self.OWNER_IP: Caller(self.OWNER, False), self.SERVER_IP: Caller('tagged-devices', True)}
+        server.Handler.whois = staticmethod(devices.get)
         self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.base = f'http://127.0.0.1:{self.httpd.server_address[1]}'
@@ -174,7 +179,7 @@ class LiveHub:
     def tearDown(self):
         self.httpd.shutdown()
         self.httpd.server_close()
-        self.server.TASKS_OWNER, self.server.TASKS_TOKEN = self.saved
+        self.server.TASKS_OWNER, self.server.TASKS_TOKEN, self.server.Handler.whois = self.saved
         self.tmp.cleanup()
 
     def call(self, path, body=None, headers=None, raw=None):
@@ -192,7 +197,8 @@ class LiveHub:
                 return e.code, json.loads(e.read())
 
     def me(self):
-        return {'Tailscale-User-Login': self.OWNER}
+        """What `tailscale serve` sends for a request from his phone."""
+        return {'X-Forwarded-For': self.OWNER_IP}
 
 
 class TasksServerTest(LiveHub, unittest.TestCase):

@@ -385,8 +385,10 @@ API (JSON): `GET /api/tasks?status=open|all|todo,doing&project=&q=&due=today&sta
 `GET /api/tasks/<id>`, `GET /api/tasks/projects`, `POST /api/tasks` (create),
 `POST /api/tasks/<id>` (update fields), `POST /api/tasks/<id>/comments`,
 `POST /api/tasks/<id>/sessions` (link a session id). Reads are open on the tailnet like the rest
-of the hub; writes need the `Tailscale-User-Login` header equal to `TASKS_OWNER` (what
-`tailscale serve` sends for his devices) or `Authorization: Bearer $TASKS_TOKEN`.
+of the hub; writes need `Authorization: Bearer $TASKS_TOKEN`, or a request from his own device: the hub asks
+tailscaled's LocalAPI (`whois`) who holds the address `tailscale serve` forwarded in `X-Forwarded-For`, and that
+login must equal `TASKS_OWNER` ([hub/whois.py](hub/whois.py)). A `Tailscale-User-Login` header is never read: anything
+that reaches the port could write one. The gate hook's `POST /api/gate/log` also takes one of his tagged servers.
 
 **Agents** use [client/tasks](client/tasks), installed as `tasks` on every machine
 (`tasks add "Title" -b "runbook"`, `tasks ls --claude`, `tasks done 12 -m "what happened"`,
