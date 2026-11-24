@@ -18,7 +18,9 @@ own (his, not a package's or an app's), started (when a running job started), wh
 run's first error-looking line). The hub decides overdue, hung and gone from these.
 """
 import glob
+import http.client
 import json
+import logging
 import os
 import platform
 import plistlib
@@ -34,6 +36,7 @@ import settings  # noqa: E402  (hub/settings.py: the deployment's names)
 JOBS_EVERY = 120        # seconds between job scans
 VERSIONS_EVERY = 3600   # seconds between version checks
 FRESH_EVERY = 600       # seconds between outdated-copy reports (hub/freshness.py)
+log = logging.getLogger('host')
 WIN = sys.platform == 'win32'
 MAC = sys.platform == 'darwin'
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -65,7 +68,7 @@ def stats(cache):
         else:
             out.update(linux_stats(cache))
     except Exception as e:  # numbers are nice to have; the job list matters more
-        print(f'host stats: {type(e).__name__}: {e}', file=sys.stderr)
+        log.warning('stats: %s: %s', type(e).__name__, e)
     out['disks'] = disks()
     return out
 
@@ -306,7 +309,7 @@ def ai_of(words):
         import llm
         return llm.sniff(words, _AI_CACHE)
     except Exception as e:  # a script it can't read must not cost the whole job list
-        print(f'host ai: {type(e).__name__}: {e}', file=sys.stderr)
+        log.warning('ai: %s: %s', type(e).__name__, e)
         return None
 
 
@@ -432,7 +435,7 @@ def mac_jobs():
         try:
             with open(path, 'rb') as f:
                 p = plistlib.load(f)
-        except Exception:
+        except (OSError, ValueError):  # unreadable or not a plist: not a job we can list
             continue
         label = p.get('Label') or os.path.basename(path)[:-6]
         if label.startswith('com.apple.') or p.get('Disabled'):
@@ -613,8 +616,8 @@ def probe(url):
     """(up, page): up when the backend answers, False when nothing listens or a proxy in front says the app behind
     is down; page False when it answers 404 at / (an API for an app, nothing to open in a browser)."""
     import ssl
-    import urllib.request
     import urllib.error
+    import urllib.request
     ctx = None
     if url.startswith('https+insecure://'):  # tailscale serve's own scheme: https, certificate not checked
         url, ctx = 'https://' + url[len('https+insecure://'):], ssl._create_unverified_context()
@@ -624,7 +627,7 @@ def probe(url):
             return True, True
     except urllib.error.HTTPError as e:
         return e.code not in (502, 503, 504), e.code != 404
-    except Exception:
+    except (OSError, ValueError, http.client.HTTPException):  # nothing listens, or garbage: down
         return False, False
 
 
@@ -645,7 +648,8 @@ def serve(cache, now):
         up, page = {t: r[0] for t, r in res.items()}, {t: r[1] for t, r in res.items()}
         try:
             cache['serve_what'] = listeners()
-        except Exception:
+        except Exception as e:  # what listens is a nicety: the served names still report
+            log.warning('serve: listeners: %s: %s', type(e).__name__, e)
             cache['serve_what'] = {}
         cache['serve_conf'], cache['serve_up'], cache['serve_page'], cache['serve_at'] = conf, up, page, now
         cache['probed_at'] = time.time()  # our own probe leaves TIME-WAITs for a minute: not a visit
@@ -672,7 +676,7 @@ def scan_jobs():
     try:
         return windows_jobs() if WIN else mac_jobs() if MAC else linux_jobs()
     except Exception as e:
-        print(f'host jobs: {type(e).__name__}: {e}', file=sys.stderr)
+        log.warning('jobs: %s: %s', type(e).__name__, e)
         return None
 
 
@@ -694,7 +698,7 @@ def report(cache_path, now=None, hub=None, machine=None):
         try:
             cache['fresh'] = fresh(hub, machine)
         except Exception as e:  # noqa: BLE001 - the hub away: keep the last report
-            print(f'host fresh: {type(e).__name__}: {e}', file=sys.stderr)
+            log.warning('fresh: %s: %s', type(e).__name__, e)
         cache['fresh_at'] = now
     out = {'stats': stats(cache), 'versions': cache.get('versions') or {},
            'jobs': cache.get('jobs') or [], 'jobs_at': round(cache.get('jobs_at') or 0) or None}
@@ -703,7 +707,7 @@ def report(cache_path, now=None, hub=None, machine=None):
     try:
         out['serve'] = serve(cache, now)
     except Exception as e:  # never lose the rest of the report over the names
-        print(f'host serve: {type(e).__name__}: {e}', file=sys.stderr)
+        log.warning('serve: %s: %s', type(e).__name__, e)
     try:
         tmp = cache_path + '.tmp'
         with open(tmp, 'w') as f:

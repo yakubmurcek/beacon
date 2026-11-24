@@ -11,14 +11,17 @@ comes (a restart, an empty budget) a project shows its newest task title, so a b
 GET /api/team returns {"now", "projects": [{key, name, what, headline, aim, kind, working, waiting, helpers, busy,
 stage, since}], "resting": [...]}.
 """
+import logging
 import os
 import re
+import sqlite3
 import threading
 import time
-import traceback
 
 from settings import CONFIG, PROJECT_NAMES
 from titles import ask_haiku
+
+log = logging.getLogger('beacon.studio')
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAMPLE_SEC = 30
@@ -91,7 +94,7 @@ class Studio:
                 rows = con.execute('SELECT l.session_id, t.id, t.project, t.title, t.body, t.status, t.step FROM task_sessions l '
                                    f'JOIN tasks t ON t.id = l.task_id WHERE l.session_id IN ({",".join("?" * len(ids))}) '
                                    'ORDER BY l.linked_at', ids).fetchall()
-        except Exception:  # no tasks tables
+        except sqlite3.OperationalError:  # no tasks tables
             return {}
         return {r['session_id']: {'id': r['id'], 'project': r['project'], 'title': r['title'], 'body': r['body'],
                                   'status': r['status'], 'step': r['step'], 'goal': goal_of(r['body'])} for r in rows}
@@ -215,7 +218,7 @@ class Studio:
             try:
                 job = self.progress.of(t)
             except Exception:  # a guess that fails never blanks the card
-                traceback.print_exc()
+                log.exception('jobs_of failed')
                 job = None
             if job:
                 out.append(job)
@@ -246,5 +249,5 @@ class Studio:
             try:
                 self.run_once()
             except Exception:
-                traceback.print_exc()
+                log.exception('loop failed')
             time.sleep(SAMPLE_SEC)

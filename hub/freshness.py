@@ -20,6 +20,7 @@ machines where a checkout must stay on its branch.
 import hashlib
 import os
 import re
+import sqlite3
 import subprocess
 import threading
 import time
@@ -201,7 +202,7 @@ def deaf_hooks(con, now):
     try:
         rows = con.execute('SELECT machine, source, COUNT(*) n FROM endings WHERE created_at > ? GROUP BY machine, source',
                            (now - HOOK_WINDOW,)).fetchall()
-    except Exception:  # noqa: BLE001 - no endings table (a hub without the feed)
+    except sqlite3.OperationalError:  # no endings table (a hub without the feed)
         return {}
     seen = {}
     for r in rows:

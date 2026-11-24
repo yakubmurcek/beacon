@@ -16,17 +16,19 @@ Model: Sonnet 5.5 at medium effort through `claude -p` (his subscription, no hoo
 """
 import datetime
 import json
+import logging
 import os
 import re
 import subprocess
 import threading
 import time
-import traceback
 
 try:
     from . import gate
 except ImportError:  # run as a script from hub/
     import gate
+
+log = logging.getLogger('beacon.rules')
 
 MODEL = os.environ.get('RULES_MODEL', 'claude-sonnet-5-5')
 EFFORT = os.environ.get('RULES_EFFORT', 'medium')
@@ -311,7 +313,7 @@ class Rules:
         try:
             fn(*args)
         except Exception:  # noqa: BLE001 - a learning job never breaks asking or answering
-            traceback.print_exc()
+            log.exception('_safe failed')
 
     def on_answered(self, q):
         if q['kind'] == PROPOSAL_KIND and (q.get('source') or '').startswith('rule-proposal:'):

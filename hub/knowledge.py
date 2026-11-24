@@ -19,6 +19,7 @@ import contextlib
 import html
 import importlib.util
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -31,6 +32,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import settings
+
+log = logging.getLogger('beacon.knowledge')
 
 CORPUS_DIR = os.environ.get('CORPUS_DIR', settings.p('corpus'))
 BRAIN_DIR = os.environ.get('BRAIN_DIR', settings.p('brain'))
@@ -477,7 +480,7 @@ class Knowledge:
         try:
             self._graph = (time.time(), self._build_graph())
         except Exception:  # the old graph stays; the next request tries again
-            pass
+            log.exception('rebuilding the knowledge graph failed')
         finally:
             self._graph_building = False
 
@@ -638,7 +641,10 @@ class Knowledge:
                     out[k] = {'items': f.result(timeout=max(0.1, deadline - time.time()))}
                 except sqlite3.OperationalError:
                     out[k] = {'items': [], 'error': 'Those search words could not be read. Try plain words.'}
-                except Exception as e:  # one slow or missing source never takes the others down
+                except LookupError as e:  # that source is not on this box: expected, nothing to log
+                    out[k] = {'items': [], 'error': f'{k} not reachable ({type(e).__name__})'}
+                except Exception as e:  # one slow or broken source never takes the others down
+                    log.warning('knowledge search: %s: %s: %s', k, type(e).__name__, e)
                     out[k] = {'items': [], 'error': f'{k} not reachable ({type(e).__name__})'}
         finally:
             ex.shutdown(wait=False, cancel_futures=True)

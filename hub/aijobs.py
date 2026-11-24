@@ -331,7 +331,7 @@ class AIJobs:
                     'model = coalesce(excluded.model, job_runs.model), effort = coalesce(excluded.effort, job_runs.effort)',
                     rows)
         except Exception as e:  # never fail a push over this
-            print(f'aijobs: {machine}: runs not stored: {type(e).__name__}: {e}', flush=True)
+            log.warning('%s: runs not stored: %s: %s', machine, type(e).__name__, e)
 
     # ------------------------------------------------------------ the view
 
@@ -548,7 +548,8 @@ class AIJobs:
                 for x in items if x['sample'] and not x['linked'] and x['runs_logged'] == 1]
         try:
             self.titles.annotate(sess)
-        except Exception:
+        except Exception:  # names are a nicety: the jobs keep their prompt labels
+            log.exception('naming the unnamed runs failed')
             return
         named = {(s['machine'], s['id']): s.get('title') for s in sess if s.get('title_from') in ('name', 'task')}
         for x in items:

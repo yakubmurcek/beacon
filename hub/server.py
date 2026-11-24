@@ -14,47 +14,49 @@ so only tailnet devices can reach it. Writes need the bearer token; reads don't.
 """
 import gzip
 import hmac
-import http.client
 import json
 import logging
 import mimetypes
-import re
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 import threading
-import traceback
 import unicodedata
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from store import Store, parse_filter  # noqa: E402
-from tasks import Tasks, agent_problem  # noqa: E402
-from questions import Questions  # noqa: E402
-from feedback import Feedback  # noqa: E402
-from rules import Rules  # noqa: E402
-from titles import Titles, ask_haiku  # noqa: E402
-from narrate import Narrator  # noqa: E402
-from studio import Studio  # noqa: E402
-from progress import Progress, steps_of, current_index  # noqa: E402
-from machines import Machines, telegram as machines_telegram  # noqa: E402
-from names import Names  # noqa: E402
-from outreach import Outreach, logo as outreach_logo  # noqa: E402
-from knowledge import Knowledge  # noqa: E402
-from rank import Rank  # noqa: E402
-from outcomes import Outcomes  # noqa: E402
-from buildlog import BuildLog  # noqa: E402
-from aijobs import AIJobs  # noqa: E402
-from labs import Labs  # noqa: E402
-from talk import Talk, CapReached, VoiceError  # noqa: E402
-from endings import Endings  # noqa: E402
-from cardrules import CardRules  # noqa: E402
-from beacon_mcp import BeaconMCP  # noqa: E402
 import apps  # noqa: E402
+from aijobs import AIJobs  # noqa: E402
+from beacon_mcp import BeaconMCP  # noqa: E402
+from buildlog import BuildLog  # noqa: E402
+from cardrules import CardRules  # noqa: E402
+from endings import Endings  # noqa: E402
+from feedback import Feedback  # noqa: E402
+from knowledge import Knowledge  # noqa: E402
+from labs import Labs  # noqa: E402
+from machines import Machines  # noqa: E402
+from machines import telegram as machines_telegram
+from names import Names  # noqa: E402
+from narrate import Narrator  # noqa: E402
+from outcomes import Outcomes  # noqa: E402
+from outreach import Outreach  # noqa: E402
+from outreach import logo as outreach_logo
+from progress import Progress, current_index, steps_of  # noqa: E402
+from questions import Questions  # noqa: E402
+from rank import Rank  # noqa: E402
+from rules import Rules  # noqa: E402
+from settings import CONFIG, HUB, OWNER_ID  # noqa: E402
+from settings import browser as browser_settings
+from settings import path as settings_path
+from store import Store, parse_filter  # noqa: E402
+from studio import Studio  # noqa: E402
 from swr import SWR  # noqa: E402
-from settings import CONFIG, HUB, OWNER_ID, browser as browser_settings, path as settings_path  # noqa: E402
+from talk import CapReached, Talk, VoiceError  # noqa: E402
+from tasks import Tasks, agent_problem  # noqa: E402
+from titles import Titles, ask_haiku  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(ROOT, 'web')
@@ -247,7 +249,7 @@ class Handler(BaseHTTPRequestHandler):
         path = '/api/data' + ('?' + query if query else '')
         try:
             return self.send_json(200, CACHE.get(('power', path), lambda: apps.fetch_json(apps.POWER_URL, path), fresh=20, stale=60))
-        except (OSError, ValueError, http.client.HTTPException):
+        except apps.NET_ERRORS:
             return self.send_json(502, {'error': 'the power meter is not answering'})
 
     def get_live(self, path, q):
@@ -633,7 +635,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
         except Exception:
-            traceback.print_exc()
+            log.exception('post_tasks failed')
             return self.send_json(500, {'error': 'server error'})
 
     # ------------------------------------------------------------ rules (his only: an agent never turns a rule on)
@@ -669,7 +671,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
         except Exception:  # noqa: BLE001 - logged; the page keeps his note and says it wasn't sent
-            traceback.print_exc()
+            log.exception('post_feedback failed')
             return self.send_json(500, {'error': 'the hub failed to file it'})
         return self.send_json(201, {'task': got['task']['id'], 'question': got['question']['id'],
                                     'project': got['task']['project']})
@@ -724,7 +726,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
         except Exception:
-            traceback.print_exc()
+            log.exception('post_endings failed')
             return self.send_json(500, {'error': 'server error'})
 
     def post_names(self):
@@ -776,7 +778,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
         except Exception:
-            traceback.print_exc()
+            log.exception('post_questions failed')
             return self.send_json(500, {'error': 'server error'})
 
     def send_doc(self, ref):
@@ -823,7 +825,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.titles.annotate(data.get('sessions'))
             except Exception:  # names are a nicety: never fail the page over them
-                traceback.print_exc()
+                log.exception('titled failed')
         return data
 
     def serve_static(self, path, query=''):
@@ -976,7 +978,7 @@ class Handler(BaseHTTPRequestHandler):
             if body.get('names') and getattr(self, 'titles', None):
                 self.titles.save(machine, body['names'])
         except Exception:
-            traceback.print_exc()
+            log.exception('do_POST failed')
             return self.send_json(500, {'error': 'server error'})
         self.send_json(200, {'ok': True, 'stored': n})
 
@@ -995,7 +997,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, AttributeError) as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
         except Exception:
-            traceback.print_exc()
+            log.exception('post_rank failed')
             return self.send_json(500, {'error': 'server error'})
 
 
@@ -1089,8 +1091,8 @@ def outreach_done(tasks, notices, then=None):
                 done = t['status'] == 'done'
                 notices.post({'title': ('✅ ' if done else '🗑️ ') + t['title'], 'link': link, 'source': 'Outreach',
                               'key': f'outreach-move:{tid}', 'level': 'normal' if done else 'inbox'})
-        except Exception:
-            traceback.print_exc()
+        except Exception:  # the task is closed either way; only its notice is lost, and the log says why
+            log.exception('the outreach move notice for task %s failed', tid)
     return closed
 
 
@@ -1105,6 +1107,8 @@ def outreach_link(body):
 
 
 def main():
+    # One line per record on stdout: journald keeps the time, so the format doesn't.
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(levelname)s %(name)s: %(message)s')
     db = os.environ.get('USAGE_DB') or os.path.join(ROOT, 'data', 'usage.db')
     os.makedirs(os.path.dirname(db), exist_ok=True)
     Handler.store = Store(db, os.environ.get('USAGE_TZ', 'Europe/Prague'))
@@ -1148,7 +1152,7 @@ def main():
     threading.Thread(target=warm, daemon=True).start()
     httpd = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     httpd.daemon_threads = True
-    print(f'agent usage hub on http://127.0.0.1:{port}/ (db {db})', flush=True)
+    log.info('agent usage hub on http://127.0.0.1:%s/ (db %s)', port, db)
     httpd.serve_forever()
 
 

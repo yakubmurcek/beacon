@@ -19,12 +19,14 @@ the machines' live snapshots) with no ending posted, and posts those it reads wi
 """
 import hashlib
 import json
+import logging
 import re
 import threading
 import time
-import traceback
 
 import settings
+
+log = logging.getLogger('beacon.endings')
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS endings (
@@ -311,7 +313,7 @@ class Endings:
             if done and self.cardrules is not None:
                 self.cardrules.log('ending', 'reworded', done, why='a session reply rewritten as a decision under his rules')
         except Exception:  # noqa: BLE001 - the plain card is still there
-            traceback.print_exc()
+            log.exception('reword failed')
 
     @staticmethod
     def actions_of(e):
@@ -335,6 +337,7 @@ class Endings:
                             self.titles.annotate([s])
                         return s
         except Exception:  # noqa: BLE001 - a card without its machine is still a card
+            log.exception('reading the live session %s failed', sid)
             return None
         return None
 
@@ -368,8 +371,8 @@ class Endings:
         if self.titles:  # the session's own name or task title, as everywhere on the hub
             try:
                 self.titles.annotate(out)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:  # noqa: BLE001 - the missed sessions keep their folder names
+                log.exception('naming the missed sessions failed')
         return out
 
     # ------------------------------------------------------------ out
@@ -416,6 +419,7 @@ class Endings:
         try:
             self.titles.annotate(tmp)
         except Exception:  # noqa: BLE001 - a card keeps the name it came with
+            log.exception('naming the cards failed')
             return
         for e, t in zip(rows, tmp):
             # A tap's own holder task ("Decide: ...", filed by the hub for the answer) is no name for the session.

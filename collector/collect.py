@@ -20,6 +20,7 @@ import datetime
 import glob
 import http.client
 import json
+import logging
 import os
 import re
 import socket
@@ -30,6 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+log = logging.getLogger('collect')
 VERSION = 6  # 6: host.fresh (outdated copies, hub/freshness.py); 2: pushes carry a `live` snapshot; 3: and `host` (stats, versions, jobs: collector/host.py); 4: and session names; 5: call effort, job AI sniff, llm_runs
 HOME = os.path.expanduser('~')
 CONFIG_DIR = os.path.join(HOME, '.config', 'agent-usage')
@@ -525,7 +527,7 @@ def collect_opencode(state, machine, db_path):
     try:
         con = sqlite3.connect(uri, uri=True, timeout=5)
     except sqlite3.Error as e:
-        print(f'opencode: {e}', file=sys.stderr)
+        log.warning('opencode: %s', e)
         return []
     events = []
     newest = since
@@ -577,7 +579,7 @@ def collect_opencode(state, machine, db_path):
                                  cost_reported=d.get('cost')))
     except sqlite3.OperationalError as e:
         if 'no such table' not in str(e):
-            print(f'opencode: {e}', file=sys.stderr)
+            log.warning('opencode: %s', e)
     try:  # V2 storage: sessions in session_v2, messages in session_message (text inline; no part rows)
         rows = con.execute(
             "SELECT m.id, m.session_id, m.type, m.time_updated, m.data, s.directory, s.parent_id "
@@ -615,7 +617,7 @@ def collect_opencode(state, machine, db_path):
                                  cost_reported=d.get('cost')))
     except sqlite3.OperationalError as e:
         if 'no such table' not in str(e):
-            print(f'opencode: {e}', file=sys.stderr)
+            log.warning('opencode: %s', e)
     con.close()
     state.pending[key] = {'since': newest}
     return events
@@ -754,6 +756,7 @@ def push(hub, token, machine, events, counts, live=None, host=None, names=None):
 
 
 def main():
+    logging.basicConfig(stream=sys.stderr, format='%(name)s: %(message)s')
     try:
         with open(os.path.join(CONFIG_DIR, 'config.json'), encoding='utf-8') as f:
             cfg = json.load(f)
@@ -779,7 +782,7 @@ def main():
             run(args)
         except SystemExit as e:  # one failed push must not end the loop
             if e.code not in (None, 0):
-                print(e.code, file=sys.stderr)
+                log.error('this run failed: %s', e.code)
         nxt = began + args.every
         if nxt - start >= args.duration:
             return
@@ -794,7 +797,7 @@ def run(args):
         try:
             got = fn(state, args.machine)
         except Exception as e:  # one broken source must not block the others
-            print(f'{name}: {type(e).__name__}: {e}', file=sys.stderr)
+            log.warning('%s: %s: %s', name, type(e).__name__, e)
             got = []
         counts[name] = len(got)
         events.extend(got)
@@ -806,7 +809,7 @@ def run(args):
         import live
         snap = live.snapshot()
     except Exception as e:  # history still goes out when the live scan breaks
-        print(f'live: {type(e).__name__}: {e}', file=sys.stderr)
+        log.warning('live: %s: %s', type(e).__name__, e)
         snap = None
     # The machine itself and its scheduled jobs (collector/host.py), for the hub's machines view
     # and its alarms: a job that fails or stops running is told from the hub, not from this box.
@@ -815,7 +818,7 @@ def run(args):
         me = host.report(os.path.join(os.path.dirname(os.path.abspath(args.state)), 'host-cache.json'),
                          hub=args.hub, machine=args.machine)
     except Exception as e:
-        print(f'host: {type(e).__name__}: {e}', file=sys.stderr)
+        log.warning('host: %s: %s', type(e).__name__, e)
         me = None
     # Which background job started each running agent process, so the hub can put every run's model,
     # effort and cost on its job (http://beacon/ai).
@@ -824,7 +827,7 @@ def run(args):
             import llm
             me['llm_runs'] = llm.runs(live.list_processes())
         except Exception as e:
-            print(f'llm runs: {type(e).__name__}: {e}', file=sys.stderr)
+            log.warning('llm runs: %s: %s', type(e).__name__, e)
 
     if args.dry_run:
         print(json.dumps(counts))

@@ -11,16 +11,18 @@ MIN_SAMPLES, else everyone's) x the agent steps still ahead, times a correction 
 Each task's first whole-task guess is kept; when the task closes it is graded against its real minutes, so the
 next guess uses it and the Team page can say how far off the guesses run.
 """
+import logging
 import re
 import statistics
 import threading
 import time
-import traceback
 
 try:
     from .store import bursts_of
 except ImportError:  # run as a script from hub/
     from store import bursts_of
+
+log = logging.getLogger('beacon.progress')
 
 REFRESH_SEC = 600
 HISTORY_SEC = 60 * 86400
@@ -183,7 +185,7 @@ class Progress:
             try:
                 self.refresh()
             except Exception:
-                traceback.print_exc()
+                log.exception('loop failed')
             time.sleep(REFRESH_SEC)
 
     # ------------------------------------------------------------ guessing

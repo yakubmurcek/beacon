@@ -35,6 +35,7 @@ Alarms (only where HUB_ALARMS=1, i.e. the live hub), through telegram-alarm:
   - the first run sends one summary of everything already broken instead of a line each.
 """
 import json
+import logging
 import os
 import re
 import shutil
@@ -45,7 +46,10 @@ import urllib.request
 from datetime import datetime
 
 from settings import HUB, MACHINES
+from apps import NET_ERRORS
 import freshness  # noqa: E402
+
+log = logging.getLogger('beacon.machines')
 
 # What each box is for, and whether it should always answer (settings `machines`). A box not listed is shown, never alarmed.
 HUB_MACHINE = HUB.get('machine')
@@ -127,7 +131,7 @@ class Machines:
         try:
             self._save(machine, host)
         except Exception as e:  # a bad host block must never fail the push (the collector would resend forever)
-            print(f'machines: {machine}: host block not stored: {type(e).__name__}: {e}', flush=True)
+            log.warning('%s: host block not stored: %s: %s', machine, type(e).__name__, e)
 
     def _save(self, machine, host):
         now = time.time()
@@ -187,8 +191,8 @@ class Machines:
         try:
             with urllib.request.urlopen(url, timeout=2.5) as r:
                 val = parse_node(r.read().decode('utf-8', 'replace'))
-        except Exception:
-            pass
+        except NET_ERRORS:
+            pass  # the Pi is off or its exporter down: no stats, the collector's numbers still show
         self._node[name] = (time.time(), val)
         return val
 
@@ -261,7 +265,7 @@ class Machines:
             try:
                 drift += freshness.check(name, data.get('fresh'), self.sources, now)
             except Exception as e:  # noqa: BLE001 - a bad report never breaks the view
-                print(f'machines: {name}: freshness: {type(e).__name__}: {e}', flush=True)
+                log.warning('%s: freshness: %s: %s', name, type(e).__name__, e)
         problems += [d['text'] for d in drift]
         if online and host and scanned and now - scanned > STALE_SCAN_SEC:
             problems.insert(0, f'its job list stopped updating {round((now - scanned) / 60)} min ago')
@@ -430,8 +434,8 @@ class Machines:
                 try:
                     self.tick()
                     self.health['tick_at'] = time.time()
-                except Exception as e:  # one bad pass must not end the watch
-                    print(f'machines watch: {type(e).__name__}: {e}', flush=True)
+                except Exception:  # one bad pass must not end the watch
+                    log.exception('a watch pass failed')
                 time.sleep(every)
         t = threading.Thread(target=loop, name='machines-watch', daemon=True)
         t.start()
@@ -458,10 +462,10 @@ def telegram(text, key, quiet=False):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
-        print(f'machines watch: telegram-alarm: {e}', flush=True)
+        log.warning('telegram-alarm: %s', e)
         return False
     if r.returncode:
-        print(f'machines watch: telegram-alarm exit {r.returncode}: {(r.stderr or r.stdout).strip()[:200]}', flush=True)
+        log.warning('telegram-alarm exit %s: %s', r.returncode, (r.stderr or r.stdout).strip()[:200])
     return r.returncode == 0
 
 

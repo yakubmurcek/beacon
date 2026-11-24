@@ -12,11 +12,13 @@ lint, `put_off`, an ending with no question makes no card). What is left is lear
   card, a 👎 lesson. Labs' `bad_questions` shows them; the daily cap counts the model calls from it.
 """
 import json
+import logging
 import os
 import re
 import threading
 import time
-import traceback
+
+log = logging.getLogger('beacon.cardrules')
 
 DAILY = int(os.environ.get('CARDRULES_DAILY', '30'))  # 👎 lessons a day (he taps a few at most)
 WAIT_FOR_WORDS = 180  # a bare 👎 waits this long for the words he types in its box, then is read without them
@@ -218,7 +220,7 @@ class CardRules:
                 got = self.model(LEARN_PROMPT.format(rules=self.rules_block(rules) or '(none yet)', card=card_text(q),
                                                      note=clip(note, 500) or '(none: work out what is wrong from the card)'))
             except Exception:  # noqa: BLE001 - a failed lesson is logged, the 👎 still reached its agent
-                traceback.print_exc()
+                log.exception('learn failed')
                 got = None
             if not isinstance(got, dict):
                 self.log('flag', 'failed', q, called=True, why=note)
@@ -241,4 +243,4 @@ class CardRules:
         try:
             fn(*args)
         except Exception:  # noqa: BLE001
-            traceback.print_exc()
+            log.exception('_safe failed')

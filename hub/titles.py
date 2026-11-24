@@ -18,12 +18,15 @@ falls back to the prompt.
 """
 import hashlib
 import json
+import logging
 import os
 import re
+import sqlite3
 import subprocess
 import threading
 import time
-import traceback
+
+log = logging.getLogger('beacon.titles')
 
 MODEL = os.environ.get('TITLES_MODEL', 'claude-haiku-4-5')
 CLAUDE = os.environ.get('TITLES_CLAUDE') or os.path.expanduser('~/.local/bin/claude')
@@ -128,7 +131,7 @@ class Titles:
                 try:
                     for sid, title in con.execute(q, chunk):
                         tasks[sid] = title  # the latest task wins
-                except Exception:  # no tasks tables (a fresh hub): no task names
+                except sqlite3.OperationalError:  # no tasks tables (a fresh hub): no task names
                     break
             names = {}
             for i in range(0, len(ids), 500):
@@ -193,5 +196,5 @@ class Titles:
                 while self.run_once():
                     time.sleep(2)
             except Exception:
-                traceback.print_exc()
+                log.exception('loop failed')
             time.sleep(20)

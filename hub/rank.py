@@ -26,10 +26,13 @@ GET /api/rank: {"now": {tier, division, lp, label, title, score, next, warning},
 """
 import datetime
 import json
+import logging
 import math
+import sqlite3
 import threading
 import time
-import traceback
+
+log = logging.getLogger('beacon.rank')
 
 TIERS = [  # key, AI-era title, has divisions
     ('IRON', 'Prompt Tourist', True), ('BRONZE', 'Chatbot Native', True), ('SILVER', 'First-Time Claude', True),
@@ -266,7 +269,7 @@ class Rank:
                 for (ts,) in con.execute("SELECT closed_at FROM tasks WHERE status='done' AND closed_at >= ?", (since_ts,)):
                     d = out.setdefault(self.store.local_date(ts), {})
                     d['tasks'] = d.get('tasks', 0) + 1
-            except Exception:  # a hub without the tasks tables (tests)
+            except sqlite3.OperationalError:  # a hub without the tasks tables (tests)
                 pass
             seen = set()
             for ts, machine, session in con.execute(
@@ -377,7 +380,7 @@ class Rank:
             try:
                 st = self.recompute()
             except Exception:
-                traceback.print_exc()
+                log.exception('get failed')
                 if st is None:
                     raise
         return st

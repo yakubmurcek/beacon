@@ -28,7 +28,9 @@ the Czech National Bank's rate of the day.
 """
 import datetime
 import glob
+import http.client
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -37,6 +39,10 @@ import sys
 import time
 import urllib.request
 import zoneinfo
+
+log = logging.getLogger('ai-rank')
+# What a call to a site fails with when it is down, slow, refuses or answers something unexpected.
+NET_ERRORS = (OSError, ValueError, LookupError, http.client.HTTPException)
 
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'hub'))
 import settings  # noqa: E402  (hub/settings.py: the deployment's names)
@@ -100,8 +106,8 @@ def rates():
             if len(parts) == 5:
                 out[parts[3]] = float(parts[4].replace(',', '.')) / float(parts[2])
         src.append('cnb')
-    except Exception:
-        pass
+    except NET_ERRORS as e:  # the public USD table below can still price the run
+        log.warning('rates: the CNB table failed: %s', e)
     try:
         er = get_json('https://open.er-api.com/v6/latest/USD', timeout=15)
         if er.get('result') == 'success':
@@ -110,8 +116,8 @@ def rates():
                 if cur not in out and per_usd:
                     out[cur] = usd / per_usd
             src.append('er-api')
-    except Exception:
-        pass
+    except NET_ERRORS as e:
+        log.warning('rates: the USD table failed: %s', e)
     if 'USD' not in out:
         raise RuntimeError('no exchange rates')
     return out, '+'.join(src)
@@ -173,8 +179,8 @@ def app_store(days, kc):
         import tomllib
         cfg = tomllib.load(open(ASC_TOML, 'rb'))
         apps = {str(a['id']): a.get('name', str(a['id'])) for a in cfg.get('apps', [])}
-    except Exception:
-        pass
+    except (OSError, ValueError, KeyError) as e:  # no app list here: sales still count, without release names
+        log.warning('app store: no app list (%s): %s', ASC_TOML, e)
     db = sqlite3.connect(f'file:{ASC_DB}?mode=ro', uri=True)
     rows = db.execute('SELECT report_date, product_type_identifier, units, developer_proceeds, currency_of_proceeds, '
                       'apple_identifier, parent_identifier FROM sales WHERE report_date >= ?',
@@ -210,8 +216,8 @@ def app_store(days, kc):
             if when:
                 releases.append({'key': f'appstore:{app_id}:{r.get("version")}', 'day': prague_day(when), 'kind': 'appstore',
                                  'what': f'{name} {r.get("version")} on the App Store'})
-        except Exception:
-            pass
+        except NET_ERRORS as e:  # its release day is a nicety: the money still counts
+            log.warning('app store: release of %s not read: %s', name, e)
     through = (today() - datetime.timedelta(days=2)).isoformat()  # Apple's daily report lags 1-2 days
     by_key = {'appstore_seen': seen_through} if seen_through and seen_through < through else {}
     return {'ok': True, 'apps': list(apps.values()), 'through': through, 'through_by': by_key,
@@ -301,8 +307,8 @@ def mail(days):
     finally:
         try:
             m.logout()
-        except Exception:
-            pass
+        except (OSError, imaplib.IMAP4.error):
+            pass  # the mail is read; a failed goodbye changes nothing
     return {'ok': True, 'through': today().isoformat()}
 
 
@@ -310,7 +316,7 @@ def calls(days):
     """Recorded calls, one row each in transcribe's CALLS.md, read from origin/main (fetched, never checked out)."""
     try:
         run(['git', '-C', CALLS_REPO, 'fetch', '-q', 'origin', 'main'], timeout=60)
-    except Exception:
+    except (OSError, RuntimeError, subprocess.SubprocessError):
         pass  # offline: the last fetched copy is still the best list we have
     text = run(['git', '-C', CALLS_REPO, 'show', 'origin/main:CALLS.md'])
     recent = []
@@ -408,7 +414,8 @@ def collect(hub):
             for day, vals in part.items():  # only a source that worked touches its days
                 for k, v in vals.items():
                     days.setdefault(day, {})[k] = days.get(day, {}).get(k, 0) + v
-        except Exception as e:
+        except Exception as e:  # one source down must not cost the others: the hub shows it as down, with why
+            log.warning('%s: %s: %s', name, type(e).__name__, e)
             sources[name] = {'ok': False, 'why': str(e)[:200]}
 
     step('roblox', roblox, kc)
@@ -438,6 +445,7 @@ def collect(hub):
 
 
 def main():
+    logging.basicConfig(stream=sys.stderr, format='%(name)s: %(message)s')
     cfg = json.load(open(CONFIG))
     hub = cfg['hub']
     payload = collect(hub)

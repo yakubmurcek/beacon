@@ -11,14 +11,17 @@ starts the sentences over within a minute. No model or bad output: no `now`, the
 activity it reads from the tool line instead.
 """
 import collections
+import logging
 import os
 import re
+import sqlite3
 import threading
 import time
-import traceback
 
 from titles import ask_haiku
 from settings import OWNER_NAME
+
+log = logging.getLogger('beacon.narrate')
 
 SAMPLE_SEC = 10
 NARRATE_SEC = 60
@@ -88,7 +91,7 @@ class Narrator:
             with self.store.connect() as con:
                 rows = con.execute('SELECT l.session_id, t.title FROM task_sessions l JOIN tasks t ON t.id = l.task_id '
                                    f'WHERE l.session_id IN ({",".join("?" * len(ids))}) ORDER BY l.linked_at', ids).fetchall()
-        except Exception:  # a hub without tasks tables
+        except sqlite3.OperationalError:  # a hub without tasks tables
             return
         titles = dict(rows)
         for m in machines:
@@ -162,5 +165,5 @@ class Narrator:
                     self.last_run = time.time()
                     self.run_once()
             except Exception:
-                traceback.print_exc()
+                log.exception('loop failed')
             time.sleep(SAMPLE_SEC)

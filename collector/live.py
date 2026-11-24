@@ -20,6 +20,7 @@ thing a human asked it, so a viewer can tell the sessions apart at a glance.
 """
 import glob
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -30,6 +31,8 @@ import urllib.parse
 from datetime import datetime
 
 from collect import HOME, claude_prompt_text, codex_request, project_of, redact
+
+log = logging.getLogger('live')
 
 LIVE_WITHIN = 30 * 60   # a log written this recently is a live session even with no process found
 STALE_AFTER = 24 * 3600  # past this, not even a running process keeps a session listed
@@ -838,6 +841,6 @@ def snapshot(now=None):
         try:
             sessions.extend(fn())
         except Exception as e:  # one broken source must not blank the others
-            print(f'live {name}: {type(e).__name__}: {e}', file=sys.stderr)
+            log.warning('%s: %s: %s', name, type(e).__name__, e)
     sessions.sort(key=lambda s: (RANK[s['state']], -s['last']))
     return {'scanned_at': round(now), 'sessions': sessions}

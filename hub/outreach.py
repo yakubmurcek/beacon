@@ -18,6 +18,7 @@ import html
 import importlib.util
 import io
 import json
+import logging
 import os
 import re
 import subprocess
@@ -29,6 +30,9 @@ import urllib.error
 import urllib.request
 
 import settings
+from apps import NET_ERRORS
+
+log = logging.getLogger('beacon.outreach')
 
 REF = 'knowledge/reference/'
 OUT = REF + 'outreach/'
@@ -121,7 +125,7 @@ class Outreach:
             try:
                 files += list(mod.watched(self) or [])
             except Exception as e:
-                print(f'outreach: watched(): {e}', flush=True)
+                log.warning('watched(): %s', e)
         if os.path.isdir(self.p(REF + 'research')):
             files += [REF + 'research/' + d for d in os.listdir(self.p(REF + 'research'))]
         return files
@@ -155,7 +159,7 @@ class Outreach:
                 finally:
                     sys.dont_write_bytecode = was
             except Exception as e:  # a broken sources.py hides its lists, never the page
-                print(f'outreach: {path}: {e}', flush=True)
+                log.warning('%s: %s', path, e)
                 mod = None
             self._sources = (key, mod)
         return self._sources[1]
@@ -184,7 +188,7 @@ class Outreach:
             try:
                 rows = part()
             except Exception as e:  # a broken list reader hides only its own list, never the page
-                print(f'outreach: a list reader failed: {e!r}', flush=True)
+                log.warning('a list reader failed: %r', e)
                 rows = []
             for r in rows:
                 if key(r) in seen:
@@ -291,7 +295,7 @@ class Outreach:
                     for x in m.get('sessions') or []:
                         sessions[x.get('id')] = {'state': x.get('state'), 'machine': m.get('machine'), 'doing': x.get('doing')}
         except Exception as e:  # a lead card never breaks on the task store
-            print(f'outreach: agents: {e}', flush=True)
+            log.warning('agents: %s', e)
             return {}
         out = {}
         for t in rows:  # newest first
@@ -394,7 +398,7 @@ class Outreach:
                 for j in m.get('jobs') or []:
                     jobs.setdefault(j.get('name'), (m.get('machine'), j))
         except Exception as e:  # the page never breaks on the machines view
-            print(f'outreach: feeds: {e}', flush=True)
+            log.warning('feeds: %s', e)
         out = []
         for project, rows in want.items():
             for f in rows:
@@ -412,7 +416,7 @@ class Outreach:
         try:
             rows = self.questions.list(status='open', limit=500)
         except Exception as e:  # cards never hide the page
-            print(f'outreach: waiting: {e}', flush=True)
+            log.warning('waiting: %s', e)
             return []
         return [{'id': q['id'], 'project': SINGLE if q['project'] in single else q['project'], 'question': q['question']}
                 for q in rows if q.get('project') in ids or q.get('project') in single]
@@ -479,7 +483,7 @@ def logo(domain, fetch=None, folder=None):
             return ('image/jpeg' if data[:2] == b'\xff\xd8' else 'image/png'), data
     try:
         data = (fetch or _fetch_logo)(domain)
-    except Exception:  # offline or refused: try again next time, show the initials meanwhile
+    except NET_ERRORS:  # offline or refused: try again next time, show the initials meanwhile
         return None
     with open(img if data else miss, 'wb') as f:
         f.write(data or b'')
@@ -495,8 +499,8 @@ def _fetch_logo(domain):
                 data = r.read(400_000)
             if r.headers.get_content_type().startswith('image/') and len(data) > 1500 and data[:4] in (b'\x89PNG', b'\xff\xd8\xff\xe0', b'\xff\xd8\xff\xe1', b'\xff\xd8\xff\xdb'):
                 return data
-        except Exception:
-            pass
+        except NET_ERRORS:
+            pass  # no icon of its own there: the search engine's favicon next
     try:
         with urllib.request.urlopen(urllib.request.Request(LOGO_SRC.format(domain), headers=head), timeout=8) as r:
             return r.read(200_000)

@@ -17,15 +17,17 @@ instead of a hand-built dashboard; the layout is remembered and improves itself.
 
 import datetime
 import json
+import logging
 import os
 import re
 import subprocess
 import threading
 import time
-import traceback
 import unicodedata
 
 from settings import OWNER_NAME
+
+log = logging.getLogger('beacon.labs')
 
 CLAUDE = os.environ.get('LABS_CLAUDE') or os.path.expanduser('~/.local/bin/claude')
 MODEL = os.environ.get('LABS_MODEL', 'claude-sonnet-5-5')
@@ -163,7 +165,7 @@ class Labs:
             if self.narrator:
                 self.narrator.annotate(now)  # `now` on working sessions: what it does, in one plain sentence
         except Exception:
-            traceback.print_exc()
+            log.exception('sessions_live failed')
         live.sort(key=lambda x: (x.get('state') != 'working', -(x.get('last') or 0)))
         items = [{'title': clip(x.get('title') or self.pname(x.get('project')), 70),
                   'sub': clip(f"{x.get('machine')} · " + self.doing(x), 110),
@@ -324,7 +326,7 @@ class Labs:
         try:
             data = self.SOURCES[name][1](self, days or 7)
         except Exception:
-            traceback.print_exc()
+            log.exception('source failed')
             return None
         self.cache[key] = (time.time(), data)
         return data
@@ -339,7 +341,7 @@ class Labs:
                 self.digest()
                 self.range_days(30)
             except Exception:
-                traceback.print_exc()
+                log.exception('warm failed')
             finally:
                 self.lock.release()
             return
@@ -349,7 +351,7 @@ class Labs:
                 self.digest()
                 self.range_days(30)
             except Exception:
-                traceback.print_exc()
+                log.exception('run failed')
             finally:
                 self.lock.release()
         threading.Thread(target=run, daemon=True).start()
@@ -623,7 +625,7 @@ HIS QUESTION: {q}'''
             self.save(head['key'], head['title'], [c for c in cards if c['type'] != 'act'], q, head.get('changed'))  # an act is for now only
             yield {'type': 'done', 'key': head['key']}
         except Exception:
-            traceback.print_exc()
+            log.exception('ask failed')
             yield {'type': 'error', 'text': 'Something broke while answering. Try again.'}
         finally:
             self.running.release()

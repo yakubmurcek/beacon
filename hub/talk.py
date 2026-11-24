@@ -16,6 +16,7 @@ The same talk mode runs in any browser (phone, desk, an always-on wall screen), 
 import datetime
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -23,6 +24,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+
+log = logging.getLogger('beacon.talk')
 
 OPENAI = 'https://api.openai.com/v1'
 HEAR_MODEL = os.environ.get('TALK_HEAR_MODEL', 'gpt-4o-mini-transcribe')
@@ -265,7 +268,7 @@ class Talk:
         except VoiceError as e:
             self.log('say-miss', 0)
             self.misses += 1
-            print(f'talk: own voice missed ({self.misses} in a row): {e}', flush=True)
+            log.warning('own voice missed (%s in a row): %s', self.misses, e)
             today = self.store.today()
             if self.misses >= MISS_ALARM and self.alarmed != today and self.send:
                 self.alarmed = today
@@ -288,7 +291,7 @@ class Talk:
                           90)
                 self.log('warm', 0, cost=WARM_COST)
             except VoiceError as e:
-                print(f'talk: warming the own voice failed: {e}', flush=True)
+                log.warning('warming the own voice failed: %s', e)
         threading.Thread(target=go, daemon=True).start()
         return True
 

@@ -23,9 +23,10 @@ import sqlite3
 import threading
 import time
 import urllib.parse
+import urllib.request
 
 import settings
-import urllib.request
+from apps import NET_ERRORS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CORPUS_DB = os.environ.get('CORPUS_DB', os.path.join(settings.p('corpus'), 'corpus.db'))
@@ -75,7 +76,7 @@ class BuildLog:
         try:
             with urllib.request.urlopen(BUILDLOG_URL + path, timeout=timeout) as r:
                 return json.load(r)
-        except Exception:
+        except NET_ERRORS:
             self._shots_down_until = time.time() + 60
             return None  # the home server asleep or the service down: the timeline still shows, without pictures
 

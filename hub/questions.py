@@ -14,6 +14,7 @@ The log is the answered ones: what was asked, the agent's default, his answer, a
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -22,12 +23,14 @@ import time
 from settings import HUB, OWNER_ID, OWNER_NAME
 
 try:
-    from .store import fold
     from . import gate, pictures
+    from .store import fold
 except ImportError:  # run as a script from hub/
-    from store import fold
     import gate
     import pictures
+    from store import fold
+
+log = logging.getLogger('beacon.questions')
 
 STATUSES = ('open', 'answered', 'withdrawn')
 VIA = ('page', 'chat', 'task', 'cli', 'rule')  # rule: a standing rule he approved answered it (hub/rules.py)
@@ -247,12 +250,12 @@ class Questions:
             tasks.on_close = self.withdraw_closed
             n = self.withdraw_closed()
             if n:
-                print(f'questions: withdrew {n} open on tasks already closed', flush=True)
+                log.info('withdrew %s open on tasks already closed', n)
         self.expired_at = 0
         self.expiring = threading.Lock()
         n = self.expire_stale()
         if n:
-            print(f'questions: {n} open card(s) older than {STALE_DAYS} days left the deck', flush=True)
+            log.info('%s open card(s) older than %s days left the deck', n, STALE_DAYS)
 
     @staticmethod
     def row(r):
@@ -649,8 +652,7 @@ class Questions:
             try:
                 fn(q)
             except Exception:  # noqa: BLE001 - learning never breaks asking or answering
-                import traceback
-                traceback.print_exc()
+                log.exception('notify failed')
 
     def session_task(self, session_id):
         """The open task the session is linked to (the newest link), else None."""

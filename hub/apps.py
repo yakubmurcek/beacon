@@ -17,6 +17,9 @@ import urllib.parse
 
 from settings import APPS
 
+# What a call to another box or site fails with when it is down, slow, refuses or answers garbage.
+NET_ERRORS = (OSError, ValueError, http.client.HTTPException)
+
 PREFIXES = {
     '/budget': os.environ.get('BUDGET_URL', APPS['budget']),
     '/lighthouse': os.environ.get('LIGHTHOUSE_URL', APPS['lighthouse']),

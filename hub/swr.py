@@ -4,9 +4,11 @@ A read younger than `fresh` seconds is served as it is. An older one is still se
 background thread rebuilds it for the next visitor, so a page never waits on a rebuild it did not need.
 Only a key never built before, or one past `stale` seconds, is built while the visitor waits.
 """
+import logging
 import threading
 import time
-import traceback
+
+log = logging.getLogger('beacon.swr')
 
 
 class SWR:
@@ -39,7 +41,7 @@ class SWR:
         try:
             self._put(key, build())
         except Exception:  # the old value stays; the next visitor tries again
-            traceback.print_exc()
+            log.exception('_rebuild failed')
         finally:
             with self._lock:
                 self._building.discard(key)

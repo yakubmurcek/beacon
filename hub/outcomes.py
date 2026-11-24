@@ -21,6 +21,7 @@ GET /api/outcomes: {"at", "collected_at", "stale", "periods": {"today"|"week"|"m
 """
 import datetime
 import json
+import sqlite3
 import threading
 import time
 import zoneinfo
@@ -212,7 +213,7 @@ class Outcomes:
                 releases = [dict(zip(('key', 'day', 'kind', 'what'), r)) for r in con.execute(
                     'SELECT key, day, kind, what FROM rank_releases WHERE day >= ?', (since,))]
                 meta = {k: json.loads(v) for k, v in con.execute('SELECT k, v FROM rank_meta')}
-            except Exception:  # no rank tables yet (a fresh hub): every source reads as never read
+            except sqlite3.OperationalError:  # no rank tables yet (a fresh hub): every source reads as never read
                 pass
         return build(series, releases, meta.get('sources') or {}, today, time.time(), meta.get('at'), robux_ever)
 

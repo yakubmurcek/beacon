@@ -1,5 +1,7 @@
 import os
+
 os.environ['BEACON_CONFIG'] = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.example.json')  # the example settings, never the box's own
+import sqlite3
 import sys
 import unittest
 
@@ -15,7 +17,7 @@ class FakeStore:
         return {'machines': [{'machine': 'devbox', 'sessions': self.sessions}]}
 
     def connect(self):
-        raise RuntimeError('no tasks tables')
+        raise sqlite3.OperationalError('no such table: tasks')  # what SQLite says on a hub without them
 
 
 def s(id, project, state='working', idle=5, doing='Editing x'):
