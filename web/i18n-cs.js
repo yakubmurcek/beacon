@@ -130,7 +130,7 @@ window.HUB_CS = {
     'Nothing yet: no rule has answered a question for you.': 'Zatím nic: žádné pravidlo za tebe neodpovědělo.',
     'Off: you get asked. Tap to turn on.': 'Vypnuto: ptá se tebe. Klepnutím zapneš.', 'On: it answers matching questions for you. Tap to turn off.':
       'Zapnuto: na takové otázky odpovídá za tebe. Klepnutím vypneš.',
-    'Removed: not needed': 'Odebráno: není potřeba', 'Reply to this session': 'Odpovědět téhle session', 'Rule': 'Pravidlo', 'Rules': 'Pravidla',
+    'Removed: not needed': 'Odebráno: není potřeba', 'bring back now': 'vrátit hned', 'Reply to this session': 'Odpovědět téhle session', 'Rule': 'Pravidlo', 'Rules': 'Pravidla',
     'Same answer twice → you get asked if it should be a rule. Money, sending, publishing, deleting, going live and people always come to you.':
       'Dvakrát stejná odpověď → zeptá se tě, jestli z toho udělat pravidlo. Peníze, odesílání, zveřejnění, mazání, spuštění a lidi jdou vždycky za tebou.',
     'Session that asked →': 'Session, která se ptala →', 'Still asked to you': 'Pořád se ptá tebe',
@@ -330,6 +330,8 @@ window.HUB_CS = {
     'money that is his (his half of cashable Robux, App Store, invoiced) minus ads, in Kč': 'peníze, které jsou jeho (jeho polovina vybratelných Robuxů, App Store, fakturace) mínus reklamy, v Kč',
   },
   patterns: {
+    'Later: back at {name}': 'Později: vrátí se v {name}',
+    '⏭ {n} put off till {name} · ': '⏭ {n|odložená|odložené|odložených} do {name} · ',
     'Views of his own TikTok videos, {name} visits, App Store listing impressions.':
       'Zhlédnutí jeho TikTok videí, návštěvy {name}, zobrazení v App Store.',
     '{name}, average a day': '{name}, průměr za den',

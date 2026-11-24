@@ -336,12 +336,12 @@ class Talk:
 
         decisions = []
         if self.questions:
-            qs = self.questions.list('open', limit=100)
+            qs = self.questions.awake(limit=100)
             qs.sort(key=lambda q: (not q.get('blocking'), -(q.get('created_at') or 0)))
             decisions = qs[:3]
         if decisions:
             order = ['First', 'Second', 'Third']
-            n_all = len(self.questions.list('open', limit=500))
+            n_all = len(self.questions.awake())
             parts.append(f'{say_count(n_all, "decision waits", "decisions wait").capitalize()} for you.')
             for i, q in enumerate(decisions):
                 parts.append(f'{order[i]}: {q["question"].rstrip("?")}?')

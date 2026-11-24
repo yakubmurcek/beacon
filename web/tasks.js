@@ -57,7 +57,7 @@ async function load() {
       api('/api/tasks/projects'), api('/api/questions?status=open&limit=200').catch(() => null)]);
     take(got);
     snap.set('tasks', got);
-    if (got[3]) setDecisionsBadge(got[3].questions.length);
+    if (got[3]) setDecisionsBadge(got[3].questions.filter((q) => !(q.later_until > Date.now() / 1000)).length);
     showError(null);
   } catch (e) {
     showError(e);

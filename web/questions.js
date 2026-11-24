@@ -6,6 +6,10 @@ import { projectName, qCard } from './qcards.js';
 import './viewer.js';
 
 const state = { open: [], endings: [], gone: [], loaded: false };
+// Later (2026-11-24: "at least 5 hours of quiet"): the hub keeps later_until on the card, so it stays away on every
+// device and after a reload, then comes back by itself. state.open holds them too; the deck and counts use awake().
+const resting = (q) => (q.later_until || 0) * 1000 > Date.now();
+const awake = () => state.open.filter((q) => !resting(q));
 
 // ------------------------------------------------------------------ load + answer
 
@@ -28,7 +32,7 @@ async function load() {
   } catch (e) {
     showError(e);
   }
-  const n = state.open.length;
+  const n = awake().length;
   $('open-count').textContent = n ? String(n) : '';
   if (state.loaded) setDecisionsBadge(n);
   document.title = n ? `(${n}) Beacon · Decisions` : 'Beacon · Decisions';
@@ -42,7 +46,7 @@ async function load() {
   render();
 }
 // What the deck shows of each question: a new one, a reworded one or a new screenshot repaints, nothing else.
-const sigOf = (qs) => qs.map((q) => `${q.id}:${q.updated_at || ''}:${q.blocking ? 1 : 0}:${(q.see || []).length}`).join(',');
+const sigOf = (qs) => qs.map((q) => `${q.id}:${q.updated_at || ''}:${q.blocking ? 1 : 0}:${(q.see || []).length}:${resting(q) ? 1 : 0}`).join(',');
 // The open list changed here (an answer, a dismissal): the hub's next answer is then no change.
 // The feed's cards change the page too (task 1857): one signature for both.
 const endSig = (es) => (es || []).map((e) => `${e.id}:${e.updated_at}:${e.open_question || ''}`).join(',');
@@ -181,43 +185,35 @@ function viewFinished() {
 // The deck (2026-11-22): one card at a time instead of a long list, every question in one pile,
 // newest first, no sections. Swipes and ← → only move between cards, like photos: only a tapped button answers
 // (he swiped to browse and sent 4 answers by mistake, 2026-11-22). Every answer gets the toast's undo.
-const deck = { cur: null, filter: 'all', proj: null, dragging: false, busy: false, done: 0, skipped: new Set(), fresh: new Set(), primed: false };
+const deck = { cur: null, filter: 'all', proj: null, dragging: false, busy: false, done: 0, fresh: new Set(), primed: false };
 // New decisions while he is on another card: a pill over the deck jumps to them (hub.js does it on the other pages).
 const SEEN_KEY = 'hub.decisionsSeen';
 const seenId = () => { try { return Number(localStorage.getItem(SEEN_KEY)) || 0; } catch { return 0; } };
 function markSeen(id) { if (id > seenId()) try { localStorage.setItem(SEEN_KEY, String(id)); } catch { /* blocked */ } }
 function noteFresh() {
-  const top = Math.max(0, ...state.open.map((q) => q.id));
+  const top = Math.max(0, ...awake().map((q) => q.id));
   if (!deck.primed) {  // the page just opened: the deck starts on the newest, or on the card the pill named
     deck.primed = true;
     const want = Number(new URLSearchParams(location.search).get('new'));
-    if (want) { deck.cur = want; deck.skipped.delete(want); history.replaceState(null, '', location.pathname + location.hash); state.sig = null; }
+    if (want) { deck.cur = want; history.replaceState(null, '', location.pathname + location.hash); state.sig = null; }
     markSeen(top);
     return;
   }
   const seen = seenId();
-  for (const q of state.open) if (q.id > seen) deck.fresh.add(q.id);
-  for (const id of deck.fresh) if (!state.open.some((q) => q.id === id)) deck.fresh.delete(id);
+  for (const q of awake()) if (q.id > seen) deck.fresh.add(q.id);
+  for (const id of deck.fresh) if (!awake().some((q) => q.id === id)) deck.fresh.delete(id);
 }
 function jumpFresh() {
   const newest = [...deck.fresh].sort((a, b) => b - a)[0];
   deck.fresh.clear();
-  deck.skipped.delete(newest);
   deck.filter = 'all';
   deck.proj = null;
   deck.cur = newest;
   render();
 }
-const LATER_KEY = 'questions-later';
-const later = () => { try { return JSON.parse(localStorage.getItem(LATER_KEY)) || []; } catch { return []; } };
-function setLater(ids) { try { localStorage.setItem(LATER_KEY, JSON.stringify(ids.slice(-200))); } catch { /* private window */ } }
-
 function pile() {
-  const l = later();
-  const qs = state.open.filter((q) => (deck.filter === 'all' || q.blocking) && (!deck.proj || projKey(q) === deck.proj))
+  return awake().filter((q) => (deck.filter === 'all' || q.blocking) && (!deck.proj || projKey(q) === deck.proj))
     .sort((a, b) => b.created_at - a.created_at || b.id - a.id);
-  // "Later" sends a card to the bottom of the pile, in the order he put them off.
-  return [...qs.filter((q) => !l.includes(q.id)), ...l.map((id) => qs.find((q) => q.id === id)).filter(Boolean)];
 }
 
 // Which projects the waiting decisions come from (2026-11-24: "all of them are Beacon, and I want to focus on the
@@ -225,22 +221,46 @@ function pile() {
 const projKey = (q) => q.project || 'personal';
 function projRow() {
   const counts = new Map();
-  for (const q of state.open) counts.set(projKey(q), (counts.get(projKey(q)) || 0) + 1);
+  for (const q of awake()) counts.set(projKey(q), (counts.get(projKey(q)) || 0) + 1);
   if (deck.proj && !counts.has(deck.proj)) deck.proj = null;
   if (counts.size < 2) return null;
-  const pick = (p) => { deck.proj = deck.proj === p ? null : p; deck.cur = null; deck.skipped.clear(); render(); };
+  const pick = (p) => { deck.proj = deck.proj === p ? null : p; deck.cur = null; render(); };
   return h('div', { class: 'proj-row', role: 'group', 'aria-label': 'Projects' },
     ...[...counts].sort((a, b) => b[1] - a[1] || pname(a[0]).localeCompare(pname(b[0]))).map(([p, n]) =>
       h('button', { class: `pf${deck.proj === p ? ' on' : ''}${deck.proj && deck.proj !== p ? ' off' : ''}`, 'aria-pressed': String(deck.proj === p), onclick: () => pick(p) },
         projChip(p), h('span', { class: 'n' }, String(n)))));
 }
 
-function putOff(q) {
-  deck.skipped.add(q.id);
-  setLater([...later().filter((id) => id !== q.id), q.id]);
+// Later: the card stays open (its agent keeps waiting, nobody is woken) and rests LATER_HOURS on every device;
+// Undo brings it back.
+const LATER_HOURS = 5;
+const clock = (sec) => new Date(sec * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function putOff(q, el) {
+  settle();
+  if (sent.has(q.id)) return;
   const next = nextAfter(q);
-  deck.cur = next ? next.id : null;
-  render();
+  const until = Date.now() / 1000 + LATER_HOURS * 3600;
+  send(q, `/api/questions/${q.id}/later`, {}, `Later: back at ${clock(until)}`, () => { deck.cur = q.id; },
+    `/api/questions/${q.id}/later`, { off: true });
+  state.open = state.open.map((x) => (x.id === q.id ? { ...x, later_until: until } : x));
+  state.sig = fullSig();
+  fly(el, 'left', () => { deck.cur = next ? next.id : null; render(); });
+}
+
+// The cards resting under Later: one quiet line under the deck; a tap brings them all back now.
+function restingLine() {
+  const r = state.open.filter(resting);
+  if (!r.length) return null;
+  const back = async () => {
+    state.open = state.open.map((x) => (resting(x) ? { ...x, later_until: null } : x));
+    state.sig = fullSig();
+    render();
+    try { await Promise.all(r.map((q) => api(`/api/questions/${q.id}/later`, { off: true }))); } catch (e) { showError(e); }
+    refreshSoon();
+  };
+  const first = Math.min(...r.map((q) => q.later_until));
+  return h('p', { class: 'hub-links' }, `⏭ ${r.length} put off till ${clock(first)} · `,
+    h('a', { href: '#/', onclick: (e) => { e.preventDefault(); back(); } }, 'bring back now'));
 }
 
 // A card flies off in 150 ms; a key, tap or swipe meanwhile lands it at once instead of being dropped
@@ -269,7 +289,7 @@ function settle() {
 // The card after q: the next one not put off yet, else the deck ends (viewOpen shows the end).
 function nextAfter(q) {
   const p = pile(), i = p.findIndex((x) => x.id === q.id);
-  return [...p.slice(i + 1), ...p.slice(0, Math.max(i, 0))].find((x) => !deck.skipped.has(x.id));
+  return [...p.slice(i + 1), ...p.slice(0, Math.max(i, 0))][0];
 }
 
 // What this page sent and the hub may not list as gone yet: id → { done: when the hub confirmed }.
@@ -277,12 +297,12 @@ function nextAfter(q) {
 const sent = new Map();
 let loadSoon = 0;
 const refreshSoon = () => { clearTimeout(loadSoon); loadSoon = setTimeout(load, 1500); };
-function send(q, path, body, label, back) {
+function send(q, path, body, label, back, undoPath = `/api/questions/${q.id}/reopen`, undoBody = {}) {
   const s = { done: null };
   sent.set(q.id, s);
   const comeBack = () => {
     sent.delete(q.id);
-    state.open = [q, ...state.open.filter((x) => x.id !== q.id)];
+    state.open = [{ ...q, later_until: null }, ...state.open.filter((x) => x.id !== q.id)];
     back();
     state.sig = fullSig();
     if (current().view === 'open') render();
@@ -292,7 +312,7 @@ function send(q, path, body, label, back) {
     (e) => { showError(e); comeBack(); return false; });  // not sent: the card comes back instead of vanishing
   toast(label, async () => {
     if (!(await req)) return;
-    try { await api(`/api/questions/${q.id}/reopen`, {}); } catch (e) { return showError(e); }
+    try { await api(undoPath, undoBody); } catch (e) { return showError(e); }
     comeBack();
   });
   req.then(refreshSoon);
@@ -314,6 +334,7 @@ function deckAnswer(q, text, el) {
 // Sent back with a 👎 and his words (already answered by the flag call): the card just leaves.
 function deckGone(q, el) {
   settle();
+  if (sent.has(q.id)) return;
   const next = nextAfter(q);
   deck.done += 1;
   dropOpen(q.id);
@@ -337,7 +358,7 @@ function deckAct(what) {
   const c = document.querySelector('.deck-card');
   const p = pile(), i = p.findIndex((x) => x.id === deck.cur);
   if (!c || i < 0) return;
-  if (what === 'later') fly(c, 'left', () => putOff(p[i]));
+  if (what === 'later') putOff(p[i], c);
   else if (what === 'dismiss') deckDismiss(p[i], c);
   else if (p.length > 1) {
     const d = what === 'next' ? 1 : -1;
@@ -383,31 +404,26 @@ function makeSwipeable(el, go) {
 
 function viewOpen() {
   if (!state.loaded) return h('p', { class: 'muted' }, 'Loading…');
-  const waiting = state.open.filter((q) => q.blocking).length;
+  const waiting = awake().filter((q) => q.blocking).length;
   if (deck.filter === 'waiting' && !waiting) deck.filter = 'all';
   let projs = projRow();
   let p = pile();
   if (!p.length && deck.proj) { deck.proj = null; projs = projRow(); p = pile(); }  // waiting + a project left nothing
-  const rest = finishedLink();
+  const extra = [restingLine(), finishedLink()].filter(Boolean);
+  const rest = extra.length ? extra : null;
   if (!p.length) {
     if (rest) return [h('p', { class: 'calm' }, h('span', { class: 'tick', 'aria-hidden': 'true' }, '✓'),
       deck.done ? `No decisions left, ${deck.done} answered` : 'No decisions waiting'), rest];
     return h('section', { class: 'allclear' }, h('div', { class: 'tick', 'aria-hidden': 'true' }, '✓'),
       h('h2', {}, deck.done ? `All clear, ${deck.done} answered` : 'All clear'), h('p', {}, 'Nothing needs you right now.'));
   }
-  if (!p.some((x) => !deck.skipped.has(x.id))) {
-    const again = h('button', { class: 'ebtn', onclick: () => { deck.skipped.clear(); deck.cur = null; render(); } }, `Go through the ${p.length} again`);
-    return [h('section', { class: 'allclear deck-end' }, h('div', { class: 'tick', 'aria-hidden': 'true' }, '✓'),
-      h('h2', {}, 'You went through them all'),
-      h('p', {}, `${deck.done ? `${deck.done} answered · ` : ''}${p.length} put off for later`), again), rest];
-  }
   let i = p.findIndex((q) => q.id === deck.cur);
-  if (i < 0) i = p.findIndex((q) => !deck.skipped.has(q.id));
+  if (i < 0) i = 0;
   const q = p[i];
   deck.cur = q.id;
   deck.fresh.delete(q.id);
   const fresh = p.filter((x) => deck.fresh.has(x.id));
-  if (!fresh.length) markSeen(Math.max(0, ...state.open.map((x) => x.id)));
+  if (!fresh.length) markSeen(Math.max(0, ...awake().map((x) => x.id)));
   const freshPill = fresh.length > 0 && h('button', { class: 'new-here', onclick: jumpFresh },
     h('span', { class: 'dot', 'aria-hidden': 'true' }),
     fresh.length === 1 ? `New: ${fresh[0].question}` : `${fresh.length} new decisions · show the newest`);
@@ -423,7 +439,7 @@ function viewOpen() {
   return [
     freshPill,
     h('div', { class: 'deck-bar' },
-      h('div', { class: 'chips' }, chip('all', 'All', state.open.length), waiting > 0 && chip('waiting', 'Agent waiting', waiting)),
+      h('div', { class: 'chips' }, chip('all', 'All', awake().length), waiting > 0 && chip('waiting', 'Agent waiting', waiting)),
       h('span', { class: 'deck-count' }, `${i + 1} of ${p.length}`)),
     projs,
     h('div', { class: 'deck-progress', 'aria-hidden': 'true' }, h('span', { style: `width:${Math.round(((i + 1) / p.length) * 100)}%` })),
@@ -708,7 +724,7 @@ async function render() {
   else if (view === 'finished') out = viewFinished();
   else out = viewOpen();
   if (seq !== renderSeq) return;  // a newer render started while this one waited on the hub
-  $('view').replaceChildren(...[out].flat().filter(Boolean));
+  $('view').replaceChildren(...[out].flat(2).filter(Boolean));
   fitDeck();
   focusOwn();
 }
@@ -798,7 +814,7 @@ window.addEventListener('hashchange', render);
 const last = snap.get('decisions');
 const lastEnds = snap.get('endings');
 if (Array.isArray(lastEnds)) state.endings = lastEnds;
-if (Array.isArray(last)) { state.open = last; state.loaded = true; state.sig = fullSig(); $('open-count').textContent = last.length ? String(last.length) : ''; render(); }
+if (Array.isArray(last)) { state.open = last; state.loaded = true; state.sig = fullSig(); const n = awake().length; $('open-count').textContent = n ? String(n) : ''; render(); }
 load();
 // the log loads its own rows; one card's own page fetches its card (blank on a phone with no snapshot yet, 2026-11-23)
 if (current().view !== 'open' && !(current().view === 'q' && Array.isArray(last))) render();

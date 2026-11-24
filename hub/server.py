@@ -151,7 +151,8 @@ CACHE = SWR()  # the slow reads (usage days, meta, power): see hub/swr.py
 # Today's numbers are served at most a minute old (older ones wait for a rebuild); a past day hardly changes.
 FRESH = lambda today: dict(fresh=15, stale=60) if today else dict(fresh=300, stale=3600)  # noqa: E731
 TASK_PATH = re.compile(r'^/api/tasks/(\d+)(?:/(comments|sessions))?$')
-QUESTION_PATH = re.compile(r'^/api/questions/(\d+)(?:/(answer|reopen|withdraw|applied|claim|release|waiting|handoff|see|flag))?$')
+QUESTION_PATH = re.compile(r'^/api/questions/(\d+)'
+                           r'(?:/(answer|reopen|withdraw|applied|claim|release|waiting|handoff|see|flag|later))?$')
 # What a box needs to run client/tasks without a checkout (a Windows box's launcher fetches these daily).
 CLI_FILES = {
     '/cli/tasks': lambda: os.path.join(ROOT, 'client', 'tasks'),
@@ -1112,6 +1113,7 @@ QUESTION_ACTIONS = {
     'handoff': lambda qs, qid, body, who: qs.handoff(qid, body.get('reason')),
     'see': lambda qs, qid, body, who: qs.add_see(qid, body),
     'flag': lambda qs, qid, body, who: qs.flag(qid, body.get('note')),
+    'later': lambda qs, qid, body, who: qs.later(qid, off=bool(body.get('off'))),
     'applied': lambda qs, qid, body, who: qs.applied(qid),
 }
 

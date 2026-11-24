@@ -219,7 +219,7 @@ class Labs:
         return {'kind': 'breakdown', 'unit': '$', 'items': items, 'span': 'last 7 days'}
 
     def decisions(self, days=None):
-        qs = self.questions.list('open', limit=100) if self.questions else []
+        qs = self.questions.awake(limit=100) if self.questions else []
         items = [{'title': clip(q['question'], 110), 'sub': self.pname(q.get('project')),
                   'tone': 'warn' if q.get('blocking') else ''} for q in qs]
         return {'kind': 'items', 'items': items, 'count': len(items)}

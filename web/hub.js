@@ -41,7 +41,8 @@
     try {
       const r = await fetch('/api/questions?status=open&limit=500', { cache: 'no-store' });
       if (!r.ok) return;
-      const qs = (await r.json()).questions || [];
+      const now = Date.now() / 1000;  // cards he put off with Later don't count until they come back
+      const qs = ((await r.json()).questions || []).filter((q) => !(q.later_until > now));
       show(qs.length);
       put(KEY, qs.length);
       alertNew(qs);

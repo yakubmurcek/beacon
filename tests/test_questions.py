@@ -217,6 +217,28 @@ class QuestionsStoreTest(unittest.TestCase):
         del self.qs.get
         self.assertEqual((self.qs.get(q['id'])['status'], self.qs.get(q['id'])['answer']), ('answered', 'a'))
 
+    def test_later_rests_a_card_five_hours_then_it_comes_back(self):
+        q = self.qs.create({'question': 'Ship it?', 'options': ['yes', 'no']})
+        self.qs.later(q['id'])
+        rest = self.qs.get(q['id'])
+        self.assertEqual(rest['status'], 'open')  # the asker keeps waiting, nobody is woken
+        self.assertAlmostEqual(rest['later_until'] - time.time(), 5 * 3600, delta=5)
+        self.assertEqual(self.qs.awake(), [])
+        self.assertEqual([x['id'] for x in self.qs.list('open')], [q['id']])
+        real = time.time
+        with mock.patch('time.time', lambda: real() + 5 * 3600 + 1):
+            self.assertEqual([x['id'] for x in self.qs.awake()], [q['id']])
+        self.qs.later(q['id'], off=True)  # Undo or "bring back now"
+        self.assertEqual([x['id'] for x in self.qs.awake()], [q['id']])
+
+    def test_later_never_touches_a_card_already_settled(self):
+        q = self.qs.create({'question': 'Ship it?', 'options': ['yes', 'no']})
+        self.qs.answer(q['id'], {'answer': 'yes'})
+        self.qs.later(q['id'])
+        self.assertIsNone(self.qs.get(q['id'])['later_until'])
+        self.qs.reopen(q['id'])  # an undone answer is a fresh card, never one resting under an old Later
+        self.assertEqual([x['id'] for x in self.qs.awake()], [q['id']])
+
     def test_his_note_then_the_close_keeps_his_answer(self):
         t = self.tasks.create({'title': 'Pick a plan'})
         self.tasks.comment(t['id'], '⏳ Needs you: monthly or yearly?', 'task-agent')

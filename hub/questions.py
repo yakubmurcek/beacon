@@ -87,7 +87,7 @@ COLUMNS = (('blocking_reason', 'TEXT'), ('asked_blocking', 'INTEGER NOT NULL DEF
            ('see', "TEXT NOT NULL DEFAULT '[]'"), ('see_none', 'TEXT'), ('harvested_at', 'REAL'),
            ('handoff_at', 'REAL'), ('handoff_reason', 'TEXT'), ('project_asked', 'INTEGER NOT NULL DEFAULT 0'),
            ('steps', "TEXT NOT NULL DEFAULT '[]'"), ('lint', "TEXT NOT NULL DEFAULT '[]'"),
-           ('flag', 'TEXT'), ('flagged_at', 'REAL'))
+           ('flag', 'TEXT'), ('flagged_at', 'REAL'), ('later_until', 'REAL'))
 # A card he can't answer without opening something (2026-11-22, four bare "Kdy to bude opravené?"): checked on every
 # ask by these words, logged with his own 👎 flags in one place (`bad()`, Labs "bad_questions"); `tasks ask` is
 # refused on them so the asking agent fixes the card before he ever sees it.
@@ -105,6 +105,7 @@ AUDIO_TYPES = {'mp3': 'audio/mpeg', 'm4a': 'audio/mp4', 'wav': 'audio/wav', 'ogg
 AUDIO_URL = re.compile(r'\.(mp3|m4a|wav|ogg)(\?.*)?$', re.I)
 FEEDBACK_KIND = 'feedback'  # his marked-up screenshot from a page's feedback button: work to start, not a decision
 DECISION_TAG = 'decision'  # the small task filed for a question asked outside any task (task 1776)
+LATER_SECONDS = 5 * 3600  # his Later: quiet this long on every device (2026-11-24: "at least 5 hours")
 FLAG_ANSWER = '👎 Makes no sense, ask again as a new card with what I need:'
 DISPATCHER = 'answer-dispatcher'  # client/answer-dispatcher: its run works the task and closes it itself
 ANSWER_AUTHOR = 'decisions'  # his page answer, copied onto the task as a note: not the owner's id, which would answer again
@@ -746,8 +747,18 @@ class Questions:
             raise ValueError('status: the agent already took this answer')
         with self.store.connect() as con:
             con.execute('UPDATE questions SET status = ?, answer = NULL, answer_note = NULL, standing = 0, '
-                        'answered_via = NULL, answered_at = NULL, handoff_at = NULL, handoff_reason = NULL, updated_at = ? '
+                        'answered_via = NULL, answered_at = NULL, handoff_at = NULL, handoff_reason = NULL, '
+                        'later_until = NULL, updated_at = ? '
                         'WHERE id = ?', ('open', time.time(), qid))
+        return self.get(qid)
+
+    def later(self, qid, off=False):
+        """His Later: the card leaves the deck, the badge and talk for LATER_SECONDS on every device,
+        then comes back by itself. It stays open: the asker still waits, nobody is woken.
+        `off` brings it back now."""
+        with self.store.connect() as con:
+            con.execute('UPDATE questions SET later_until = ?, updated_at = ? WHERE id = ? AND status = ?',
+                        (None if off else time.time() + LATER_SECONDS, time.time(), qid, 'open'))
         return self.get(qid)
 
     def reword(self, qid, question, options, default, context):
@@ -974,6 +985,11 @@ class Questions:
             needle = fold(q)
             rows = [x for x in rows if needle in fold('\n'.join((x['question'], x['context'], x['answer'] or '', x['answer_note'] or '')))]
         return rows[:max(1, min(int(limit), 5000))]
+
+    def awake(self, limit=500):
+        """The open cards he sees now: those he put off with Later stay out until their later_until passes."""
+        now = time.time()
+        return [q for q in self.list('open', limit=limit) if not (q.get('later_until') or 0) > now]
 
     def kinds(self, since=None):
         """Per kind: how often he answered, how often he took the agent's default, how often he
