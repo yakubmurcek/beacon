@@ -166,6 +166,17 @@
     "width:${Math.round(((i + 1) / p.length) * 100)}%",
     "width:${Math.round((deck.done / (p.length + deck.done)) * 100)}%"
    ]
+  },
+  {
+   "name": "missing value shown as a word",
+   "check": "layout check (Chrome)",
+   "run": "full",
+   "expect": "a missing value is shown as a word",
+   "file": "web/outreach.js",
+   "replace": [
+    "    h('div', { id: 'list' })].filter(Boolean));",
+    "    h('div', { id: 'list' })]);"
+   ]
   }
  ]
 }

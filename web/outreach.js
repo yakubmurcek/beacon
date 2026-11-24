@@ -618,7 +618,8 @@ function renderLeads(v) {
   const all = data.leads;
   const moving = all.filter((r) => !['not contacted', 'dropped', 'rejected'].includes(r.status)).length;
   const pick = st.project ? all.filter((r) => r.project === st.project) : all;
-  v.append(
+  // append() writes a null as the text "null": the strips that may be absent are dropped first
+  v.append(...[
     h('section', { class: 'hero' },
       h('div', { class: 'kpis' },
         h('div', { class: 'kpi' }, h('span', { class: 'v' }, String(all.length)), h('span', { class: 'k' }, 'businesses researched')),
@@ -633,7 +634,7 @@ function renderLeads(v) {
         (id) => { st.project = id; st.status = ''; st.facets = {}; st.shown = { ...STEP }; render(); }, all.length),
       search('Search a name, town, what we know…')),
     facetBar() || h('div', { class: 'facets', hidden: true }),
-    h('div', { id: 'list' }));
+    h('div', { id: 'list' })].filter(Boolean));
   renderList();
 }
 
