@@ -1360,8 +1360,8 @@ null
 "not found"
 ],
 "/api/feedback | services | agent | empty": [
-0,
-"no answer"
+500,
+"server error"
 ],
 "/api/feedback | services | agent | list": [
 400,
@@ -1372,8 +1372,8 @@ null
 "bad request: body is not JSON"
 ],
 "/api/feedback | services | agent | object": [
-0,
-"no answer"
+500,
+"server error"
 ],
 "/api/feedback | services | anonymous | empty": [
 401,
@@ -1424,8 +1424,8 @@ null
 "forbidden: cross-site write"
 ],
 "/api/feedback | services | owner | empty": [
-0,
-"no answer"
+500,
+"server error"
 ],
 "/api/feedback | services | owner | list": [
 400,
@@ -1436,8 +1436,8 @@ null
 "bad request: body is not JSON"
 ],
 "/api/feedback | services | owner | object": [
-0,
-"no answer"
+500,
+"server error"
 ],
 "/api/gate/log | bare | agent | empty": [
 413,
@@ -1445,11 +1445,11 @@ null
 ],
 "/api/gate/log | bare | agent | list": [
 400,
-"bad request: body: expected a JSON object"
+"bad request: expected a JSON object"
 ],
 "/api/gate/log | bare | agent | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/gate/log | bare | agent | object": [
 201,
@@ -1493,11 +1493,11 @@ null
 ],
 "/api/gate/log | bare | owner cross-site | list": [
 400,
-"bad request: body: expected a JSON object"
+"bad request: expected a JSON object"
 ],
 "/api/gate/log | bare | owner cross-site | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/gate/log | bare | owner cross-site | object": [
 201,
@@ -1509,11 +1509,11 @@ null
 ],
 "/api/gate/log | bare | owner | list": [
 400,
-"bad request: body: expected a JSON object"
+"bad request: expected a JSON object"
 ],
 "/api/gate/log | bare | owner | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/gate/log | bare | owner | object": [
 201,
@@ -1525,11 +1525,11 @@ null
 ],
 "/api/gate/log | services | agent | list": [
 400,
-"bad request: body: expected a JSON object"
+"bad request: expected a JSON object"
 ],
 "/api/gate/log | services | agent | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/gate/log | services | agent | object": [
 201,
@@ -1573,11 +1573,11 @@ null
 ],
 "/api/gate/log | services | owner cross-site | list": [
 400,
-"bad request: body: expected a JSON object"
+"bad request: expected a JSON object"
 ],
 "/api/gate/log | services | owner cross-site | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/gate/log | services | owner cross-site | object": [
 201,
@@ -1589,11 +1589,11 @@ null
 ],
 "/api/gate/log | services | owner | list": [
 400,
-"bad request: body: expected a JSON object"
+"bad request: expected a JSON object"
 ],
 "/api/gate/log | services | owner | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/gate/log | services | owner | object": [
 201,
@@ -1637,11 +1637,11 @@ null
 ],
 "/api/ingest | bare | collector | list": [
 400,
-"bad request: list indices must be integers or slices, not str"
+"bad request: expected a JSON object"
 ],
 "/api/ingest | bare | collector | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/ingest | bare | collector | object": [
 200,
@@ -1717,11 +1717,11 @@ null
 ],
 "/api/ingest | services | collector | list": [
 400,
-"bad request: list indices must be integers or slices, not str"
+"bad request: expected a JSON object"
 ],
 "/api/ingest | services | collector | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/ingest | services | collector | object": [
 200,
@@ -1808,20 +1808,20 @@ null
 "unauthorized"
 ],
 "/api/labs/ask | bare | owner cross-site | empty": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/ask | bare | owner cross-site | list": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/ask | bare | owner cross-site | not json": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/ask | bare | owner cross-site | object": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/ask | bare | owner | empty": [
 404,
@@ -1844,12 +1844,12 @@ null
 "body size"
 ],
 "/api/labs/ask | services | agent | list": [
-200,
-null
+400,
+"bad request: expected a JSON object"
 ],
 "/api/labs/ask | services | agent | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/labs/ask | services | agent | object": [
 200,
@@ -1888,32 +1888,32 @@ null
 "unauthorized"
 ],
 "/api/labs/ask | services | owner cross-site | empty": [
-413,
-"body size"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/ask | services | owner cross-site | list": [
-200,
-null
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/ask | services | owner cross-site | not json": [
-400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/ask | services | owner cross-site | object": [
-200,
-null
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/ask | services | owner | empty": [
 413,
 "body size"
 ],
 "/api/labs/ask | services | owner | list": [
-200,
-null
+400,
+"bad request: expected a JSON object"
 ],
 "/api/labs/ask | services | owner | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/labs/ask | services | owner | object": [
 200,
@@ -1968,20 +1968,20 @@ null
 "unauthorized"
 ],
 "/api/labs/forget | bare | owner cross-site | empty": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/forget | bare | owner cross-site | list": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/forget | bare | owner cross-site | not json": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/forget | bare | owner cross-site | object": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/forget | bare | owner | empty": [
 404,
@@ -2004,12 +2004,12 @@ null
 "body size"
 ],
 "/api/labs/forget | services | agent | list": [
-0,
-"no answer"
+400,
+"bad request: expected a JSON object"
 ],
 "/api/labs/forget | services | agent | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/labs/forget | services | agent | object": [
 200,
@@ -2048,32 +2048,32 @@ null
 "unauthorized"
 ],
 "/api/labs/forget | services | owner cross-site | empty": [
-413,
-"body size"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/forget | services | owner cross-site | list": [
-0,
-"no answer"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/forget | services | owner cross-site | not json": [
-400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/forget | services | owner cross-site | object": [
-200,
-null
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/forget | services | owner | empty": [
 413,
 "body size"
 ],
 "/api/labs/forget | services | owner | list": [
-0,
-"no answer"
+400,
+"bad request: expected a JSON object"
 ],
 "/api/labs/forget | services | owner | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/labs/forget | services | owner | object": [
 200,
@@ -2128,20 +2128,20 @@ null
 "unauthorized"
 ],
 "/api/labs/x | bare | owner cross-site | empty": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/x | bare | owner cross-site | list": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/x | bare | owner cross-site | not json": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/x | bare | owner cross-site | object": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/x | bare | owner | empty": [
 404,
@@ -2164,12 +2164,12 @@ null
 "body size"
 ],
 "/api/labs/x | services | agent | list": [
-404,
-"not found"
+400,
+"bad request: expected a JSON object"
 ],
 "/api/labs/x | services | agent | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/labs/x | services | agent | object": [
 404,
@@ -2208,32 +2208,32 @@ null
 "unauthorized"
 ],
 "/api/labs/x | services | owner cross-site | empty": [
-413,
-"body size"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/x | services | owner cross-site | list": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/x | services | owner cross-site | not json": [
-400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/x | services | owner cross-site | object": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/api/labs/x | services | owner | empty": [
 413,
 "body size"
 ],
 "/api/labs/x | services | owner | list": [
-404,
-"not found"
+400,
+"bad request: expected a JSON object"
 ],
 "/api/labs/x | services | owner | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/labs/x | services | owner | object": [
 404,
@@ -3264,8 +3264,8 @@ null
 "forbidden: cross-site write"
 ],
 "/api/outreach/move | bare | owner | empty": [
-0,
-"no answer"
+500,
+"server error"
 ],
 "/api/outreach/move | bare | owner | list": [
 400,
@@ -3276,8 +3276,8 @@ null
 "bad request: body is not JSON"
 ],
 "/api/outreach/move | bare | owner | object": [
-0,
-"no answer"
+500,
+"server error"
 ],
 "/api/outreach/move | services | agent | empty": [
 403,
@@ -3344,8 +3344,8 @@ null
 "forbidden: cross-site write"
 ],
 "/api/outreach/move | services | owner | empty": [
-0,
-"no answer"
+500,
+"server error"
 ],
 "/api/outreach/move | services | owner | list": [
 400,
@@ -3356,8 +3356,8 @@ null
 "bad request: body is not JSON"
 ],
 "/api/outreach/move | services | owner | object": [
-0,
-"no answer"
+500,
+"server error"
 ],
 "/api/questions | bare | agent | empty": [
 400,
@@ -5556,12 +5556,12 @@ null
 "body size"
 ],
 "/api/rank/ingest | services | collector | list": [
-200,
-null
+400,
+"bad request: expected a JSON object"
 ],
 "/api/rank/ingest | services | collector | not json": [
 400,
-"bad request: Expecting value: line 1 column 1 (char 0)"
+"bad request: body is not JSON"
 ],
 "/api/rank/ingest | services | collector | object": [
 200,
@@ -5600,84 +5600,84 @@ null
 "unauthorized"
 ],
 "/api/rules/1 | bare | agent | empty": [
-403,
-"forbidden: rules are his to change"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | agent | list": [
-400,
-"bad request: expected a JSON object"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | agent | not json": [
-400,
-"bad request: body is not JSON"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | agent | object": [
-403,
-"forbidden: rules are his to change"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | anonymous | empty": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | anonymous | list": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | anonymous | not json": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | anonymous | object": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | collector | empty": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | collector | list": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | collector | not json": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | collector | object": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | owner cross-site | empty": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | owner cross-site | list": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | owner cross-site | not json": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | owner cross-site | object": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | owner | empty": [
-0,
-"no answer"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | owner | list": [
-400,
-"bad request: expected a JSON object"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | owner | not json": [
-400,
-"bad request: body is not JSON"
+404,
+"not found"
 ],
 "/api/rules/1 | bare | owner | object": [
-0,
-"no answer"
+404,
+"not found"
 ],
 "/api/rules/1 | services | agent | empty": [
 403,
@@ -5760,84 +5760,84 @@ null
 "not found"
 ],
 "/api/rules/sweep | bare | agent | empty": [
-0,
-"no answer"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | agent | list": [
-400,
-"bad request: expected a JSON object"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | agent | not json": [
-400,
-"bad request: body is not JSON"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | agent | object": [
-0,
-"no answer"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | anonymous | empty": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | anonymous | list": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | anonymous | not json": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | anonymous | object": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | collector | empty": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | collector | list": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | collector | not json": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | collector | object": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | owner cross-site | empty": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | owner cross-site | list": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | owner cross-site | not json": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | owner cross-site | object": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | owner | empty": [
-0,
-"no answer"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | owner | list": [
-400,
-"bad request: expected a JSON object"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | owner | not json": [
-400,
-"bad request: body is not JSON"
+404,
+"not found"
 ],
 "/api/rules/sweep | bare | owner | object": [
-0,
-"no answer"
+404,
+"not found"
 ],
 "/api/rules/sweep | services | agent | empty": [
 200,
@@ -5920,84 +5920,84 @@ null
 null
 ],
 "/api/rules/uses/1/undo | bare | agent | empty": [
-403,
-"forbidden: rules are his to change"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | agent | list": [
-400,
-"bad request: expected a JSON object"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | agent | not json": [
-400,
-"bad request: body is not JSON"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | agent | object": [
-403,
-"forbidden: rules are his to change"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | anonymous | empty": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | anonymous | list": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | anonymous | not json": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | anonymous | object": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | collector | empty": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | collector | list": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | collector | not json": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | collector | object": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | owner cross-site | empty": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | owner cross-site | list": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | owner cross-site | not json": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | owner cross-site | object": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | owner | empty": [
-0,
-"no answer"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | owner | list": [
-400,
-"bad request: expected a JSON object"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | owner | not json": [
-400,
-"bad request: body is not JSON"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | bare | owner | object": [
-0,
-"no answer"
+404,
+"not found"
 ],
 "/api/rules/uses/1/undo | services | agent | empty": [
 403,
@@ -6080,80 +6080,80 @@ null
 "not found"
 ],
 "/api/rules/x | bare | agent | empty": [
-403,
-"forbidden: rules are his to change"
+404,
+"not found"
 ],
 "/api/rules/x | bare | agent | list": [
-400,
-"bad request: expected a JSON object"
+404,
+"not found"
 ],
 "/api/rules/x | bare | agent | not json": [
-400,
-"bad request: body is not JSON"
+404,
+"not found"
 ],
 "/api/rules/x | bare | agent | object": [
-403,
-"forbidden: rules are his to change"
+404,
+"not found"
 ],
 "/api/rules/x | bare | anonymous | empty": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/x | bare | anonymous | list": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/x | bare | anonymous | not json": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/x | bare | anonymous | object": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/x | bare | collector | empty": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/x | bare | collector | list": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/x | bare | collector | not json": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/x | bare | collector | object": [
-401,
-"unauthorized"
+404,
+"not found"
 ],
 "/api/rules/x | bare | owner cross-site | empty": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/x | bare | owner cross-site | list": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/x | bare | owner cross-site | not json": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/x | bare | owner cross-site | object": [
-403,
-"forbidden: cross-site write"
+404,
+"not found"
 ],
 "/api/rules/x | bare | owner | empty": [
 404,
 "not found"
 ],
 "/api/rules/x | bare | owner | list": [
-400,
-"bad request: expected a JSON object"
+404,
+"not found"
 ],
 "/api/rules/x | bare | owner | not json": [
-400,
-"bad request: body is not JSON"
+404,
+"not found"
 ],
 "/api/rules/x | bare | owner | object": [
 404,
@@ -8368,20 +8368,20 @@ null
 "unauthorized"
 ],
 "/mcp | bare | owner cross-site | empty": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/mcp | bare | owner cross-site | list": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/mcp | bare | owner cross-site | not json": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/mcp | bare | owner cross-site | object": [
-404,
-"not found"
+403,
+"forbidden: cross-site write"
 ],
 "/mcp | bare | owner | empty": [
 404,
@@ -8448,20 +8448,20 @@ null
 "unauthorized"
 ],
 "/mcp | services | owner cross-site | empty": [
-413,
-"body size"
+403,
+"forbidden: cross-site write"
 ],
 "/mcp | services | owner cross-site | list": [
-202,
-null
+403,
+"forbidden: cross-site write"
 ],
 "/mcp | services | owner cross-site | not json": [
-400,
-"parse error"
+403,
+"forbidden: cross-site write"
 ],
 "/mcp | services | owner cross-site | object": [
-200,
-null
+403,
+"forbidden: cross-site write"
 ],
 "/mcp | services | owner | empty": [
 413,

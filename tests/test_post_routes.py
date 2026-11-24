@@ -25,7 +25,8 @@ PATHS = [
     '/api/talk/x', '/mcp', '/mcp/short', '/mcp/' + 'k' * 40, '/api/gate/log', '/api/names', '/api/rank/ingest',
     '/api/ingest', '/api/notify', '/api/notify/read', '/api/notify/subscribe', '/api/notify/test', '/api/nothing', '/',
 ]
-CALLERS = {'anonymous': {}, 'agent': {'Authorization': 'Bearer tok'}, 'collector': {'Authorization': 'Bearer usage'},
+COLLECTOR, MCP_KEY = 'usage', 'k' * 40  # the collectors' token and the connector key, both made up
+CALLERS = {'anonymous': {}, 'agent': {'Authorization': 'Bearer tok'}, 'collector': {'Authorization': 'Bearer ' + COLLECTOR},
            'owner': {'X-Forwarded-For': LiveHub.OWNER_IP}, 'owner cross-site': {'X-Forwarded-For': LiveHub.OWNER_IP,
                                                                                'Sec-Fetch-Site': 'cross-site'}}
 BODIES = {'object': b'{"machine": "box", "events": []}', 'list': b'[]', 'not json': b'not json', 'empty': b''}
@@ -65,7 +66,7 @@ class PostRoutesTest(LiveHub, unittest.TestCase):
         if services:
             stubs.update(talk=Talk(), mcp=Mcp())
         with mock.patch.multiple(self.server.Handler, create=True, **stubs), \
-                mock.patch.multiple(self.server, TOKEN='usage', MCP_KEY='k' * 40):
+                mock.patch.multiple(self.server, TOKEN=COLLECTOR, MCP_KEY=MCP_KEY):
             return {f'{path} | {"services" if services else "bare"} | {who} | {kind}': self.answer(path, headers, body)
                     for path in PATHS for who, headers in CALLERS.items() for kind, body in BODIES.items()}
 

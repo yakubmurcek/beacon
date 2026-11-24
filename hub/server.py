@@ -357,18 +357,26 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ labs
 
-    def post_mcp(self, keyed=False):
+    def post_mcp(self, path):
         """Beacon inside Claude and ChatGPT (hub/beacon_mcp.py): MCP over HTTP, one JSON answer per POST.
-        His login, the token or the connector key only, like Knowledge: it reads his numbers."""
-        if not keyed and not self.task_writer():
+        His login or the token on the tailnet; from Claude's and ChatGPT's servers, the connector key in the link
+        is the login. Like Knowledge, it reads his numbers."""
+        keyed = path.startswith('/mcp/')
+        if keyed and not (MCP_KEY and len(MCP_KEY) >= 32 and hmac.compare_digest(path[5:], MCP_KEY)):
+            return self.send_json(404, {'error': 'not found'})
+        who = None if keyed else self.task_writer()
+        if not keyed and not who:
             return self.send_json(401, {'jsonrpc': '2.0', 'id': None, 'error': {'code': -32001, 'message': 'unauthorized'}})
+        if who == 'owner' and self.cross_site():
+            return self.send_json(403, {'error': 'forbidden: cross-site write'})
         mcp = getattr(self, 'mcp', None)
-        length = self.headers.get('Content-Length') or ''
-        length = int(length) if length.isdigit() else 0
-        if not mcp or not 0 < length <= 200000:
-            return self.send_json(404 if not mcp else 413, {'error': 'not found' if not mcp else 'body size'})
+        if not mcp:
+            return self.send_json(404, {'error': 'not found'})
+        raw = self.read_body(200000, required=True)
+        if raw is None:
+            return None
         try:
-            msg = json.loads(self.rfile.read(length))
+            msg = json.loads(raw)
         except ValueError:
             return self.send_json(400, {'jsonrpc': '2.0', 'id': None, 'error': {'code': -32700, 'message': 'parse error'}})
         out = [r for r in (mcp.handle(m) for m in msg) if r] if isinstance(msg, list) else mcp.handle(msg)
@@ -376,22 +384,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(202)
             self.send_header('Content-Length', '0')
             self.end_headers()
-            return
+            return None
         return self.send_json(200, out)
 
     def post_labs(self, path):
         """Labs spends his model budget and reads his own data: his login or the token only."""
-        if not self.task_writer():
-            return self.send_json(401, {'error': 'unauthorized'})
+        if not self.writer():
+            return None
         labs = getattr(self, 'labs', None)
-        length = self.headers.get('Content-Length') or ''
-        length = int(length) if length.isdigit() else 0
-        if not labs or not 0 < length <= 20000:
-            return self.send_json(404 if not labs else 413, {'error': 'not found' if not labs else 'body size'})
-        try:
-            body = json.loads(self.rfile.read(length))
-        except ValueError as e:
-            return self.send_json(400, {'error': f'bad request: {e}'})
+        if not labs:
+            return self.send_json(404, {'error': 'not found'})
+        body = self.read_json(20000, required=True)
+        if body is None:
+            return None
         if path == '/api/labs/forget':
             return self.send_json(200, labs.forget(str(body.get('key') or '')))
         if path != '/api/labs/ask':
@@ -421,11 +426,11 @@ class Handler(BaseHTTPRequestHandler):
             if (site and site not in ('same-origin', 'none')) if path == '/api/talk/hear' else self.cross_site():
                 return self.send_json(403, {'error': 'forbidden: cross-site write'})
         talk = getattr(self, 'talk', None)
-        length = self.headers.get('Content-Length') or ''
-        length = int(length) if length.isdigit() else 0
-        if not talk or not 0 < length <= 4 * 1024 * 1024:
-            return self.send_json(404 if not talk else 413, {'error': 'not found' if not talk else 'body size'})
-        raw = self.rfile.read(length)
+        if not talk:
+            return self.send_json(404, {'error': 'not found'})
+        raw = self.read_body(4 * 1024 * 1024, required=True)
+        if raw is None:
+            return None
         device = (self.headers.get('X-Talk-Device') or '')[:20]
         try:
             if path == '/api/talk/hear':  # the body is the recorded turn itself
@@ -561,26 +566,46 @@ class Handler(BaseHTTPRequestHandler):
         if not self.head:
             self.wfile.write(body)
 
-    def writer_body(self, limit=TASK_BODY_MAX):
-        """(who, JSON body) of an allowed write, or (None, None) once the refusal is sent."""
-        who = self.task_writer()
-        if not who:
-            return None, self.send_json(401, {'error': 'unauthorized'})
-        if who == 'owner' and self.cross_site():
-            return None, self.send_json(403, {'error': 'forbidden: cross-site write'})
+    def read_body(self, limit, required=False):
+        """The raw request body, or None once a 413 is sent: over `limit`, or empty where a body is `required`."""
         length = self.headers.get('Content-Length') or ''
         length = int(length) if length.isdigit() else 0
-        if length > limit:
-            return None, self.send_json(413, {'error': 'body size'})
-        try:
-            body = json.loads(self.rfile.read(length) or b'{}')
-        except ValueError:
-            return None, self.send_json(400, {'error': 'bad request: body is not JSON'})
-        if not isinstance(body, dict):
-            return None, self.send_json(400, {'error': 'bad request: expected a JSON object'})
-        return who, body
+        if length > limit or (required and length <= 0):
+            self.send_json(413, {'error': 'body size'})
+            return None
+        return self.rfile.read(length)
 
-    def post_outreach_move(self):
+    def read_json(self, limit, required=False, kinds=(dict,)):
+        """The request's JSON (an object unless `kinds` allows more), or None once the refusal is sent.
+        An empty body reads as {} where none is `required`."""
+        raw = self.read_body(limit, required)
+        if raw is None:
+            return None
+        try:
+            body = json.loads(raw or b'{}')
+        except ValueError:
+            return self.send_json(400, {'error': 'bad request: body is not JSON'})
+        if not isinstance(body, kinds):
+            return self.send_json(400, {'error': 'bad request: expected a JSON object'})
+        return body
+
+    def writer(self, cross_site_ok=False):
+        """Who writes ('owner' or 'agent'), or None once the 401 or 403 is sent. His login also needs the write
+        to come from Beacon's own pages: another site's page could fire it with his login attached."""
+        who = self.task_writer()
+        if not who:
+            return self.send_json(401, {'error': 'unauthorized'})
+        if who == 'owner' and not cross_site_ok and self.cross_site():
+            return self.send_json(403, {'error': 'forbidden: cross-site write'})
+        return who
+
+    def writer_body(self, limit=TASK_BODY_MAX):
+        """(who, JSON object) of an allowed write, or (None, None) once the refusal is sent."""
+        who = self.writer()
+        body = self.read_json(limit) if who else None
+        return (who, body) if body is not None else (None, None)
+
+    def post_outreach_move(self, path):
         """A tap on a lead's next move (Write the draft, Drop it…): the hub files the task for the agent."""
         who, body = self.writer_body()
         if not who:
@@ -595,19 +620,6 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
         return self.send_json(201, {'task': t['id'], 'title': t['title']})
-
-    def routed(self, method, path):
-        """The newer POST APIs, one table instead of another branch in do_POST each (GETs: GET_ROUTES)."""
-        routes = {
-            ('POST', '/api/notify'): lambda: self.post_notify(path),
-            ('POST', '/api/notify/read'): lambda: self.post_notify(path),
-            ('POST', '/api/notify/subscribe'): lambda: self.post_notify(path),  # a phone turning pings on
-            ('POST', '/api/notify/test'): lambda: self.post_notify(path),  # "Send a test" on the inbox
-        }
-        fn = routes.get((method, path))
-        if not fn or (path.startswith('/api/notify') and not getattr(self, 'notify', None)):
-            return self.send_json(404, {'error': 'not found'})
-        return fn()
 
     def post_notify(self, path):
         """A notice from any sender (agents and boxes with the task token), or his read marks on the inbox."""
@@ -685,7 +697,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
 
-    def post_feedback(self):
+    def post_feedback(self, path):
         """A page's feedback button: his marked-up screenshot and note become a task an agent starts on (hub/feedback.py)."""
         who, body = self.writer_body(QUESTION_BODY_MAX)
         if not who:
@@ -753,7 +765,7 @@ class Handler(BaseHTTPRequestHandler):
             log.exception('post_endings failed')
             return self.send_json(500, {'error': 'server error'})
 
-    def post_names(self):
+    def post_names(self, path):
         who, body = self.writer_body()
         if not who:
             return
@@ -941,95 +953,66 @@ class Handler(BaseHTTPRequestHandler):
         base = apps.backend_for(path)
         if base:
             return apps.proxy(self, base)
-        if path.startswith('/api/tasks'):
-            return self.post_tasks(path)
-        if path == '/api/outreach/move':
-            return self.post_outreach_move()
-        if path.startswith('/api/questions'):
-            return self.post_questions(path)
-        if path == '/api/feedback' and getattr(self, 'feedback', None):
-            return self.post_feedback()
-        if path.startswith('/api/rules/'):
-            return self.post_rules(path)
-        if path.startswith('/api/endings') and self.endings:
-            return self.post_endings(path)
-        if path.startswith('/api/labs/'):
-            return self.post_labs(path)
-        if path.startswith('/api/talk/'):
-            return self.post_talk(path)
-        if path == '/mcp':
-            return self.post_mcp()
-        if path.startswith('/mcp/'):  # the connector door: the key in the link is the login
-            if not (MCP_KEY and len(MCP_KEY) >= 32 and hmac.compare_digest(path[5:], MCP_KEY)):
-                return self.send_json(404, {'error': 'not found'})
-            return self.post_mcp(keyed=True)
-        if path == '/api/gate/log':
-            return self.post_gate_log()
-        if path == '/api/names' and self.names:
-            return self.post_names()
-        if path == '/api/rank/ingest' and getattr(self, 'rank', None):  # the ai-rank collector, with the collector's token
-            return self.post_rank()
-        if path != '/api/ingest':
-            return self.routed('POST', path)
-        auth = self.headers.get('Authorization', '')
-        if not TOKEN or not hmac.compare_digest(auth, 'Bearer ' + TOKEN):
-            return self.send_json(401, {'error': 'unauthorized'})
-        length = self.headers.get('Content-Length') or ''
-        length = int(length) if length.isdigit() else 0
-        if length <= 0 or length > MAX_BODY:
-            return self.send_json(413, {'error': 'body size'})
+        route = POST_ROUTES.get(path) or next((r for prefix, r in POST_PREFIXES if path.startswith(prefix)), None)
+        if route is None or (route[0] and not getattr(self, route[0], None)):
+            return self.send_json(404, {'error': 'not found'})
         try:
-            body = json.loads(self.rfile.read(length))
-            machine = str(body['machine'])[:64]
-            events = body.get('events') or []
-        except (KeyError, ValueError, TypeError, AttributeError) as e:
-            return self.send_json(400, {'error': f'bad request: {e}'})
-        try:  # past parsing, any failure is the hub's (logged); the collector resends the batch
-            n = self.store.ingest(machine, events, body.get('version'), body.get('counts'), body.get('live'))
-            if self.machines:  # set in main(); test servers without it still ingest
-                self.machines.save(machine, body.get('host'))
-            if getattr(self, 'aijobs', None):
-                self.aijobs.save(machine, body.get('host'))
-            if self.endings and isinstance(body.get('live'), dict):  # turns that ended, for the endings backstop
-                self.endings.saw(machine, self.store.clean_live(body['live'].get('sessions') or []))
-            if body.get('names') and getattr(self, 'titles', None):
-                self.titles.save(machine, body['names'])
-        except Exception:
-            log.exception('do_POST failed')
+            return route[1](self, path)
+        except (BrokenPipeError, ConnectionResetError):
+            raise  # the client left; answering it with a 500 would only fail again
+        except Exception:  # the last net under every route: the caller gets a 500, the log the traceback
+            log.exception('POST %s', path)
             return self.send_json(500, {'error': 'server error'})
-        self.send_json(200, {'ok': True, 'stored': n})
 
+    def collector_token(self):
+        """A collector's write (usage events, AI Rank): the collectors' own token."""
+        auth = self.headers.get('Authorization', '')
+        return bool(TOKEN) and hmac.compare_digest(auth, 'Bearer ' + TOKEN)
 
-    def post_gate_log(self):
+    def post_ingest(self, path):
+        """A collector's batch: usage events, the box's live sessions, its jobs and its session names."""
+        if not self.collector_token():
+            return self.send_json(401, {'error': 'unauthorized'})
+        body = self.read_json(MAX_BODY, required=True)
+        if body is None:
+            return None
+        if 'machine' not in body:
+            return self.send_json(400, {'error': "bad request: 'machine'"})
+        machine, events = str(body['machine'])[:64], body.get('events') or []
+        n = self.store.ingest(machine, events, body.get('version'), body.get('counts'), body.get('live'))
+        if self.machines:  # set in main(); test servers without it still ingest
+            self.machines.save(machine, body.get('host'))
+        if getattr(self, 'aijobs', None):
+            self.aijobs.save(machine, body.get('host'))
+        if self.endings and isinstance(body.get('live'), dict):  # turns that ended, for the endings backstop
+            self.endings.saw(machine, self.store.clean_live(body['live'].get('sessions') or []))
+        if body.get('names') and getattr(self, 'titles', None):
+            self.titles.save(machine, body['names'])
+        return self.send_json(200, {'ok': True, 'stored': n})
+
+    def post_gate_log(self, path):
         """The approval hook's log, append-only and capped: a writer, or one of his tagged servers (a hook there
         has no token at hand)."""
         if not (self.task_writer() or getattr(self.caller(), 'tagged', False)):
             return self.send_json(401, {'error': 'unauthorized'})
-        length = self.headers.get('Content-Length') or ''
-        length = int(length) if length.isdigit() else 0
-        if not 0 < length <= 8000:
-            return self.send_json(413, {'error': 'body size'})
+        body = self.read_json(8000, required=True)
+        if body is None:
+            return None
         try:
-            return self.send_json(201, self.questions.log_gate(json.loads(self.rfile.read(length))))
+            return self.send_json(201, self.questions.log_gate(body))
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
 
-    def post_rank(self):
-        auth = self.headers.get('Authorization', '')
-        if not TOKEN or not hmac.compare_digest(auth, 'Bearer ' + TOKEN):
+    def post_rank(self, path):
+        if not self.collector_token():
             return self.send_json(401, {'error': 'unauthorized'})
-        length = self.headers.get('Content-Length') or ''
-        length = int(length) if length.isdigit() else 0
-        if not 0 < length <= 4 * 1024 * 1024:
-            return self.send_json(413, {'error': 'body size'})
+        body = self.read_json(4 * 1024 * 1024, required=True)
+        if body is None:
+            return None
         try:
-            body = json.loads(self.rfile.read(length))
             return self.send_json(200, self.rank.ingest(body))
         except (ValueError, TypeError, AttributeError) as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
-        except Exception:
-            log.exception('post_rank failed')
-            return self.send_json(500, {'error': 'server error'})
 
 
 NOT_MINE = object()  # route_get: no route here, so the static files (or the /api/ 404) answer
@@ -1087,6 +1070,31 @@ GET_PREFIXES = (
     ('/api/questions', (None, Handler.get_questions)),
 )
 
+
+# POSTs, like the GETs: exact paths first, then prefixes in order. (service, handler): a route whose service is not
+# set on this box answers 404. Every handler checks its own caller: a writer, a collector, or the MCP key.
+POST_ROUTES = {
+    '/api/outreach/move': (None, Handler.post_outreach_move),
+    '/api/feedback': ('feedback', Handler.post_feedback),
+    '/mcp': (None, Handler.post_mcp),
+    '/api/gate/log': (None, Handler.post_gate_log),
+    '/api/names': ('names', Handler.post_names),
+    '/api/rank/ingest': ('rank', Handler.post_rank),
+    '/api/ingest': (None, Handler.post_ingest),
+    '/api/notify': ('notify', Handler.post_notify),
+    '/api/notify/read': ('notify', Handler.post_notify),
+    '/api/notify/subscribe': ('notify', Handler.post_notify),  # a phone turning pings on
+    '/api/notify/test': ('notify', Handler.post_notify),  # "Send a test" on the inbox
+}
+POST_PREFIXES = (
+    ('/api/tasks', (None, Handler.post_tasks)),
+    ('/api/questions', (None, Handler.post_questions)),
+    ('/api/rules/', ('rules', Handler.post_rules)),
+    ('/api/endings', ('endings', Handler.post_endings)),
+    ('/api/labs/', (None, Handler.post_labs)),
+    ('/api/talk/', (None, Handler.post_talk)),
+    ('/mcp/', (None, Handler.post_mcp)),  # the connector door: the key in the link is the login
+)
 
 def start_notify(live):
     """Notices (hub/notify.py): every alarm and finished move lands in /inbox; only the live hub pushes to the phone,
