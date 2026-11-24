@@ -54,10 +54,39 @@ git config core.hooksPath .githooks # once per clone: every push runs `scripts/c
 | Copy-paste | `jscpd` (`.jscpd.json`) | under 1% duplicated lines (0.27% on 2026-11-24) |
 | Checks not loosened | git diff against `origin/main` | a change may not delete or skip tests, add `noqa` / `biome-ignore` / `type: ignore` / `pyright: ignore`, edit a check's config or loosen the baseline (a count up, a score down), unless a commit line `Quality-exception: <why>` puts the reason on record |
 | Tests and coverage | `coverage run -m unittest discover -s tests` (`.coveragerc`, pinned in `requirements-dev.txt`), then `scripts/scores.py coverage` | runs on `config.example.json` only; line and branch coverage per area (hub, collector, client) in `quality-baseline.json` `at_least`, may only go up |
-| Layout | `scripts/layout_check.py`: a throwaway hub with `scripts/demo.py` data, every page drawn in Chrome (`playwright-core`, pinned in `package.json`) at 390 px and 1280 px, Paper + English and Night + Czech, with the shell's run-time states forced (a three-digit Decisions count, its pulse) | the shared header has the same boxes on every page; no header pill wider than its text; no sideways scroll; no text in a system font (it differs per device, so wrapping does too). `tests/test_shell_isolation.py` adds the static half: a page's own sheet may not style the shared header's classes by accident |
+| Layout | `scripts/layout_check.py`: a throwaway hub with `scripts/demo.py` data, every page drawn in Chrome (`playwright-core`, pinned in `package.json`) at 390 px and 1280 px, Paper + English and Night + Czech, with the shell's run-time states forced (a three-digit Decisions count, its pulse) | the shared header has the same boxes on every page; no header pill wider than its text; no sideways scroll; no text in a system font (it differs per device, so wrapping does too); no progress bar that disagrees with its "N of M"; no missing value drawn as a word (`null`, `undefined`, `NaN`). `tests/test_shell_isolation.py` adds the static half: a page's own sheet may not style the shared header's classes by accident |
 
 CI runs the same `scripts/check` on every push and pull request (`.github/workflows/ci.yml`); Dependabot keeps
 the Actions current.
+
+### AI UI review: the bugs no rule names yet (task 1998)
+
+Rules catch only what someone already named. `scripts/ui_review.py` is the sensor for the rest: a throwaway hub
+(the layout check's) in its data states (empty; full: `demo.py --many --long`, 38 tasks, 36 decisions, the longest
+text agents write), every page at phone and desktop size, light English and dark Czech, plus the moments a tap opens
+(a decision mid-answer). `scripts/ui_states.mjs` saves each as screen-sized pictures with the page's text and controls,
+and taps every button to list the ones that change nothing. Then one Sonnet call per page, state and look reads both
+sizes against the brief in `.claude/agents/ui-reviewer.md` (numbers add up, nothing clipped or overlapping, readable
+contrast, every label translated, honest empty states, controls that act) and answers findings as JSON.
+
+```sh
+scripts/ui_review.py                         # ~40 calls, ~$1.50 of subscription use, ~25 min; findings.json
+scripts/ui_review.py --only /decisions       # one page
+scripts/ui_review_seeded.py key.json         # plant known bugs (patches + a key), review each, score
+```
+
+- Seeded test (2026-11-24): 5 bugs planted blind by an agent that never saw the brief (dark-look contrast, a
+  heading count off, clipped text, an English button in Czech, buttons under a card at 390 px): 4 caught, twice.
+  The miss: a heading count that needs adding up the rows under it.
+- First run on main: 199 findings (71 sure), among them the Outreach page printing "nullnull", the header's
+  language button wrapping to a second row at 1280 px on System pages, English text left on Rank, Team and Usage in
+  Czech, a hint pointing to an "Up next" section that no longer exists.
+- The rules are the gate, the AI is the sensor: a real finding is fixed and becomes a rule in
+  `scripts/layout_check.mjs` plus a canary, so it never needs a model again (first one: no missing value drawn as
+  a word, which then also found a "null" node in the Machines graph on phones).
+- Runs on the home server (`beacon-ui-review` timer, every 30 min, `scripts/ui_review_job.py`): nightly, and after a
+  push that changed `web/`, at most 3 runs a day. CI has no model login, so it never runs there. New sure findings
+  become one checklist note on the findings task (`$UI_REVIEW_TASK`).
 
 ### Quality baseline (2026-11-24)
 

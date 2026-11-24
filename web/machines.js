@@ -161,7 +161,7 @@ function buildMap(list, W, key) {
     const edge = s('line', { ...line, class: 'edge', pathLength: 100, style: `--i:${i}` });
     const flow = s('line', { ...line, class: 'flow' });
     const label = phone ? null : s('text', { x: cx + (x - cx) * 0.55, y: cy + (y - cy) * 0.55 - 6, 'text-anchor': 'middle', class: 'edge-label' });
-    edges.append(edge, flow, label);
+    edges.append(edge, flow, ...(label ? [label] : []));  // append(null) would draw the word "null"
     const spot = place(m, x, y, cos, sin, i, false);
     Object.assign(spot, { edge, flow, label, len: Math.hypot(x - cx, y - cy) });
     spots.set(m.machine, spot);

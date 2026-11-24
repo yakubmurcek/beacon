@@ -7,34 +7,19 @@
 //   - a pill (badge, count) wider or taller than its text needs
 //   - the page wider than the screen (sideways scroll)
 //   - text drawn in a system font, which differs per device (the Mac, the iPhone, this box), so wrapping does too
+//   - a word a program leaks when a value is missing: null, undefined, NaN, [object Object] (Outreach showed
+//     "nullnull" where two empty strips were appended, found by the AI UI reviewer, 2026-11-24)
 //   - a progress bar that disagrees with the "3 of 9" counter beside it (the Decisions bar sat at 57% on
 //     "1 of 9": it counted answered cards while the counter said where he was, 2026-11-24)
 // Usage: node scripts/layout_check.mjs <hub url> [--shots DIR]
-import { createRequire } from 'node:module';
-import { execSync } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
+import { context, launch, MODES, open, PAGES, VIEWS } from './browser.mjs';
 
 const [, , HUB = 'http://127.0.0.1:4829', flag, SHOTS] = process.argv;
-const PAGES = ['/team', '/tasks', '/decisions', '/inbox', '/outreach', '/knowledge', '/usage', '/machines', '/ai',
-  '/power', '/buildlog', '/labs', '/rank'];
-const VIEWS = [
-  { name: 'phone', viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 },
-  { name: 'desktop', viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 },
-];
-const MODES = [{ theme: 'paper', lang: 'en' }, { theme: 'cyber', lang: 'cs' }];
 const COUNT = '188';  // a three-digit count: the widest the badge gets
 // the classes the shell adds at run time (the badge's pulse after a new decision): forced on, as they happen live
 const LIVE = [...readFileSync(new URL('../web/hub.js', import.meta.url), 'utf8')
   .matchAll(/badge\.classList\.add\(\s*['"]([\w-]+)['"]/g)].map((m) => m[1]);
-
-function playwright() {
-  for (const root of [process.cwd() + '/', execSync('npm root -g').toString().trim() + '/']) {
-    for (const name of ['playwright-core', 'playwright']) {
-      try { return createRequire(root)(name); } catch { /* next */ }
-    }
-  }
-  throw new Error('playwright-core is not installed: npm ci --ignore-scripts');
-}
 
 // Runs in the page: the boxes of the shared header, its pills, sideways scroll.
 function measure([count, live]) {
@@ -79,7 +64,16 @@ function measure([count, live]) {
     const drawn = fill.getBoundingClientRect().width / full;
     if (Math.abs(said - drawn) > 0.04) bars.push(`the bar is ${Math.round(drawn * 100)}% full beside "${m[0]}" (${Math.round(said * 100)}%)`);
   }
-  return { header, pills, bars, overflow: document.documentElement.scrollWidth - innerWidth };
+  const leaks = [];
+  const texts = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  while (texts.nextNode()) {
+    const t = texts.currentNode;
+    const el = t.parentElement;
+    if (!el || el.closest('script, style, code, pre, textarea') || !el.getClientRects().length) continue;
+    const m = t.nodeValue.match(/(?<![A-Za-z])(?:null|undefined|NaN)+(?![a-z])|\[object Object\]/);
+    if (m) leaks.push(`"${t.nodeValue.trim().slice(0, 60)}" in ${el.localName}${el.getAttribute('class') ? '.' + el.getAttribute('class').split(' ')[0] : ''}`);
+  }
+  return { header, pills, bars, leaks, overflow: document.documentElement.scrollWidth - innerWidth };
 }
 
 async function systemFonts(page) {
@@ -108,46 +102,28 @@ async function systemFonts(page) {
 }
 
 if (!LIVE.length) throw new Error('no run-time badge class found in web/hub.js: update LIVE in this script');
-const pw = playwright();
-const browser = await pw.chromium.launch({
-  executablePath: process.env.CHROME || undefined,
-  args: ['--font-render-hinting=none', '--disable-lcd-text', '--hide-scrollbars'],
-});
+const browser = await launch();
 const problems = [];
 if (flag === '--shots') mkdirSync(SHOTS, { recursive: true });
 for (const view of VIEWS) {
   for (const mode of MODES) {
-    const ctx = await browser.newContext({ ...view, locale: mode.lang === 'cs' ? 'cs-CZ' : 'en-US' });
-    await ctx.addInitScript(([m, count]) => {
-      try {
-        localStorage.setItem('hub.theme', m.theme === 'cyber' ? 'cyber' : 'paper');
-        localStorage.setItem('hub.lang', m.lang);
-        localStorage.setItem('hub.decisionsOpen', count);
-      } catch { /* blocked */ }
-    }, [mode, COUNT]);
+    const ctx = await context(browser, view, mode, { 'hub.decisionsOpen': COUNT });
     const page = await ctx.newPage();
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     const seen = [];
     for (const path of PAGES) {
       const label = `${path} (${view.name}, ${mode.theme}, ${mode.lang})`;
-      // a page may reload itself once (a new service worker right after a deploy): measure again after it settles
-      const settle = async () => {
-        const resp = await page.goto(HUB + path, { waitUntil: 'networkidle', timeout: 20000 }).catch(() => page.waitForLoadState('load'));
-        // the hub restarting (a deploy at night) answers with an error page: try again rather than raise a false alarm
-        if (resp && !resp.ok()) throw new Error(`${path} answered ${resp.status()}`);
-        await page.evaluate(() => document.fonts.ready);
-        return page.evaluate(measure, [COUNT, LIVE]);
-      };
       let m;
-      for (let tries = 1; !m; tries++) {
-        try { m = await settle(); } catch (e) {
+      for (let tries = 1; !m; tries++) {  // the page may reload itself mid-measure (an app update after a deploy)
+        try { await open(page, HUB + path); m = await page.evaluate(measure, [COUNT, LIVE]); } catch (e) {
           if (tries === 3) throw e;
           await page.waitForTimeout(4000);
         }
       }
       seen.push([path, m.header]);
       for (const p of m.pills) problems.push(`${label}: a header pill is stretched: ${p}`);
+      for (const l of m.leaks) problems.push(`${label}: a missing value is shown as a word: ${l}`);
       for (const b of m.bars) problems.push(`${label}: a progress bar disagrees with its counter: ${b}`);
       if (m.overflow > 1) problems.push(`${label}: the page is ${m.overflow}px wider than the screen`);
       if (view.name === 'desktop' && mode.theme === 'paper') {

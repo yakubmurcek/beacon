@@ -3,6 +3,7 @@
 
   TASKS_TOKEN=demo python3 hub/server.py &          # an empty hub on http://127.0.0.1:4829
   TASKS_TOKEN=demo python3 scripts/demo.py           # then open http://127.0.0.1:4829/tasks and /decisions
+  ... scripts/demo.py --many --long                  # also 30 more of each, and the longest text agents write
 
 Everything goes in through the public API, the way agents write; nothing here is real.
 """
@@ -49,20 +50,51 @@ QUESTIONS = [
 ]
 
 
+# What real agents write at the edges: an unbroken word wider than a phone, a title that runs on, a path.
+LONG = [  # (title, up to the hub's 70 characters; question, no limit)
+    ('SubscriptionCheckoutConfirmationFlowControllerV2 ships to 5 users',
+     'Rename the checkout flow to SubscriptionCheckoutConfirmationFlowControllerV2 everywhere'),
+    ('Landing page for the second couple loads under one second on phones',
+     'The landing page for the second couple loads in under a second on a slow phone, with the gallery, the '
+     'map, the RSVP form and the countdown all visible above the fold and nothing jumping while fonts load'),
+    ('NotificationPreferencesSettingsPanelComponent works in all 3 apps',
+     'Fix /Users/someone/Projects/very-long-project-name/src/components/settings/NotificationPreferences.tsx'),
+]
+PROJECTS = ['snow-game', 'habit-app', 'weddings', 'coaching', 'beacon', 'a-very-long-project-name-here']
+
+
+def extra(many, long):
+    """More tasks and decisions for the review's 'many' and 'long text' states."""
+    tasks, questions = [], []
+    if long:
+        for i, (title, text) in enumerate(LONG):
+            tasks.append((title, PROJECTS[i], 'todo', 1, body(text, [text], [f'🤖 {text}'])))
+            questions.append((text + '?', [title, 'No'], PROJECTS[i], 0))
+    if many:
+        for i in range(30):
+            project = PROJECTS[i % len(PROJECTS)]
+            tasks.append((f'Made-up task {i + 1} for {project}', project, ('todo', 'doing', 'done')[i % 3], 1 + i % 3,
+                          body('Fill the page.', ['Shows.'], ['🤖 Nothing.'])))
+            questions.append((f'Made-up decision {i + 1}: ship it?', ['Yes', 'No', 'Later'], project, 0))
+    return tasks, questions
+
+
 def main():
+    many, long = '--many' in sys.argv, '--long' in sys.argv
     if not TOKEN:
         sys.exit('Set TASKS_TOKEN to the token the hub was started with.')
+    more_tasks, more_questions = extra(many, long)
     ids = []
-    for title, project, status, priority, text in TASKS:
+    for title, project, status, priority, text in TASKS + more_tasks:
         t = call('/api/tasks', {'title': title, 'project': project, 'priority': priority, 'body': text})
         if status != 'todo':
             call(f"/api/tasks/{t['id']}", {'status': status})
         ids.append(t['id'])
     call(f'/api/tasks/{ids[0]}/comments', {'text': '👉 Level 2 is behind the flag; clips are drafted.', 'author': 'agent'})
-    for question, options, project, task in QUESTIONS:
+    for question, options, project, task in QUESTIONS + more_questions:
         call('/api/questions', {'question': question, 'options': options, 'project': project, 'task_id': ids[task],
                                 'kind': 'decision'})
-    print(f'{len(TASKS)} tasks and {len(QUESTIONS)} decisions on {HUB}')
+    print(f'{len(TASKS + more_tasks)} tasks and {len(QUESTIONS + more_questions)} decisions on {HUB}')
 
 
 if __name__ == '__main__':
