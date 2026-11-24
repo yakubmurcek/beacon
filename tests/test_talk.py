@@ -100,6 +100,31 @@ class TalkTest(unittest.TestCase):
         self.assertEqual((item['name'], item['runs']), ('Talk to Beacon (voice)', 1))
         self.assertGreater(item['cost'], 0)
 
+    def test_pc_voice_goes_first_and_an_off_pc_is_skipped_for_a_minute(self):
+        old = talk.PC_URL
+        talk.PC_URL = 'http://pc.example/speak'
+        try:
+            calls = []
+
+            def opener(req, timeout=30):
+                if req.full_url == talk.PC_URL:
+                    calls.append(req)
+                    if len(calls) == 1:
+                        return b'pc-mp3', 'audio/mpeg'
+                    raise talk.VoiceError('offline')
+                return self.http(req, timeout)
+            self.talk.http = opener
+            self.assertEqual(self.talk.say('Good morning.')[0], b'pc-mp3')
+            self.assertEqual(self.talk.say('Another line.')[0], b'ID3fake-mp3')  # PC off: OpenAI at once
+            self.assertEqual(self.talk.say('Third line.')[0], b'ID3fake-mp3')
+            self.assertEqual(len(calls), 2)  # the third line did not wait on the dead PC
+            with self.store.connect() as con:
+                kinds = [r[0] for r in con.execute('SELECT kind FROM talk_usage ORDER BY at')]
+            self.assertEqual(kinds.count('say-pc'), 1)
+            self.assertNotIn('say-miss', kinds)
+        finally:
+            talk.PC_URL = old
+
     def test_own_voice_speaks_first_and_a_miss_falls_back_uncached_and_alarms(self):
         sent = []
         self.talk.send = sent.append
