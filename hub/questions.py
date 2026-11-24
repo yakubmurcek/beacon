@@ -96,6 +96,8 @@ TASK_HEAD = re.compile(r'^Task #\d+: [^\n]*$')
 # Claude to look is what Beacon exists to avoid): links shown as a big "Open it" button, pictures shown on the card.
 STEPS_MAX, STEP_MAX = 12, 160  # a card he does by hand: a short checklist, each step one tap or one field
 SEE_MAX, PICTURE_MAX = 12, 8 * 1024 * 1024  # a slideshow, not a stack (2026-11-22)
+# Fewer pixels than ~1000 x 500 and he can't read it on any screen (2026-11-24: 390 x 179 game shots, "I can't see anything").
+PICTURE_MIN_PIXELS = 500_000
 PICTURE_TYPES = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'webp': 'image/webp', 'gif': 'image/gif'}
 IMAGE_URL = re.compile(r'\.(png|jpe?g|webp|gif)(\?.*)?$', re.I)
 # A voice or sound to judge by ear (2026-11-23: "I need the voice actually there to be able to play it")
@@ -280,8 +282,11 @@ class Questions:
     def files_dir(self):
         return os.path.join(os.path.dirname(os.path.abspath(self.store.path)), 'question-files')
 
-    def check_see(self, v):
-        """[{url|picture|audio, label}] from links (str or {url, label}) and uploaded pictures or sounds ({name, data: base64})."""
+    def check_see(self, v, to_read=True):
+        """[{url|picture|audio, label}] from links (str or {url, label}) and uploaded pictures or sounds ({name, data: base64}).
+
+        to_read: the card waits for him to look and decide, so a picture too small to read is refused; a card already
+        answered (his own feedback screenshot, logged) keeps whatever it got."""
         if v in (None, ''):
             return []
         if not isinstance(v, list) or len(v) > SEE_MAX:
@@ -305,6 +310,10 @@ class Questions:
                 if not data or len(data) > PICTURE_MAX:
                     raise ValueError('see: a picture is at most 8 MB')
                 kind = 'audio' if ext in AUDIO_TYPES else 'picture'
+                wh = pictures.size(data) if kind == 'picture' else None
+                if to_read and wh and wh[0] * wh[1] < PICTURE_MIN_PIXELS:
+                    raise ValueError(f'see: {name} is {wh[0]} x {wh[1]} px, too small to read: send the full window '
+                                     'at deviceScaleFactor 2 (at least about 1000 x 500 px)')
                 out.append({kind: self.save_picture(data, ext), **({'label': label} if label else {})})
                 continue
             url = text(x.get('url'), 'see: url', 2000, required=True)
@@ -501,7 +510,7 @@ class Questions:
         ask = {
             'question': text(fields.get('question'), 'question', QUESTION_MAX, required=True),
             'options': check_options(fields.get('options')),
-            'see': self.check_see(fields.get('see')),  # a bad picture refuses the whole ask
+            'see': self.check_see(fields.get('see'), to_read=not fields.get('answer')),  # a bad picture refuses the whole ask
             'steps': self.check_steps(fields.get('steps')),
         }
         ask['default'] = default_of(text(fields.get('default'), 'default', OPTION_MAX), ask['options'])

@@ -349,6 +349,14 @@ details.more-info .qcontext { margin-top: 8px; max-height: 18em; overflow: auto;
   .deck-card .steps:has(.step:nth-child(5)) .step-go .see-arrow { font-size: 15px; }
 }
 
+/* A big monitor (2026-11-24: "so small, like it could be stretched"): the deck takes most of the screen and the
+   pictures get the widest column, so a screenshot reads without opening it. */
+@media (min-width: 1500px) {
+  .decisions-page:has(.deck, .deck-end) { --page-w: min(1760px, calc(100vw - 160px)); }
+  .deck-card:has(> .see-pics) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr) minmax(0, .9fr); column-gap: 32px; padding: 28px 32px; }
+  .deck-card .qtext { font-size: 28px; }
+}
+
 /* Number keys 1-9 answer the deck's card: shown on a computer only, where a keyboard is. */
 .opt-key { display: none; }
 @media (hover: hover) and (pointer: fine) {

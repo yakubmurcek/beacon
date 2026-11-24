@@ -711,7 +711,10 @@ function fitDeck() {
   if (!pics || !wide.matches) { c?.style.removeProperty('--pic-h'); return; }
   const tall = Math.max(/** @type {HTMLElement} */ (c.querySelector('.qmain')).offsetHeight, /** @type {HTMLElement} */ (c.querySelector('.qside')).offsetHeight);
   const extra = pics.offsetHeight - (/** @type {HTMLElement | null} */ (pics.querySelector('.see-pic'))?.offsetHeight || 0);  // the slideshow dots
-  c.style.setProperty('--pic-h', `${Math.round(Math.min(620, Math.max(240, tall - extra)))}px`);
+  // As tall as the card's words, or as the picture column's width allows (a wide screen), but never past the screen.
+  const img = /** @type {HTMLImageElement | null} */ (pics.querySelector('.see-pic img'));
+  const byWidth = pics.offsetWidth * (img?.naturalWidth ? img.naturalHeight / img.naturalWidth : 0.6), room = innerHeight - 260;
+  c.style.setProperty('--pic-h', `${Math.round(Math.min(Math.max(620, room), Math.max(240, tall - extra, Math.min(byWidth, room))))}px`);
 }
 addEventListener('resize', fitDeck);
 document.addEventListener('load', (e) => { if (/** @type {Element} */ (e.target).closest?.('.deck-card')) fitDeck(); }, true);

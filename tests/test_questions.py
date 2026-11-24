@@ -1081,6 +1081,23 @@ class HarvestTest(unittest.TestCase):
         with mock.patch.object(pictures, 'gh', gh):
             self.assertEqual(len(self.qs.harvest(q['id'])['see']), 2)  # run again: no duplicates
 
+    def test_a_tiny_picture_is_refused_and_a_full_window_kept(self):
+        import base64
+        import struct
+
+        import pictures
+
+        def png(w, h):
+            return b'\x89PNG\r\n\x1a\n' + b'\0\0\0\rIHDR' + struct.pack('>II', w, h) + b'x' * 20
+        with self.assertRaisesRegex(ValueError, '390 x 179 px, too small'):
+            self.qs.check_see([{'name': 'shot.png', 'data': base64.b64encode(png(390, 179)).decode()}])
+        see = self.qs.check_see([{'name': 'shot.png', 'data': base64.b64encode(png(1280, 720)).decode()}])
+        self.assertTrue(see[0]['picture'].startswith('/api/questions/file/'))
+        self.assertEqual(pictures.size(b'GIF89a' + struct.pack('<HH', 640, 480)), (640, 480))
+        jpg = b'\xff\xd8\xff\xe0\0\x10' + b'J' * 14 + b'\xff\xc0\0\x11\x08' + struct.pack('>HH', 1080, 1920) + b'\0' * 10
+        self.assertEqual(pictures.size(jpg), (1920, 1080))
+        self.assertIsNone(pictures.size(b'nope'))
+
     def test_a_reply_that_is_not_a_picture_is_skipped(self):
         import pictures
         with mock.patch.object(pictures, 'gh', lambda path, raw=False: b'{"message": "Not Found"}'):
