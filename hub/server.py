@@ -706,7 +706,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(404, {'error': 'not found'})
             qid, act = int(m.group(1)), m.group(2)
             if act == 'answer':
-                out = self.questions.answer(qid, body, 'page' if who == 'owner' else 'cli')
+                out = self.questions.answer(qid, body, 'page' if who == 'owner' else 'cli', hands=who == 'owner')
             elif act == 'reopen':
                 out = self.questions.reopen(qid)
             elif act == 'withdraw':

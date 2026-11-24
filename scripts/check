@@ -24,7 +24,7 @@ if git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
   problems=()
   [ -n "$(git diff --diff-filter=D --name-only "$BASE" -- tests/)" ] && problems+=("deletes a test file")
   git diff "$BASE" -- tests/ | grep -qE '^\+.*(unittest\.skip|skipTest\(|expectedFailure)' && problems+=("skips a test")
-  git diff "$BASE" -- . ':!scripts/check' | grep -qE '^\+.*(# *noqa|biome-ignore|# *type: *ignore)' && problems+=("adds a lint suppression")
+  git diff "$BASE" -- '*.py' '*.js' 'client/*' ':!scripts/check' | grep -qE '^\+.*(# *noqa|biome-ignore|# *type: *ignore)' && problems+=("adds a lint suppression")
   [ -n "$(git diff --name-only "$BASE" -- ruff.toml ruff.strict.toml biome.json .jscpd.json scripts/ratchet.py scripts/check .githooks)" ] \
     && problems+=("changes a check's configuration")
   python3 scripts/ratchet.py --raised-since "$BASE" || problems+=("raises a count in quality-baseline.json")

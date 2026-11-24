@@ -639,10 +639,10 @@ class Questions:
         if q.get('taken_by') != DISPATCHER:  # taken by its live chat: the filed task held only the question
             self.drop_emptied(q['task_id'], 'done')
 
-    def answer(self, qid, fields, via='page'):
+    def answer(self, qid, fields, via='page', hands=True):
         """His answer: an option's label or his own words, a note, and whether it should become a
         standing rule. A task's question answered here is passed to the task agent, which applies it
-        the way it applies a Telegram reply (applied_at stays empty until it has)."""
+        the way it applies a Telegram reply (applied_at stays empty until it has). `hands`: as in create()."""
         if not isinstance(fields, dict):
             raise ValueError('body: expected a JSON object')
         q = self.get(qid)
@@ -651,7 +651,7 @@ class Questions:
         if q['status'] != 'open':
             raise ValueError(f'status: this question is already {q["status"]}')
         answer = text(fields.get('answer'), 'answer', TEXT_MAX, required=True)
-        via = answered_via(fields.get('via'), via, via in APPROVAL_VIA)
+        via = answered_via(fields.get('via'), via, hands)
         now = time.time()
         # Taken at once only when he answered in the asking session's own chat (it carries on); every other
         # answer, his note on the task too, waits for the asker or the dispatcher to claim it (task 1776).
