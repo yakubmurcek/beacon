@@ -138,7 +138,7 @@ class TalkTest(unittest.TestCase):
     def test_a_cold_own_voice_never_holds_a_line_the_quick_voice_says_it_while_it_wakes(self):
         old = talk.TTS_URL, talk.TTS_WARM_URL, os.environ.get('TALK_TTS_TOKEN')
         talk.TTS_URL, talk.TTS_WARM_URL = 'https://voice.example/speak', 'https://voice.example/warm'
-        os.environ['TALK_TTS_TOKEN'] = 'tok'  # never the box's own vault
+        os.environ['TALK_TTS_TOKEN'] = self.id()  # any value: never the box's own vault
         try:
             calls = []
 
