@@ -31,6 +31,8 @@ import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from settings import TIMEZONE
+
 LEVELS = ('urgent', 'normal', 'inbox')
 DAY_CAP = 8            # pushes a day, both levels together: "not a notification every 5 minutes"
 URGENT_CAP = 4         # of those, urgent ones
@@ -88,7 +90,7 @@ def clean(text, limit, lines=False):
 
 
 class Notify:
-    def __init__(self, store, send=None, tz='Europe/Prague', base='', channel_name=None):
+    def __init__(self, store, send=None, tz=TIMEZONE, base='', channel_name=None):
         self.store = store
         self.channel_name = channel_name or (lambda: 'none')  # what the inbox says pushes go through
         self.send = send  # f(kind, title, body, link) -> (ok, channel, error); None: nothing leaves the hub

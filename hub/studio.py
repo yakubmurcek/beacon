@@ -36,7 +36,7 @@ The people reading it are his friends, YouTubers who know nothing about software
 its helpers are on right now (the job, why, and their last words). Write:
 - "headline": what the project's team is doing right now, 4-9 words, the big picture a friend gets at once, like
   "Getting the winter update ready", "Fixing a bug a player found on Discord", "Studying the numbers to earn more",
-  "Hunting viral TikTok trends", "Making 10 TikToks to bring new players", "Pricing the Excel coaching",
+  "Hunting viral TikTok trends", "Making 10 TikToks to bring new players", "Pricing the coaching offer",
   "Making the team's own tools faster". Never use words like code, page, screen, branch, deploy, session, agent, task,
   hub, server, script, API, tailnet, dashboard, PR. Say what it is FOR (players, money, fans, customers), not how.
 - "aim": what this work should change for the project, 2-5 words, a result a friend cares about, like "More players",

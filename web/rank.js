@@ -90,7 +90,7 @@ function shipped(rel, rb) {
   const name = (r) => (r.kind === 'web' ? `${SITE_NAMES[r.what] || pname(r.what)} live on the web` : r.what);
   const icon = { web: '🌐', appstore: '📱', roblox: '🎮' };
   const row = (r) => `<li><span class="d">${dayLabel(r.day)}</span><span class="i">${icon[r.kind] || '•'}</span><span>${esc(name(r))}</span></li>`;
-  const now = rb ? `<p class="note">🎮 Clean the Snow right now: <b>${fmtN(rb.playing || 0)}</b> playing, ${fmtN(rb.visits || 0)} visits all time.</p>` : '';
+  const now = rb ? `<p class="note">🎮 ${esc(rb.name || window.BEACON.game)} right now: <b>${fmtN(rb.playing || 0)}</b> playing, ${fmtN(rb.visits || 0)} visits all time.</p>` : '';
   return `<section class="panel">
     <div class="row"><h2>What went out</h2><span class="legend"><span>🌐 web</span><span>📱 App Store</span><span>🎮 Roblox</span></span></div>
     ${rel.length ? `<ul class="ship">${rel.slice(0, 6).map(row).join('')}</ul>

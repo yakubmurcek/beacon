@@ -49,8 +49,8 @@ function h(tag, attrs, ...kids) {
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function pragueToday(offset = 0) {
-  // Today in Prague, then whole calendar days on from it (24 h steps would skip a day at a clock change).
-  const d = new Date(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Prague' }).format(new Date()) + 'T12:00:00Z');
+  // Today in the hub's timezone, then whole calendar days on from it (24 h steps would skip a day at a clock change).
+  const d = new Date(new Intl.DateTimeFormat('en-CA', { timeZone: window.BEACON.timezone }).format(new Date()) + 'T12:00:00Z');
   d.setUTCDate(d.getUTCDate() + offset);
   return d.toISOString().slice(0, 10);  // YYYY-MM-DD
 }

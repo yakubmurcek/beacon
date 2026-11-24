@@ -60,8 +60,6 @@ window.HUB_CS = {
     'learning: graded when the first guessed jobs finish': 'učí se: hodnocení přijde, až doběhnou první odhadnuté úkoly',
     'People who paid: App Store purchases and subscriptions, Roblox buyers (counted per day: someone who buys on two days counts twice).':
       'Lidé, kteří zaplatili: nákupy a předplatné v App Store, kupci v Robloxu (počítá se po dnech: kdo koupí ve dva dny, počítá se dvakrát).',
-    'Views of his own TikTok videos, Clean the Snow visits, App Store listing impressions.':
-      'Zhlédnutí jeho TikTok videí, návštěvy Clean the Snow, zobrazení v App Store.',
     'What went live: App Store versions, Roblox updates, sites deployed to production.':
       'Co šlo ven: verze v App Store, aktualizace v Robloxu, weby nasazené naostro.',
     "App Store proceeds after Apple's cut, bank inflows except his own transfers, and his half of the Robux at Roblox's cash-out rate once 30,000 R$ can be cashed out.":
@@ -69,7 +67,7 @@ window.HUB_CS = {
     'Agents working': 'Pracující agenti', 'Agents at once': 'Agentů najednou', 'A faster team': 'Rychlejší tým', 'Tasks done': 'Hotové úkoly',
     'PRs merged': 'Sloučené PR', 'Emails sent': 'Odeslané maily', 'New users': 'Noví uživatelé', 'Paying': 'Platící', 'Reach': 'Dosah',
     'Releases': 'Vydání', 'Shipped': 'Vydáno', 'Profit': 'Zisk', 'More players': 'Víc hráčů', 'Spent on ads': 'Utraceno za reklamy',
-    'Robux earned': 'Vydělané Robuxy', 'Roblox daily players': 'Denní hráči v Robloxu', 'Clean the Snow, average a day': 'Clean the Snow, průměr za den',
+    'Robux earned': 'Vydělané Robuxy', 'Roblox daily players': 'Denní hráči v Robloxu',
     'Roblox first-time players + App Store first downloads': 'Noví hráči v Robloxu + první stažení z App Store',
     'Roblox ads, entered by hand (Ads Manager is not readable)': 'Reklamy v Robloxu, zadané ručně (Ads Manager nejde přečíst)',
     'Kč in': 'Příjem v Kč', 'Whole day': 'Celý den', 'Brain': 'Mozek', 'Context': 'Kontext',
@@ -310,7 +308,7 @@ window.HUB_CS = {
       'Hodnota v API je ceníková cena použitých tokenů (Claude a MiniMax-M3 podle cen od výrobců; Grok a OpenCode podle ceny, kterou si samy logují, kromě 0 $ u volání v předplatném). Předplatné se účtuje jinak. Modely bez ověřené ceny jsou bez ceny, nehádáme.', 'The ladder': 'Žebříček', 'What went out': 'Co šlo ven', 'Same as 30 days ago': 'Stejně jako před 30 dny',
     'Nothing went out in the last 30 days.': 'Za posledních 30 dní nic nevyšlo.', 'Not read: its source is down': 'Nenačteno: zdroj nejede', 'not read': 'nenačteno',
     'a day, last 30 days': 'za den, posledních 30 dní', 'your rank each day (tier + LP)': 'tvoje pozice každý den (úroveň + LP)', '⚠️ Drops a tier on': '⚠️ Spadne o úroveň',
-    '🎮 Clean the Snow right now:': '🎮 Clean the Snow právě teď:', 'LP: how far toward the next tier in the last 30 days, 0-100': 'LP: jak daleko k další úrovni za posledních 30 dní, 0–100',
+'LP: how far toward the next tier in the last 30 days, 0-100': 'LP: jak daleko k další úrovni za posledních 30 dní, 0–100',
     'Every gate counts the last 30 days. Sessions, tasks and PRs count only below Silver. Money counts only once it is yours (your half of the Robux, and only after 30,000 Robux can be cashed out) and after what went on ads.':
       'Každá brána počítá posledních 30 dní. Session, úkoly a PR se počítají jen pod Silver. Peníze se počítají, až jsou tvoje (tvoje polovina Robuxů, a to až od 30 000 Robuxů, které jde vybrat), a po odečtení reklam.',
     'Rank over the last 30 days': 'Pozice za posledních 30 dní', 'Nothing yet': 'Zatím nic', 'Building': 'Rozjíždí se', 'Something live': 'Něco běží naostro',
@@ -324,6 +322,10 @@ window.HUB_CS = {
     'money that is his (his half of cashable Robux, App Store, invoiced) minus ads, in Kč': 'peníze, které jsou jeho (jeho polovina vybratelných Robuxů, App Store, fakturace) mínus reklamy, v Kč',
   },
   patterns: {
+    'Views of his own TikTok videos, {name} visits, App Store listing impressions.':
+      'Zhlédnutí jeho TikTok videí, návštěvy {name}, zobrazení v App Store.',
+    '{name}, average a day': '{name}, průměr za den',
+    '🎮 {name} right now:': '🎮 {name} právě teď:',
     'of {n} notices today': 'z {n|zprávy|zpráv|zpráv} dnes',
     'Urgent: at once, at most {n} a day': 'Naléhavé: hned, nejvýš {n} denně',
     'Normal: one quiet digest at most every {n} h': 'Běžné: jeden tichý souhrn nejvýš každé {n} h',

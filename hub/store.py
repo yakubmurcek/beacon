@@ -19,6 +19,8 @@ import time
 import unicodedata
 import zoneinfo
 
+from settings import TIMEZONE
+
 try:
     from . import pricing
 except ImportError:  # run as a script from hub/
@@ -280,7 +282,7 @@ def parse_filter(q):
 
 
 class Store:
-    def __init__(self, path, tz='Europe/Prague'):
+    def __init__(self, path, tz=TIMEZONE):
         self.path = path
         self.tz = zoneinfo.ZoneInfo(tz)
         self._cache = collections.OrderedDict()

@@ -13,6 +13,7 @@
     ],
     "launchd_prefix": "com.example."
   },
+  "timezone": "Europe/Prague",
   "hub": {
     "machine": "cloud",
     "https": "",
@@ -139,6 +140,8 @@
   },
   "rank": {
     "roblox_universe": "1",
+    "game_name": "Snow Game",
+    "robux_share": 0.5,
     "tiktok": [
       "example.handle"
     ],

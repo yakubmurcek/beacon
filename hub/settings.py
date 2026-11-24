@@ -41,6 +41,8 @@ HUB = CONFIG['hub']
 MACHINES = CONFIG['machines']
 APPS = CONFIG['apps']
 PROJECT_NAMES = CONFIG['project_names']
+# The hub's days and clock times: one IANA zone for every page, collector and report (USAGE_TZ overrides it).
+TIMEZONE = os.environ.get('USAGE_TZ') or CONFIG['timezone']
 
 
 def p(key):
@@ -57,4 +59,6 @@ def browser():
         'machine_icons': {k: v['icon'] for k, v in MACHINES.items() if v.get('icon')},
         'project_names': PROJECT_NAMES,
         'site_names': CONFIG.get('site_names', {}),
+        'timezone': TIMEZONE,
+        'game': (CONFIG.get('rank') or {}).get('game_name') or 'The game',
     }

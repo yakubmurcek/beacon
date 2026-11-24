@@ -176,7 +176,7 @@ class BeaconMCP:
 
     def call(self, name, args):
         if name == 'beacon_numbers':
-            text = f'Today is {self.labs.store.today()} (Europe/Prague).\n' + self.labs.digest()
+            text = f'Today is {self.labs.store.today()} ({self.labs.store.tz}).\n' + self.labs.digest()
             return {'content': [{'type': 'text', 'text': text}]}
         if name == 'beacon_show':
             raw = args.get('cards') if isinstance(args.get('cards'), list) else []

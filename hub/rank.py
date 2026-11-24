@@ -2,7 +2,7 @@
 
 Revived from the parked league-rank repo (2026-11-22, task 1826), then re-anchored twice that day on what the owner said
 a tier is worth: Challenger ~$20,000 a month passive, Grandmaster ~$300 passive, even Diamond needs someone really
-paying, and money counts only once it is his: his half of the Robux (split with Steps), and only once the game has
+paying, and money counts only once it is his: his share of the Robux (settings `rank.robux_share`), and only once the game has
 earned the 30,000 Robux DevEx pays out from; minus what went on ads. A live game with paid players and no profit is
 "Gold IV: trying but not enough".
 
@@ -31,6 +31,8 @@ import math
 import sqlite3
 import threading
 import time
+
+from settings import CONFIG
 
 log = logging.getLogger('beacon.rank')
 
@@ -65,7 +67,8 @@ def _log_lp(x, full):
 
 
 USERS = ('roblox_new', 'appstore_new')
-ROBUX_SHARE = 0.5                              # Clean the Snow is split with Steps
+GAME = (CONFIG.get('rank') or {}).get('game_name') or 'The game'  # the Roblox game the rank scores
+ROBUX_SHARE = float((CONFIG.get('rank') or {}).get('robux_share', 1))  # his share of its Robux: a co-owned game splits
 DEVEX_MIN = 30_000                             # Robux are not money until the game has earned enough to cash out
 PROFIT_PLATINUM = 0                            # in the black: more than 0 Kč after ads
 PROFIT_EMERALD = 2_000
@@ -338,14 +341,14 @@ class Rank:
         rows = [
             ('profit', 'Profit', 'money that is his (his half of cashable Robux, App Store, invoiced) minus ads, in Kč',
              lambda v: day_money(v, robux_ok)[1] - v.get('ads_kc', 0), ('roblox', 'appstore', 'invoiced'), 'Platinum → Diamond', 'kc'),
-            ('robux', 'Robux earned', f'Clean the Snow, before the split with Steps. Not money until {DEVEX_MIN:,} to cash out: '
+            ('robux', 'Robux earned', f'{GAME}, before any split. Not money until {DEVEX_MIN:,} to cash out: '
              f'{earned:,.0f} so far' + ('' if robux_ok else ' (not cashable yet)'), keys('robux'), ('roblox',), None, 'count'),
             ('ads', 'Spent on ads', 'Roblox ads, entered by hand (Ads Manager is not readable)', keys('ads_kc'), ('hub',), None, 'kc'),
             ('users', 'New users', 'Roblox first-time players + App Store first downloads', keys(*USERS),
              ('roblox', 'appstore'), 'Gold', 'count'),
             ('releases', 'Releases', 'a site\'s first production deploy of a week, App Store versions, Roblox updates',
              keys('releases'), ('vercel', 'appstore', 'roblox'), 'Silver', 'count'),
-            ('players', 'Roblox daily players', 'Clean the Snow, average a day', keys('roblox_dau'), ('roblox',), None, 'avg'),
+            ('players', 'Roblox daily players', f'{GAME}, average a day', keys('roblox_dau'), ('roblox',), None, 'avg'),
             ('tasks', 'Tasks done', 'closed in Beacon (mechanics: count only below Silver)', keys('tasks'), ('hub',), None, 'count'),
             ('prs', 'PRs merged', 'his merged pull requests on GitHub (mechanics)', keys('prs'), ('github',), None, 'count'),
             ('sessions', 'Agent sessions', 'sessions with a prompt he typed (mechanics)', keys('sessions'), ('hub',), None, 'count'),

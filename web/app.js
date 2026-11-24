@@ -69,7 +69,7 @@ function fmtMin(m) {
   if (m < 60) return m + 'm';
   return Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm';
 }
-let TZ = 'Europe/Prague';
+let TZ = window.BEACON.timezone;  // settings `timezone`, through /config.js; /api/meta confirms it
 const fmtTime = (ts) => new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).format(new Date(ts * 1000));
 const fmtDateTime = (ts) => new Intl.DateTimeFormat(window.hubLocale || 'en-GB', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(ts * 1000));
 // The date (in the hub's time zone) a timestamp falls on, as YYYY-MM-DD.
@@ -1824,7 +1824,7 @@ const usageSnap = {
 };
 (function paintSnapshot() {
   const last = usageSnap.get();
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Prague' }).format(new Date());
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
   if (!last?.meta || !last.data || last.data.date !== today || state.view !== 'day' || filterQuery()) return;
   if (state.date && state.date !== today) return;
   state.meta = last.meta; TZ = last.meta.tz || TZ; state.data = last.data; state.date = today;

@@ -2,7 +2,7 @@
 """ai-rank collect: the outside numbers behind Beacon's AI Rank (http://beacon/rank), sent to the hub per day.
 
 Runs on the home server (systemd timer ai-rank, hourly), where the numbers already are; it only reads, never writes a source:
-  Roblox (Clean the Snow)  /var/lib/game-analytics/*.facts.json (game-analytics' daily Open Cloud reading):
+  Roblox (rank.game_name)  /var/lib/game-analytics/*.facts.json (game-analytics' daily Open Cloud reading):
                            daily active users, new users, net Robux per day; games.roblox.com for playing now,
                            visits and the last publish (public, no key)
   App Store                app-store-metrics' SQLite (Apple's daily sales report): first downloads, proceeds;
@@ -14,7 +14,7 @@ Runs on the home server (systemd timer ai-rank, hourly), where the numbers alrea
   Calls held               transcribe's CALLS.md (origin/main, fetched read-only): one row per recorded call
   Bank money in            budget's SQLite (his AirBank/Revolut CSV imports): inflows except transfers
   Reach                    rival-watch's public readings: his TikTok videos' views (yt-dlp, every 2 h) and
-                           Clean the Snow's visits (games.roblox.com, every 30 min), as growth per day
+                           the game's visits (games.roblox.com, every 30 min), as growth per day
 Tasks done and agent sessions are the hub's own data: the hub adds them when it scores. The Team page's outcome
 numbers (hub/outcomes.py) read the same days; keys only it uses never touch the rank.
 
@@ -50,11 +50,12 @@ import settings  # noqa: E402  (hub/settings.py: the deployment's names)
 DAYS = 75                 # backfill window: 30 days shown + 30 before them + slack
 RANK = settings.CONFIG['rank']  # the deployment's accounts: its game, its handles, what is not income
 UNIVERSE = str(RANK['roblox_universe'])  # the Roblox game scored
+GAME = RANK.get('game_name') or 'The game'
 FACTS = '/var/lib/game-analytics'
 ASC_TOML = '/etc/app-store-metrics/config.toml'
 ASC_DB = '/var/lib/app-store-metrics/metrics.db'
 DEVEX_USD = 0.0038
-PRAGUE = zoneinfo.ZoneInfo('Europe/Prague')  # the hub's days are Prague days
+TZ = zoneinfo.ZoneInfo(settings.TIMEZONE)  # the hub's days are local days in its settings' zone
 SCOREBOARD = settings.p('scoreboard')  # Lighthouse's one-tap log of outward acts
 GH_USER = settings.OWNER['github']
 CONFIG = os.path.expanduser('~/.config/agent-usage/config.json')
@@ -67,12 +68,12 @@ OWN_TIKTOK = tuple(RANK['tiktok'])                 # his own accounts; add one t
 
 
 def today():
-    return datetime.datetime.now(PRAGUE).date()
+    return datetime.datetime.now(TZ).date()
 
 
-def prague_day(iso):
-    """An ISO timestamp (UTC 'Z' or with an offset) as its Prague day."""
-    return datetime.datetime.fromisoformat(iso.replace('Z', '+00:00')).astimezone(PRAGUE).date().isoformat()
+def local_day(iso):
+    """An ISO timestamp (UTC 'Z' or with an offset) as its local day."""
+    return datetime.datetime.fromisoformat(iso.replace('Z', '+00:00')).astimezone(TZ).date().isoformat()
 
 
 def since_day():
@@ -162,11 +163,11 @@ def roblox(days, kc):
             add(days, day, 'robux_kc', vals['robux'] * DEVEX_USD * kc['USD'])
     g = get_json('https://games.roblox.com/v1/games?universeIds=' + UNIVERSE)['data'][0]
     now = {'playing': g.get('playing'), 'visits': g.get('visits'), 'favorites': g.get('favoritedCount'),
-           'updated': g.get('updated'), 'name': 'Clean the Snow'}
+           'updated': g.get('updated'), 'name': GAME}
     releases = []
     if g.get('updated'):
-        releases.append({'key': 'roblox:' + g['updated'], 'day': prague_day(g['updated']), 'kind': 'roblox',
-                         'what': 'Clean the Snow update on Roblox'})
+        releases.append({'key': 'roblox:' + g['updated'], 'day': local_day(g['updated']), 'kind': 'roblox',
+                         'what': f'{GAME} update on Roblox'})
     # buyers are read since 2026-11-22 (each reading covers 8 days): the Team page says from when they are counted
     since = {'roblox_payers': min(payer_days)} if payer_days else {}
     robux_ever = sum(v.get('robux', 0) for v in seen.values())  # every day any reading covered: the cash-out gate
@@ -214,7 +215,7 @@ def app_store(days, kc):
             r = get_json('https://itunes.apple.com/lookup?id=' + app_id)['results'][0]
             when = r.get('currentVersionReleaseDate') or r.get('releaseDate')
             if when:
-                releases.append({'key': f'appstore:{app_id}:{r.get("version")}', 'day': prague_day(when), 'kind': 'appstore',
+                releases.append({'key': f'appstore:{app_id}:{r.get("version")}', 'day': local_day(when), 'kind': 'appstore',
                                  'what': f'{name} {r.get("version")} on the App Store'})
         except NET_ERRORS as e:  # its release day is a nicety: the money still counts
             log.warning('app store: release of %s not read: %s', name, e)
@@ -227,7 +228,7 @@ def app_store(days, kc):
 def vercel(days):
     """Production deploys. A release is one site's first production deploy of a week: a site redeployed every day
     (a timer refreshing it) is one release a week, not seven."""
-    since_ms = int(datetime.datetime.combine(since_day(), datetime.time(), PRAGUE).timestamp() * 1000)
+    since_ms = int(datetime.datetime.combine(since_day(), datetime.time(), TZ).timestamp() * 1000)
     seen, until, weeks = set(), None, {}
     for _ in range(20):
         url = f'/v6/deployments?target=production&limit=100&since={since_ms}' + (f'&until={until}' if until else '')
@@ -236,7 +237,7 @@ def vercel(days):
         for d in deps:
             if d.get('state', d.get('readyState')) != 'READY':
                 continue
-            date = datetime.datetime.fromtimestamp(d['created'] / 1000, PRAGUE).date()
+            date = datetime.datetime.fromtimestamp(d['created'] / 1000, TZ).date()
             day, name = date.isoformat(), d.get('name')
             if (name, day) not in seen:
                 seen.add((name, day))
@@ -259,7 +260,7 @@ def github(days):
     out = run(['gh', 'search', 'prs', '--author', GH_USER, '--merged', '--merged-at', '>=' + since_day().isoformat(),
                '--limit', '1000', '--json', 'closedAt'], timeout=120)
     for pr in json.loads(out):
-        add(days, prague_day(pr['closedAt']), 'prs', 1)
+        add(days, local_day(pr['closedAt']), 'prs', 1)
     return {'ok': True}
 
 
@@ -278,7 +279,7 @@ def invoiced(days, hub):
     undone = {x.get('ref') for x in lines if x.get('kind') == 'undo'}
     for e in lines:
         if e.get('kind') == 'invoiced' and e.get('amount') and e.get('id') not in undone:
-            add(days, prague_day(e['at']), 'invoiced_kc', float(e['amount']))
+            add(days, local_day(e['at']), 'invoiced_kc', float(e['amount']))
     return {'ok': True}
 
 
@@ -303,7 +304,7 @@ def mail(days):
                 mm = re.search(r'INTERNALDATE "([^"]+)"', raw)
                 if mm:
                     when = datetime.datetime.strptime(mm.group(1), '%d-%b-%Y %H:%M:%S %z')
-                    add(days, when.astimezone(PRAGUE).date().isoformat(), 'emails_sent', 1)
+                    add(days, when.astimezone(TZ).date().isoformat(), 'emails_sent', 1)
     finally:
         try:
             m.logout()
@@ -329,7 +330,7 @@ def calls(days):
             recent.append({'day': cells[0], 'what': cells[4][:90]})
     when = run(['git', '-C', CALLS_REPO, 'log', '-1', '--format=%cI', 'origin/main']).strip()
     # known up to the day the list last changed: a call not transcribed yet is not a 0
-    through = prague_day(when) if when else today().isoformat()
+    through = local_day(when) if when else today().isoformat()
     return {'ok': True, 'through': max(through, max((r['day'] for r in recent), default=through)), 'recent': recent[:12],
             'updated': when}
 
@@ -357,12 +358,12 @@ def jsonl(path):
                 continue
 
 
-def prague_ts_day(t):
-    return datetime.datetime.fromtimestamp(t, PRAGUE).date().isoformat()
+def local_ts_day(t):
+    return datetime.datetime.fromtimestamp(t, TZ).date().isoformat()
 
 
 def reach(days):
-    """Views his own TikTok videos gained each day, and Clean the Snow's visits each day, from rival-watch's
+    """Views his own TikTok videos gained each day, and the game's visits each day, from rival-watch's
     public snapshots. A video's views at its first sighting count on the day it was posted; every later rise
     counts on the day it was seen. Roblox visits count from the second reading on (the first is the baseline)."""
     vids, newest = {}, 0
@@ -376,7 +377,7 @@ def reach(days):
         for i, r in enumerate(snaps):
             gain = r['views'] - last
             if gain > 0:
-                day = prague_ts_day(r.get('posted') or r['t']) if i == 0 else prague_ts_day(r['t'])
+                day = local_ts_day(r.get('posted') or r['t']) if i == 0 else local_ts_day(r['t'])
                 add(days, day, 'tiktok_views', gain)
             last = max(last, r['views'])
     prev, first, last_t = None, None, 0
@@ -385,19 +386,19 @@ def reach(days):
             continue
         first, last_t = first or r['t'], r['t']
         if prev is not None and r['visits'] > prev:
-            add(days, prague_ts_day(r['t']), 'roblox_visits', r['visits'] - prev)
+            add(days, local_ts_day(r['t']), 'roblox_visits', r['visits'] - prev)
         prev = r['visits'] if prev is None else max(prev, r['visits'])
     if prev is None and not newest:
         raise RuntimeError('rival-watch has no readings')
     down = {}  # one part stale does not take the other down
     if not newest or time.time() - newest > 12 * 3600:
-        down['tiktok_views'] = 'TikTok last read ' + (prague_ts_day(newest) if newest else 'never')
+        down['tiktok_views'] = 'TikTok last read ' + (local_ts_day(newest) if newest else 'never')
     if prev is None or time.time() - last_t > 3 * 3600:
-        down['roblox_visits'] = 'Roblox visits last read ' + (prague_ts_day(last_t) if prev is not None else 'never')
+        down['roblox_visits'] = 'Roblox visits last read ' + (local_ts_day(last_t) if prev is not None else 'never')
     return {'ok': True, 'down': down, 'through': today().isoformat(), 'tiktok': list(OWN_TIKTOK), 'videos': len(vids),
             'read_at': newest,
             # visits before rival-watch's first reading are not in the days: counting starts the day after it
-            'since': {'roblox_visits': prague_ts_day(first + 86400) if first else today().isoformat()}}
+            'since': {'roblox_visits': local_ts_day(first + 86400) if first else today().isoformat()}}
 
 
 def collect(hub):

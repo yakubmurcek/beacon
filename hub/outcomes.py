@@ -1,8 +1,8 @@
 """Outcomes: the results strip on top of http://beacon/team. Only what reached people, never the work behind it
 (2026-11-22: "outcome only, the path to it does not matter"; no headline number, all equal weight).
 
-Seven numbers for today, this week (since Monday) and this month (since the 1st), Prague days:
-  reach     TikTok views of his own videos, App Store listing impressions, Clean the Snow visits
+Seven numbers for today, this week (since Monday) and this month (since the 1st), local days (the settings' timezone):
+  reach     TikTok views of his own videos, App Store listing impressions, the game's visits
   users     new people: Roblox first-time players, App Store first downloads
   paying    App Store purchases and subscriptions; Roblox buyers (payer rate x daily players, when read)
   money     Kč in: App Store proceeds, bank income, and his half of the Robux at the cash-out rate once the game has
@@ -26,13 +26,13 @@ import threading
 import time
 import zoneinfo
 
-from settings import CONFIG, PROJECT_NAMES
+from settings import CONFIG, PROJECT_NAMES, TIMEZONE
 from rank import DEVEX_MIN, ROBUX_SHARE  # money is his only once it is: his half, and only once DevEx pays out
 
 OUT = CONFIG['outcomes']
 BURN = tuple(OUT['burn'])  # Kč a month the business costs: the line the money card is measured against
 LINKS = OUT['links']
-PRAGUE = zoneinfo.ZoneInfo('Europe/Prague')  # the server runs on UTC; he reads Prague time
+TZ = zoneinfo.ZoneInfo(TIMEZONE)  # the server runs on UTC; the owner reads local time
 STALE_SEC = 3 * 3600   # the hourly collector missing three runs: every number on the strip says so
 
 SOURCES = {  # name in rank_meta -> label, link (the links are the deployment's own accounts: settings `outcomes.links`)
@@ -89,7 +89,7 @@ def age_note(name, src, start, end, now, through=None):
         return 'never read'
     if not src.get('ok'):
         good = src.get('good_at')
-        return 'not read' + (f' since {datetime.datetime.fromtimestamp(good, PRAGUE).strftime("%-d %b %H:%M")}' if good else '')
+        return 'not read' + (f' since {datetime.datetime.fromtimestamp(good, TZ).strftime("%-d %b %H:%M")}' if good else '')
     through = through or src.get('through')
     if isinstance(through, str) and through < end.isoformat():
         day = datetime.date.fromisoformat(through)

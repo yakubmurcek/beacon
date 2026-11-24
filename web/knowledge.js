@@ -29,7 +29,7 @@ let filter = '';  // the search box, on Notes and Calls: narrows the cards as he
 
 // ------------------------------------------------------------------ time and words
 
-const TZ = 'Europe/Prague';
+const TZ = window.BEACON.timezone;  // settings `timezone`, through /config.js
 const dayKey = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(d);
 function when(ts, withTime) {
   if (!ts) return '';

@@ -7,7 +7,7 @@ so only tailnet devices can reach it. Writes need the bearer token; reads don't.
   USAGE_TOKEN   bearer token collectors send (required for /api/ingest)
   USAGE_DB      SQLite path (default: data/usage.db next to the repo root)
   USAGE_PORT    default 4829
-  USAGE_TZ      default Europe/Prague
+  USAGE_TZ      overrides the settings' `timezone`
   TASKS_OWNER   tailnet login allowed to write tasks (the Tailscale-User-Login header that
                 `tailscale serve` adds); empty turns header writes off
   TASKS_TOKEN   bearer token agents and scripts write tasks with
@@ -48,7 +48,7 @@ from progress import Progress, current_index, steps_of  # noqa: E402
 from questions import Questions  # noqa: E402
 from rank import Rank  # noqa: E402
 from rules import Rules  # noqa: E402
-from settings import CONFIG, HUB, OWNER_ID  # noqa: E402
+from settings import CONFIG, HUB, OWNER_ID, TIMEZONE  # noqa: E402
 from settings import browser as browser_settings
 from settings import path as settings_path
 from store import Store, parse_filter  # noqa: E402
@@ -1069,7 +1069,7 @@ def start_notify(live):
     def name():
         return 'webpush' if wp.ready() and wp.count() else 'telegram' if notify_mod.legacy_bin() else 'none'
     send = notify_mod.first_of(*([wp.send] if wp.ready() else []), notify_mod.telegram) if live else None
-    Handler.notify = notify_mod.Notify(Handler.store, send, os.environ.get('USAGE_TZ', 'Europe/Prague'), base, name)
+    Handler.notify = notify_mod.Notify(Handler.store, send, TIMEZONE, base, name)
     machines_mod.NOTIFY = lambda text, key, quiet: bool(
         Handler.notify.post(notify_mod.from_alarm(text, key, quiet, '🖥️ Machines')))
     Handler.tasks.on_close = outreach_done(Handler.tasks, Handler.notify, Handler.tasks.on_close)
@@ -1111,7 +1111,7 @@ def main():
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(levelname)s %(name)s: %(message)s')
     db = os.environ.get('USAGE_DB') or os.path.join(ROOT, 'data', 'usage.db')
     os.makedirs(os.path.dirname(db), exist_ok=True)
-    Handler.store = Store(db, os.environ.get('USAGE_TZ', 'Europe/Prague'))
+    Handler.store = Store(db, TIMEZONE)
     Handler.tasks = Tasks(Handler.store)
     Handler.questions = Questions(Handler.store, Handler.tasks)
     Handler.feedback = Feedback(Handler.tasks, Handler.questions)

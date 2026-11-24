@@ -80,7 +80,7 @@ function detail(c) {
   const items = (c.items || []).slice(0, 12).map((x) => h('li', null, h('span', { class: 'd-day' }, dayShort(x.day)), x.what));
   const note = { money: 'App Store proceeds after Apple\'s cut, bank inflows except his own transfers, and his half of the Robux at Roblox\'s cash-out rate once 30,000 R$ can be cashed out.',
     paying: 'People who paid: App Store purchases and subscriptions, Roblox buyers (counted per day: someone who buys on two days counts twice).',
-    reach: 'Views of his own TikTok videos, Clean the Snow visits, App Store listing impressions.',
+    reach: `Views of his own TikTok videos, ${window.BEACON.game} visits, App Store listing impressions.`,
     shipped: 'What went live: App Store versions, Roblox updates, sites deployed to production.' }[c.key];
   return h('div', { class: 'res-detail' },
     h('div', { class: 'd-head' }, h('b', null, `${c.icon} ${c.label}`), note ? h('span', null, note) : null),

@@ -14,7 +14,7 @@ const el = (tag, attrs, text) => {
   if (text != null) e.textContent = text;
   return e;
 };
-const pragueDay = (t) => new Date(t).toLocaleDateString('sv-SE', { timeZone: 'Europe/Prague' });
+const localDay = (t) => new Date(t).toLocaleDateString('sv-SE', { timeZone: window.BEACON.timezone });
 
 function lineChart(svg, series, bucketMin) {
   svg.replaceChildren();
@@ -70,7 +70,7 @@ function ranges(h) {  // "0–5, 15–18" from [0,1,2,3,4,15,16,17]
 function td(text, cls) { const c = document.createElement('td'); c.textContent = text; if (cls) c.className = cls; return c; }
 
 function plugTable(j) {
-  const today = pragueDay(Date.now()), ym = today.slice(0, 7), wk = pragueDay(Date.now() - 6 * 864e5);
+  const today = localDay(Date.now()), ym = today.slice(0, 7), wk = localDay(Date.now() - 6 * 864e5);
   const sum = (ds, f) => ds.reduce((a, d) => a + f(d), 0);
   const tot = { now: 0, d: 0, w: 0, m: 0, mk: 0, mn: 0 };
   const rows = j.plugs.map((p) => {
@@ -111,7 +111,7 @@ function render(j) {
   $('winlabel').textContent = lab;
   $('winkwh').textContent = kc(j.window.czk);
   $('winczk').textContent = `${fmt(j.window.kwh, 2)} kWh · ${fmt(j.window.minutes / 60, 1)} h on`;
-  const ym = pragueDay(Date.now()).slice(0, 7);  // days are Prague days
+  const ym = localDay(Date.now()).slice(0, 7);  // days are the hub's local days
   const month = j.daily.filter((d) => d.day.startsWith(ym));
   const mk = month.reduce((a, d) => a + d.kwh, 0), mc = month.reduce((a, d) => a + d.czk, 0), mm = month.reduce((a, d) => a + d.minutes, 0);
   $('month').textContent = fmt(mc, 0) + ' Kč'; $('monthkwh').textContent = fmt(mk, 1) + ' kWh, the PC';

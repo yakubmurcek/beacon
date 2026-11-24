@@ -113,7 +113,7 @@ JAIL_UNIT = 'cts-agent-{id}'  # a jailed run's transient unit: a fixed name, so 
 SOCK_DIR = os.environ.get('TASK_AGENT_SOCK_DIR', '/run/cts-tasks')
 JAIL_SOCK = '/run/cts-tasks.sock'
 JAIL_TASKS = os.path.join(HERE, 'tasks-jail')
-QUIET = (22, 8)  # Europe/Prague hours in which a repo run's (scoped mode's) Telegram waits for the morning
+QUIET = (22, 8)  # local hours (settings.TIMEZONE) in which a repo run's (scoped mode's) Telegram waits for the morning
 RETRIES_A_DAY = 4  # a run that could not start (retry=true) is queued again at most this often in 24 h
 PROMPTS, PROMPT_CHARS, CONTEXT_CHARS = 15, 800, 8000  # what of a linked session goes into the prompt
 GH = os.environ.get('TASK_AGENT_GH') or shutil.which('gh') or '/usr/bin/gh'
@@ -134,7 +134,7 @@ CONF_SCHEMA = json.dumps({'type': 'object', 'required': ['phone'], 'properties':
 # The router: every new open task gets one cheap, tool-less model call that decides who does it.
 # Tasks older than ROUTE_SINCE (the ClickUp backlog) are never routed: hand those over by hand.
 ROUTER = 'task-router'
-ROUTE_SINCE = float(os.environ.get('TASK_AGENT_ROUTE_SINCE', '1791403200'))  # 2026-10-07 22:00 Prague
+ROUTE_SINCE = float(os.environ.get('TASK_AGENT_ROUTE_SINCE', '1791403200'))  # 2026-10-07 22:00 local time
 ROUTE_MODEL = os.environ.get('TASK_AGENT_ROUTE_MODEL', 'sonnet')
 ROUTE_PER_RUN = 5
 # A task this new may be its filer's own work (filed, then marked doing a second later): it gets
@@ -1500,7 +1500,7 @@ def start_agent():
 
 
 def prague_day(at=None):
-    return datetime.datetime.fromtimestamp(NOW() if at is None else at, zoneinfo.ZoneInfo('Europe/Prague')).strftime('%Y-%m-%d')
+    return datetime.datetime.fromtimestamp(NOW() if at is None else at, zoneinfo.ZoneInfo(settings.TIMEZONE)).strftime('%Y-%m-%d')
 
 
 def transcript_cost(home, sid):
@@ -1836,8 +1836,8 @@ def week_summary(card, since):
 
 
 def weekly():
-    """Mondays from 9:00 Prague, once a week: the scorecard's last 7 days on Telegram, in Czech."""
-    now = datetime.datetime.fromtimestamp(NOW(), zoneinfo.ZoneInfo('Europe/Prague'))
+    """Mondays from 9:00 local time, once a week: the scorecard's last 7 days on Telegram, in Czech."""
+    now = datetime.datetime.fromtimestamp(NOW(), zoneinfo.ZoneInfo(settings.TIMEZONE))
     if now.weekday() != 0 or now.hour < 9:
         return
     week = now.strftime('%G-W%V')
@@ -1966,8 +1966,8 @@ NOW = time.time  # tests set the clock
 
 
 def quiet_now():
-    """22:00-08:00 in Prague: a repo run's messages wait for the morning (the agent may still work)."""
-    hour = datetime.datetime.fromtimestamp(NOW(), zoneinfo.ZoneInfo('Europe/Prague')).hour
+    """22:00-08:00 local time: a repo run's messages wait for the morning (the agent may still work)."""
+    hour = datetime.datetime.fromtimestamp(NOW(), zoneinfo.ZoneInfo(settings.TIMEZONE)).hour
     return hour >= QUIET[0] or hour < QUIET[1]
 
 
@@ -2017,7 +2017,7 @@ def cap_notice(why=None):
     ready = queue()
     if not ready:
         return
-    today = datetime.datetime.fromtimestamp(NOW(), zoneinfo.ZoneInfo('Europe/Prague')).strftime('%Y-%m-%d')
+    today = datetime.datetime.fromtimestamp(NOW(), zoneinfo.ZoneInfo(settings.TIMEZONE)).strftime('%Y-%m-%d')
     stamp = os.path.join(STATE, 'cap-told')
     try:
         with open(stamp) as f:

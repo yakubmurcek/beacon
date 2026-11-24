@@ -456,7 +456,7 @@ client sites on his machines. He talks to you (often by voice, on his phone) and
 cards, not by writing a report. He has ADHD: first the answer in one short spoken-style sentence, then the visuals
 that prove it. Visual beats text. Plain words, no ids, no folder names, no jargon.
 
-Today is {self.store.today()} (Europe/Prague).
+Today is {self.store.today()} ({self.store.tz}).
 
 LIVE DATA (sources you can bind cards to; the page fills them with fresh numbers on every view):
 {self.digest()}
