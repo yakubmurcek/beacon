@@ -105,14 +105,16 @@ details.more-info .qcontext { margin-top: 8px; max-height: 18em; overflow: auto;
 .step-cmd .step-copy { font-size: 12px; font-weight: 700; opacity: .75; }
 .step-cmd.copied { background: var(--accent); }
 .step-go { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 0 10px; padding: 12px 14px; border-radius: var(--r-lg);
-  text-decoration: none; color: var(--text); background: var(--accent); border: 1px solid var(--pop-line); box-shadow: var(--pop); }
+  text-decoration: none; color: var(--on-accent); background: var(--accent); border: 1px solid var(--pop-line); box-shadow: var(--pop); }
 .step-go .step-text { font-weight: 700; }
-.step-go .see-host { color: var(--text); opacity: .7; }
+.step-go .see-host { color: var(--on-accent); opacity: .85; }
+.step.done .step-go, .step.done .step-go .see-host { color: var(--text); }
 .step.done .step-go { background: var(--accent-soft); }
 .step-go:active { transform: translate(1px, 1px); box-shadow: none; }
 .qcard.todo .opt.pick { border-color: var(--text); box-shadow: var(--pop); }
 .qcard.todo.steps-done .opt.pick { background: var(--accent); }
-.qcard.todo.steps-done .opt.pick .opt-detail { color: var(--text); opacity: .75; }
+.qcard.todo.steps-done .opt.pick, .qcard.todo.steps-done .opt.pick .opt-detail { color: var(--on-accent); }
+.qcard.todo.steps-done .opt.pick .opt-detail { opacity: .85; }
 .done-mark { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--pop-line);
   background: var(--panel); font-size: 14px; font-weight: 800; }
 .see-link:active { transform: translate(1px, 1px); box-shadow: none; }
