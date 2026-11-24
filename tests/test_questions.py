@@ -1116,13 +1116,15 @@ class BadQuestionsTest(LiveHub, unittest.TestCase):
             self.assertEqual(len(self.call('/api/tasks')[1]['tasks']), before, bad)
 
     def test_a_card_with_the_long_hub_link_is_refused(self):
-        import questions
-        with mock.patch.dict(questions.HUB, {'https': 'https://hub.example.ts.net'}):
-            code, out = self.call('/api/questions', {'question': 'Try the talk page?', 'options': ['Works'], 'strict': True,
-                                                     'context': '- 🎙️ the new voice', 'see': ['https://hub.example.ts.net/labs?talk']},
-                                  self.AGENT)
+        code, out = self.call('/api/questions', {'question': 'Try the talk page?', 'options': ['Works'], 'strict': True,
+                                                 'context': '- 🎙️ the new voice', 'see': ['https://hub.example.ts.net/labs?talk']},
+                              self.AGENT)
         self.assertEqual(code, 400)
         self.assertIn('http://hub/<page>', out['error'])
+        for other in ('http://atlas.tail0.ts.net:3000/x', 'see shop.tail0.ts.net'):  # any app's long name, not just the hub's
+            code, _ = self.call('/api/questions', {'question': 'Check the shop page?', 'options': ['Works'], 'strict': True,
+                                                   'context': '- 🛒 ' + other}, self.AGENT)
+            self.assertEqual(code, 400, other)
 
     def test_a_task_note_card_is_never_lost_only_logged(self):
         _, t = self.call('/api/tasks', {'title': 'Pick a plan', 'body': '## Goal\nx\n## Done-test\npicked\n## Steps\n1. z'}, self.AGENT)

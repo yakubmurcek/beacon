@@ -141,6 +141,8 @@ TOKEN = os.environ.get('USAGE_TOKEN', '')
 MAX_BODY = 50 * 1024 * 1024
 TASKS_OWNER = os.environ.get('TASKS_OWNER', '')
 TASKS_TOKEN = os.environ.get('TASKS_TOKEN', '')
+# The certificate authority behind that name, offered at /ca.crt so his devices can trust it once ('' = none).
+CA_CERT = os.environ.get('HUB_CA_CERT', '')
 # Claude's and ChatGPT's servers can't join the tailnet: the hub server's Caddy lets only their IP ranges reach
 # /mcp/<key> (the server's setup). Unset = that door doesn't exist.
 MCP_KEY = os.environ.get('BEACON_MCP_KEY', '')
@@ -530,6 +532,22 @@ class Handler(BaseHTTPRequestHandler):
             name = lambda h: (h or '').split(':')[0].split('.')[0].lower()  # beacon == beacon.<tailnet>.ts.net
             return name(urllib.parse.urlparse(origin).netloc) != name(self.headers.get('Host'))
         return False
+
+    def send_ca(self):
+        """The certificate authority of the hub's secure short name, for his devices to install once."""
+        try:
+            with open(CA_CERT, 'rb') as f:
+                body = f.read()
+        except OSError:
+            self.send_json(404, {'error': 'not found'})
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/x-x509-ca-cert')
+        self.send_header('Content-Disposition', 'attachment; filename="beacon-ca.crt"')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        if not self.head:
+            self.wfile.write(body)
 
     def send_file(self, got):
         if not got:
@@ -1024,6 +1042,7 @@ def _view(service, method):
 
 # Exact paths: (the Handler attribute that must be set on this box, or None; the handler).
 GET_ROUTES = {
+    '/ca.crt': (None, lambda h, path, q: h.send_ca()),  # the authority behind https://<hub>, for his devices
     '/api/outcomes': ('outcomes', _view('outcomes', 'view')),  # the results strip on top of Team
     '/api/team': (None, lambda h, path, q: h.send_json(  # what each project's AI team does, in plain words
         200, h.studio.view() if getattr(h, 'studio', None) else {'projects': [], 'resting': []})),

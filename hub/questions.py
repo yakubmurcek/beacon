@@ -20,7 +20,7 @@ import re
 import threading
 import time
 
-from settings import HUB, OWNER_ID, OWNER_NAME
+from settings import OWNER_ID, OWNER_NAME
 
 try:
     from . import gate, pictures
@@ -201,9 +201,9 @@ def same(a, b):
 
 
 def long_hub_link(s):
-    """The hub's full HTTPS name in a card ("we dont use those ugly links no more", 2026-11-24), or ''."""
-    host = re.sub(r'^https?://', '', HUB.get('https') or '').strip('/')
-    return host if host and host.lower() in (s or '').lower() else ''
+    """A long tailnet name in a card ("we dont use those ugly links no more", 2026-11-24): only short names, or ''."""
+    m = re.search(r'\b[a-z0-9-]+\.[a-z0-9-]+\.ts\.net\b', s or '', re.I)
+    return m.group(0) if m else ''
 
 
 # A card nobody answered in 3 days is stale: the work moved on or it was never his (a "send it today" card from
