@@ -19,10 +19,15 @@ const STATUS = [  // order, colour and plain word for each lead status (the lege
 const BAND = { client: ['star', 'Client'], meeting: ['user', 'Meeting set'], replied: ['mail', 'They replied'],
   sent: ['mail', 'Sent, waiting for a reply'], contacted: ['phone', 'Contacted'], drafted: ['send', 'Draft ready to send'],
   'not contacted': ['user', 'Not contacted yet'], rejected: ['x', 'Rejected'], dropped: ['x', 'Dropped'] };
-function band(r) {
+function bandOf(r) {  // [icon, word, colour]: the band and the State filter say the same
   const closed = r.ad === 'closed' && ['drafted', 'not contacted'].includes(r.status);
-  const [icn, word] = closed ? ['x', r.status === 'drafted' ? "Ad closed: don't send" : 'Ad closed: skip it'] : BAND[r.status] || ['target', SWORD[r.status] || r.status];
-  return h('div', { class: 'band', style: `--sc:${closed ? 'var(--bad)' : SCOLOR[r.status] || 'var(--dim)'}` }, ic(icn), word);
+  if (closed) return ['x', r.status === 'drafted' ? "Ad closed: don't send" : 'Ad closed: skip it', 'var(--bad)'];
+  const [icn, word] = BAND[r.status] || ['target', SWORD[r.status] || r.status];
+  return [icn, word, SCOLOR[r.status] || 'var(--dim)'];
+}
+function band(r) {
+  const [icn, word, col] = bandOf(r);
+  return h('div', { class: 'band', style: `--sc:${col}` }, ic(icn), word);
 }
 const SCOLOR = Object.fromEntries(STATUS.map(([k, c]) => [k, c]));
 const SWORD = Object.fromEntries(STATUS.map(([k, , w]) => [k, w]));
@@ -53,6 +58,7 @@ const ICONS = {
   shapes: '<circle cx="7" cy="7" r="3.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><path d="m7 13.5 4 7H3z"/><circle cx="17" cy="17" r="3.5"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
   refresh: '<path d="M20 11a8 8 0 0 0-14.9-3.9L3 9"/><path d="M3 4v5h5"/><path d="M4 13a8 8 0 0 0 14.9 3.9L21 15"/><path d="M21 20v-5h-5"/>',
+  sort: '<path d="M7 4v16M3 16l4 4 4-4"/><path d="M17 20V4M13 8l4-4 4 4"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 };
 const ic = (name, cls) => h('span', { class: 'ic' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true',
@@ -93,6 +99,11 @@ const fieldIc = (v) => /\bIT\b|software|dev/i.test(v || '') ? 'laptop' : /econom
   : /engineer|tech|research|science/i.test(v || '') ? 'gear' : 'shapes';
 const placeIc = (v) => /remote|home/i.test(v || '') ? 'home' : /elsewhere|abroad|other/i.test(v || '') ? 'map' : 'pin';
 function valueGlyph(k, v) {
+  if (k === 'State') {
+    const hit = Object.entries(BAND).find(([, x]) => x[1] === v);
+    const closed = /closed/i.test(v);
+    return h('span', { class: 'stglyph', style: `--sc:${closed ? 'var(--bad)' : SCOLOR[(hit || [])[0]] || 'var(--dim)'}` }, ic(closed ? 'x' : hit ? hit[1][0] : 'target'));
+  }
   if (k === 'Chance') { const lv = { High: 'high', Medium: 'mid', Low: 'low' }[v.split(' ')[0]]; return lv ? meter(lv) : null; }
   if (k === 'AI') {
     const lv = Object.keys(AI).find((x) => AI[x][1] === v);
@@ -110,7 +121,7 @@ const KIND = { research: 'Research', plan: 'Plan', draft: 'Draft', notes: 'Notes
 const PCOL = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#4a3aa7', '#008300', '#e34948', '#0e8a96', '#9a6b2f'];
 
 let data = null;
-const st = { view: 'leads', project: '', q: '', status: '', lead: '', facets: {}, shown: { ...STEP }, allChips: false };
+const st = { view: 'leads', project: '', q: '', status: '', lead: '', facets: {}, sort: '', shown: { ...STEP }, allChips: false };
 const CHIPS = 8;  // project chips shown before "+ N more"
 
 const fmtDate = (d) => {
@@ -136,6 +147,7 @@ function readHash() {
   st.project = p.get('p') || '';
   st.status = p.get('s') || '';
   st.lead = p.get('l') || '';
+  st.sort = p.get('o') || '';
   st.facets = Object.fromEntries((p.get('f') || '').split('|').filter(Boolean).map((x) => x.split('~')));
 }
 function writeHash() {
@@ -144,6 +156,7 @@ function writeHash() {
   if (st.status) p.set('s', st.status);
   const f = Object.entries(st.facets).filter(([, v]) => v).map(([k, v]) => k + '~' + v).join('|');
   if (f) p.set('f', f);
+  if (st.sort) p.set('o', st.sort);
   if (st.lead) p.set('l', st.lead);
   const h = '#' + st.view + (p.toString() ? '?' + p : '');
   if (location.hash !== h) history.replaceState(null, '', h);
@@ -189,9 +202,9 @@ function more(total, key) {
 
 const SRANK = Object.fromEntries(STATUS.map(([k], i) => [k, i]));
 // filters: what a list's reader tags each lead with (r.facets), plus chance, type and town where they split the group
-const FACET_IC = { Posted: 'clock', Age: 'clock', AI: 'spark', Where: 'pin', Field: 'briefcase', 'Open role': 'briefcase', Chance: 'target', Type: 'building', Town: 'pin' };
+const FACET_IC = { State: 'send', Posted: 'clock', Age: 'clock', AI: 'spark', Where: 'pin', Field: 'briefcase', 'Open role': 'briefcase', Chance: 'target', Type: 'building', Town: 'pin' };
 function facetsOf(r) {
-  const f = { ...(r.facets || {}) };
+  const f = { State: [bandOf(r)[1]], ...(r.facets || {}) };
   if (r.chance && !f.Chance) f.Chance = [(CHANCE[r.chance] || [r.chance])[0] + ' chance'];
   if (r.segment && !f.Type) f.Type = [r.segment];
   const town = (r.town || '').split(/[·,]/)[0].trim();
@@ -215,6 +228,7 @@ function ageOf(when) {
 // filters with a natural order show it (best or newest first); the rest go by how many leads they hold
 const ORDER = {
   get Age() { return AGES; }, get Posted() { return POSTED; },
+  get State() { return [...STATUS.map(([k]) => (BAND[k] || [0, SWORD[k]])[1]), "Ad closed: don't send", 'Ad closed: skip it']; },
   get AI() { return [...Object.values(AI).map((x) => x[1]), 'Not rated']; }, Chance: ['High chance', 'Medium chance', 'Low chance'] };
 function facetList(rows) {  // [name, [[value, count]...]] for filters that split these rows into 2-14 useful parts
   const out = {};
@@ -234,16 +248,35 @@ function baseRows() {
 }
 function leadRows() {
   const rows = baseRows().filter((r) => facetOk(r));
+  const by = (SORTS.find(([k]) => k === st.sort) || [])[2];
+  if (by) rows.sort((a, b) => by(a, b) || (b.touched || '').localeCompare(a.touched || ''));
   // one group: the threads in motion first (a sent or drafted one above the not-yet-contacted), newest first within
-  if (st.project) rows.sort((a, b) => (SRANK[a.status] ?? 99) - (SRANK[b.status] ?? 99) || (b.touched || '').localeCompare(a.touched || ''));
+  else if (st.project) rows.sort((a, b) => (SRANK[a.status] ?? 99) - (SRANK[b.status] ?? 99) || (b.touched || '').localeCompare(a.touched || ''));
   return rows;
+}
+// how a list can be ordered; a choice shows only when some row has what it sorts by
+const dated = (x) => (x && x !== 'unknown' ? x : '');
+const CRANK = (r) => ({ high: 3, mid: 2, low: 1 })[r.chance] || 0;
+const SORTS = [
+  ['', 'Next move first', null, () => true],
+  ['new', 'Newest ad', (a, b) => dated(b.posted).localeCompare(dated(a.posted)), (rows) => rows.some((r) => dated(r.posted))],
+  ['recent', 'Recently active', (a, b) => (b.touched || '').localeCompare(a.touched || ''), () => true],
+  ['chance', 'Best chance', (a, b) => CRANK(b) - CRANK(a), (rows) => rows.some((r) => r.chance)],
+  ['ai', 'Most AI', (a, b) => ((AI[b.ai] || [-1])[0]) - ((AI[a.ai] || [-1])[0]), (rows) => rows.some((r) => r.ai)],
+];
+function sortRow(rows) {
+  const opts = SORTS.filter(([, , , show]) => show(rows));
+  return h('div', { class: 'facet' },
+    h('span', { class: 'fk' }, ic('sort'), 'Sort'),
+    h('div', { class: 'fv' }, opts.map(([k, word]) => h('button', { type: 'button', class: 'chip' + (st.sort === k ? ' on' : ''),
+      onclick: () => { st.sort = k; st.shown = { ...STEP }; renderList(); refreshFacets(); } }, word))));
 }
 
 function facetBar() {
   const base = baseRows();
   const list = facetList(base);
-  if (!list.length) return null;
-  return h('div', { class: 'facets' }, list.map(([k, vals]) => {
+  if (!base.length) return null;
+  return h('div', { class: 'facets' }, sortRow(base), list.map(([k, vals]) => {
     const here = base.filter((r) => facetOk(r, k));  // counts as they would be with this filter changed
     return h('div', { class: 'facet' },
       h('span', { class: 'fk' }, ic(FACET_IC[k] || 'target'), k),
