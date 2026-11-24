@@ -35,7 +35,8 @@ OUT = REF + 'outreach/'
 SOURCES = OUT + 'sources.py'  # the deployment's own list readers, kept in the brain next to its lists
 DOC_TYPES = {'.md', '.html', '.txt', '.csv', '.tsv'}
 
-PROJECTS = {'business': 'Business', 'hq': 'Team tools', 'other': 'Other'}  # the brain's sources.py LABELS come first
+SINGLE = 'single'  # the shared group of every one-firm group (see Outreach.fold)
+PROJECTS = {'business': 'Business', 'hq': 'Team tools', 'other': 'Other', SINGLE: 'Single firms'}  # the brain's sources.py LABELS come first
 
 
 def _read(path):
@@ -63,7 +64,7 @@ RECENT = 600  # seconds a finished move keeps its button hidden: the lead's file
 
 
 def _mark(lead):
-    return ' '.join(f"{lead.get('project')} / {lead.get('name')}".split())
+    return ' '.join(f"{lead.get('home') or lead.get('project')} / {lead.get('name')}".split())  # a folded lead keeps its own group's mark
 
 
 def _lead(**kw):
@@ -175,6 +176,7 @@ class Outreach:
 
     def leads(self):
         out, seen = [], set()
+        self.listed = set()  # groups a list reader fills: a list, even while it holds one row
         # the same business twice (a hand-kept lead also in a scraped list): same name in the same town
         key = lambda x: (re.sub(r'[^a-z0-9]', '', x['name'].lower()), (x['town'].split() or [''])[0].lower())  # noqa: E731
         mod = self.sources()
@@ -189,6 +191,8 @@ class Outreach:
                     continue
                 seen.add(key(r))
                 out.append(r)
+                if part != self.manual:
+                    self.listed.add(r['project'])
         return out
 
     def found_research(self):
@@ -270,7 +274,7 @@ class Outreach:
                 self.cache = (sig, view)
         agents = self.agents()
         leads = [dict(x, agent=agents[_mark(x)]) if _mark(x) in agents else x for x in view['leads']] if agents else view['leads']
-        return dict(view, leads=leads, waiting=self.waiting({p['id'] for p in view['projects'] if p['leads']}), feeds=self.feeds())
+        return dict(view, leads=leads, waiting=self.waiting({p['id'] for p in view['projects'] if p['leads']}, view['single']), feeds=self.feeds())
 
     # ------------------------------------------------------------ next moves
 
@@ -345,6 +349,8 @@ class Outreach:
                 for row in sec.get('rows') or []:
                     if row.get('path') and not row.get('url') and self.resolve(row['path']):
                         row['url'] = '/outreach/doc?p=' + urllib.parse.quote(row['path'])
+        labels = self.labels()
+        single = self.fold(leads, labels, self.listed)
         counts = {}
         for x in leads:
             c = counts.setdefault(x['project'], {'leads': 0, 'research': 0, 'open': 0, 'touched': ''})
@@ -355,11 +361,26 @@ class Outreach:
             c = counts.setdefault(r.get('project') or 'other', {'leads': 0, 'research': 0, 'open': 0, 'touched': ''})
             c['research'] += 1
             c['touched'] = max(c['touched'], r.get('date') or '')
-        labels = self.labels()
-        order = list(labels)
+        order = list(labels) + [SINGLE]
         projects = [{'id': k, 'name': labels.get(k, k), **v} for k, v in
                     sorted(counts.items(), key=lambda kv: (order.index(kv[0]) if kv[0] in order else 99, kv[0]))]
-        return {'projects': projects, 'leads': leads, 'research': research}
+        return {'projects': projects, 'leads': leads, 'research': research, 'single': single}
+
+    @staticmethod
+    def fold(leads, labels, listed=()):
+        """A hand-kept group holding one firm is that firm, not a category: two or more such groups share one
+        'Single firms' group, each lead keeping its own group's name in `group` and id in `home`. Returns the folded group ids."""
+        size = {}
+        for x in leads:
+            size[x['project']] = size.get(x['project'], 0) + 1
+        single = sorted(k for k, v in size.items() if v == 1 and k not in listed)
+        if len(single) < 2:
+            return []
+        for x in leads:
+            if x['project'] in single:
+                x['group'], x['home'] = labels.get(x['project'], x['project']), x['project']
+                x['project'] = SINGLE
+        return single
 
     def feeds(self):
         """The jobs that keep each lead group fresh (sources.py FEEDS: {group: [{job, what}]}), each with its live
@@ -383,8 +404,9 @@ class Outreach:
                             'next_run': j.get('next_run'), 'code': j.get('code')})
         return out
 
-    def waiting(self, ids):
-        """Open decision cards filed under a lead group's project: what that group waits on him for."""
+    def waiting(self, ids, single=()):
+        """Open decision cards filed under a lead group's project: what that group waits on him for (a folded
+        one-firm group's cards wait under 'Single firms')."""
         if not self.questions or not ids:
             return []
         try:
@@ -392,8 +414,8 @@ class Outreach:
         except Exception as e:  # cards never hide the page
             print(f'outreach: waiting: {e}', flush=True)
             return []
-        return [{'id': q['id'], 'project': q['project'], 'question': q['question']}
-                for q in rows if q.get('project') in ids]
+        return [{'id': q['id'], 'project': SINGLE if q['project'] in single else q['project'], 'question': q['question']}
+                for q in rows if q.get('project') in ids or q.get('project') in single]
 
     # ------------------------------------------------------------ documents
 

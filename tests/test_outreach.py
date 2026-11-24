@@ -57,14 +57,14 @@ class OutreachTest(unittest.TestCase):
     def test_leads_merge_and_dedupe(self):
         v = self.o.view()
         names = [(x["name"], x["project"]) for x in v["leads"]]
-        self.assertIn(("River Gym", "river-gym"), names)
+        self.assertIn(("River Gym", "single"), names)  # a one-firm group: in the shared group
         self.assertNotIn(("River Gym", "gyms"), names)  # the hand-kept lead wins over the scraped one
         fit = next(x for x in v["leads"] if x["name"] == "Fit Life")
         self.assertEqual((fit["next"], fit["know"], fit["status"]), ("Walk in", "tier WALK", "not contacted"))
         projects = {p["id"]: p for p in v["projects"]}
-        self.assertEqual(projects["gyms"]["leads"], 1)
+        self.assertEqual(projects["gyms"]["leads"], 1)  # a list with one row stays a list
         self.assertEqual(projects["gyms"]["name"], "Gyms")  # the brain's label
-        self.assertEqual([p["id"] for p in v["projects"]][:2], ["gyms", "river-gym"])  # in the brain's order
+        self.assertEqual([p["id"] for p in v["projects"] if p["leads"]], ["gyms", "single"])  # in the brain's order, shared group last
         self.assertNotIn("link", next(x for x in v["leads"] if x["name"] == "Far Away")["source"])  # no such file here
 
     def test_a_list_in_another_checkout_is_read_live(self):
@@ -104,6 +104,15 @@ class OutreachTest(unittest.TestCase):
         self.assertIsNone(logo('none.cz', fetch, folder))
         self.assertEqual(calls, ['acme.cz', 'none.cz'])
         self.assertIsNone(logo('../etc/passwd', fetch, folder))  # only a plain domain
+
+    def test_one_firm_groups_share_one_group(self):
+        v = self.o.view()  # river-gym and weddings: one hand-kept firm each; gyms: a list
+        self.assertEqual(v["single"], ["river-gym", "weddings"])
+        river = next(x for x in v["leads"] if x["name"] == "River Gym")
+        self.assertEqual((river["project"], river["group"]), ("single", "River Gym"))
+        projects = {p["id"]: p for p in v["projects"]}
+        self.assertEqual((projects["single"]["name"], projects["single"]["leads"]), ("Single firms", 2))
+        self.assertNotIn("group", next(x for x in v["leads"] if x["name"] == "Fit Life"))
 
     def test_open_cards_of_a_lead_group_ride_along(self):
         class Cards:
