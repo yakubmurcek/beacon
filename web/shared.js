@@ -1,18 +1,17 @@
-'use strict';
 // What the hub's pages share (tasks.js, questions.js): elements, time, markdown, the API, toast
 // and menu. Loaded first; each page's script builds on these globals. Plain JS, no build.
 
-const $ = (id) => document.getElementById(id);
+export const $ = (id) => document.getElementById(id);
 
 // The last data a page showed, kept in this browser, so the next load paints at once and refreshes
 // behind it instead of showing an empty page first. Storage can be full or blocked: then no snapshot.
-const snap = {
+export const snap = {
   get(k) { try { return JSON.parse(localStorage.getItem('hub.snap.' + k)); } catch { return null; } },
   set(k, v) { snapPut('hub.snap.' + k, JSON.stringify(v)); },
 };
 // iPhone Safari keeps ~5 MB a site and every page snapshots: when it is full, the biggest other
 // snapshots go (that page loads from the hub once) and the page in front keeps its instant paint.
-function snapPut(key, text) {
+export function snapPut(key, text) {
   for (let i = 0; i < 4; i++) {
     try { localStorage.setItem(key, text); return; } catch { /* full, or blocked */ }
     let big = null, size = 0;
@@ -26,14 +25,14 @@ function snapPut(key, text) {
     try { localStorage.removeItem(key); localStorage.removeItem(big); } catch { return; }
   }
 }
-function setDecisionsBadge(n) {  // the shell's Decisions count (hub.js keeps it fresh between answers)
+export function setDecisionsBadge(n) {  // the shell's Decisions count (hub.js keeps it fresh between answers)
   const b = $('hub-decisions-badge');
   if (b) b.textContent = n > 0 ? String(n) : '';
   try { localStorage.setItem('hub.decisionsOpen', String(n)); } catch { /* blocked */ }
 }
-const DAY = 86400;
+export const DAY = 86400;
 
-function h(tag, attrs, ...kids) {
+export function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
@@ -46,16 +45,16 @@ function h(tag, attrs, ...kids) {
   return el;
 }
 
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-function pragueToday(offset = 0) {
+export function pragueToday(offset = 0) {
   // Today in the hub's timezone, then whole calendar days on from it (24 h steps would skip a day at a clock change).
   const d = new Date(new Intl.DateTimeFormat('en-CA', { timeZone: window.BEACON.timezone }).format(new Date()) + 'T12:00:00Z');
   d.setUTCDate(d.getUTCDate() + offset);
   return d.toISOString().slice(0, 10);  // YYYY-MM-DD
 }
 
-function ago(ts) {
+export function ago(ts) {
   const s = Math.max(0, Date.now() / 1000 - ts);
   if (s < 90) return 'just now';
   if (s < 3600) return `${Math.round(s / 60)} min ago`;
@@ -66,16 +65,16 @@ function ago(ts) {
 // Markdown, the small subset agent runbooks use. Links are cut out of the raw text first and
 // every piece is escaped on its own, so nothing in a body (from ClickUp, an agent, a paste) can
 // open a tag or leave an attribute; only http(s) URLs become links.
-const LINK = /\[([^\]\n]+)\]\((https?:\/\/[^\s()<>"']+)\)|(https?:\/\/[^\s<>"'()]*[^\s<>"'().,;:!?])/g;
+export const LINK = /\[([^\]\n]+)\]\((https?:\/\/[^\s()<>"']+)\)|(https?:\/\/[^\s<>"'()]*[^\s<>"'().,;:!?])/g;
 
-function styled(text) {  // escaped text -> code, bold, italic
+export function styled(text) {  // escaped text -> code, bold, italic
   return text
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
 }
 
-function inline(raw) {
+export function inline(raw) {
   let out = '', last = 0, m;
   LINK.lastIndex = 0;
   while ((m = LINK.exec(raw))) {
@@ -87,7 +86,7 @@ function inline(raw) {
   return out + styled(esc(raw.slice(last)));
 }
 
-function markdown(src) {
+export function markdown(src) {
   // ClickUp escapes markdown punctuation (mouse\_event); show it as written.
   const lines = String(src ?? '').replace(/\\([\\`*_{}\[\]()#+\-.!>|~])/g, '$1').split('\n');
   const out = [];
@@ -121,7 +120,7 @@ function markdown(src) {
 
 // ------------------------------------------------------------------ api
 
-async function api(path, body) {
+export async function api(path, body) {
   const opts = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
   // A deploy restarts the hub for a few seconds and the proxy answers 502 meanwhile: reads wait it out quietly.
   let r;
@@ -141,15 +140,15 @@ async function api(path, body) {
   return data;
 }
 
-function showError(e) {
+export function showError(e) {
   $('error').textContent = e ? e.message || String(e) : '';
   $('error').hidden = !e;
 }
 
 // ------------------------------------------------------------------ toast + menu
 
-let toastTimer;
-function toast(text, onUndo) {
+export let toastTimer;
+export function toast(text, onUndo) {
   const el = $('toast');
   el.replaceChildren(...[h('span', {}, text), onUndo && h('button', { onclick: () => { el.hidden = true; onUndo(); } }, 'Undo')].filter(Boolean));
   el.hidden = false;
@@ -159,7 +158,7 @@ function toast(text, onUndo) {
 
 // Copy to the clipboard. Beacon is plain http on the tailnet, where navigator.clipboard does not exist,
 // so a hidden textarea and execCommand carry it there (works on iPhone Safari too, inside a tap).
-async function copyText(text) {
+export async function copyText(text) {
   try { if (navigator.clipboard && isSecureContext) { await navigator.clipboard.writeText(text); return true; } } catch { /* fall through */ }
   const ta = h('textarea', { readonly: true, style: 'position:fixed;top:0;left:0;opacity:0' });
   ta.value = text;
@@ -172,7 +171,7 @@ async function copyText(text) {
   return ok;
 }
 
-function openMenu(anchor, items) {
+export function openMenu(anchor, items) {
   const menu = $('menu');
   menu.replaceChildren(...items.map(([label, fn]) => label === '-' ? h('hr') :
     h('button', { onclick: () => { closeMenu(); fn(); } }, label)));
@@ -183,4 +182,4 @@ function openMenu(anchor, items) {
   menu.style.top = `${r.bottom + hgt + 8 > window.innerHeight ? Math.max(8, r.top - hgt - 4) : r.bottom + 4}px`;
   setTimeout(() => document.addEventListener('click', closeMenu, { once: true }), 0);
 }
-function closeMenu() { $('menu').hidden = true; }
+export function closeMenu() { $('menu').hidden = true; }

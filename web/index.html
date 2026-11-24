@@ -17,8 +17,8 @@
   <link rel="stylesheet" href="app.css">
   <link rel="stylesheet" href="usage.css">
   <link rel="stylesheet" href="hub.css">
-  <script>try{if(localStorage.getItem("hub.theme")==="cyber"){var r=document.documentElement,m=document.querySelector('meta[name="theme-color"]');r.dataset.theme="cyber";r.style.setProperty("--cy-t",-(Date.now()%60000)/1000+"s");if(m){m.dataset.plain=m.content;m.content="#0B0916"}}}catch(e){}</script>
-  <script>window.hubLang="en";window.hubLocale="en-GB";try{if(localStorage.getItem("hub.lang")==="cs"){hubLang="cs";hubLocale="cs-CZ";document.write('<script src="i18n-cs.js"><\/script><script src="i18n.js"><\/script>')}}catch(e){}</script>
+  <script>try{if(localStorage.getItem("hub.theme")==="cyber"){const r=document.documentElement,m=document.querySelector('meta[name="theme-color"]');r.dataset.theme="cyber";r.style.setProperty("--cy-t",-(Date.now()%60000)/1000+"s");if(m){m.dataset.plain=m.content;m.content="#0B0916"}}}catch(e){}</script>
+  <script>window.hubLang="en";window.hubLocale="en-GB";try{if(localStorage.getItem("hub.lang")==="cs"){window.hubLang="cs";window.hubLocale="cs-CZ";document.write('<script src="i18n-cs.js"><\/script><script src="i18n.js"><\/script>')}}catch(e){}</script>
   <script src="hub.js" defer></script>
   <script src="/config.js"></script>
 </head>
@@ -43,7 +43,7 @@
       </div>
     </div>
   </header>
-  <script>try{var n=localStorage.getItem("hub.decisionsOpen");if(n>0)document.getElementById("hub-decisions-badge").textContent=n}catch(e){}</script>
+  <script>try{const n=Number(localStorage.getItem("hub.decisionsOpen"));if(n>0)document.getElementById("hub-decisions-badge").textContent=String(n)}catch(e){}</script>
 
   <main class="wrap booting" id="main">
     <div class="machines" id="machines"></div>
@@ -165,7 +165,6 @@
   </aside>
   <div class="tooltip" id="tooltip" hidden></div>
 
-  <script src="names.js"></script>
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

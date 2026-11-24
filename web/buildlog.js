@@ -1,8 +1,8 @@
-'use strict';
 // Build log: every game's sessions as a day-by-day story, with what the screen looked like, what changed,
 // how long it took and what it cost. Open one session for its full record: each thing he asked, the
 // screenshots of that turn and Claude's answer. Reads /api/buildlog* (hub/buildlog.py).
 // Routes: #/<game>   #/<game>/s/<machine>/<session id>
+import { $, api, h, markdown, pragueToday, showError, snap } from './shared.js';
 
 const DAYS_PAGE = 10;
 let games = snap.get('buildlog.games');

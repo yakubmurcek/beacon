@@ -15,6 +15,8 @@ Run after changing the nav: `python3 scripts/nav.py` (add --check to only report
 It rewrites the header of web/*.html in place and the HEADER strings of the budget and Lighthouse copies
 (../budget, ../lighthouse: src/components/hub-header.tsx) when those checkouts sit next to this one.
 The header stays static HTML on purpose: rendering it from JS would bring back the blink on page switch.
+It also writes the three inline scripts that must run before first paint (night theme, language, the Decisions
+badge), so they are defined once here; each keeps its names in a block, so no page script declares a global.
 """
 import pathlib
 import re
@@ -36,6 +38,24 @@ ICONS = {
 # the logo, first in every header: the tab icon (its windows glow) and the name, home on tap
 BRAND = ('<a class="brand" href="/team" aria-label="Beacon home">'
          '<img src="/favicon.svg?v=tower2" width="28" height="28" alt=""><span>Beacon</span></a>')
+
+# Before first paint, in <head>: the night theme (tokens.css [data-theme="cyber"]) and the language. Czech loads its
+# words and i18n.js before the body parses, so the page never shows English first (README "Czech").
+THEME = ('<script>try{if(localStorage.getItem("hub.theme")==="cyber"){const r=document.documentElement,'
+         'm=document.querySelector(\'meta[name="theme-color"]\');r.dataset.theme="cyber";'
+         'r.style.setProperty("--cy-t",-(Date.now()%60000)/1000+"s");if(m){m.dataset.plain=m.content;m.content="#0B0916"}}}'
+         'catch(e){}</script>')
+LANG = ('<script>window.hubLang="en";window.hubLocale="en-GB";try{if(localStorage.getItem("hub.lang")==="cs"){'
+        'window.hubLang="cs";window.hubLocale="cs-CZ";'
+        'document.write(\'<script src="i18n-cs.js"><\\/script><script src="i18n.js"><\\/script>\')}}catch(e){}</script>')
+# Right under the header: the last Decisions count, so the badge never pops in (hub.js keeps it fresh).
+BADGE = ('try{const n=Number(localStorage.getItem("hub.decisionsOpen"));'
+         'if(n>0)document.getElementById("hub-decisions-badge").textContent=String(n)}catch(e){}')
+BOOT = [  # (what finds the script on a page, what replaces it)
+    (re.compile(r'<script>try\{if\(localStorage\.getItem\("hub\.theme"\).*?</script>'), THEME),
+    (re.compile(r'<script>window\.hubLang=.*?</script>'), LANG),
+    (re.compile(r'<script>try\{[^<]*hub\.decisionsOpen.*?</script>'), f'<script>{BADGE}</script>'),
+]
 
 # (key, label, [(page id, label, href)]); the first page is where the main tab goes
 NAV = [
@@ -90,6 +110,10 @@ def write_pages(check):
         new, n = OLD.subn(lambda _: header_nav(page), s, count=1)
         if n != 1:
             sys.exit(f'{name}: header not found')
+        for find, script in BOOT:
+            new, n = find.subn(lambda _, script=script: script, new, count=1)
+            if n != 1:
+                sys.exit(f'{name}: no {find.pattern[:40]}… script')
         if new != s:
             changed.append(name)
             if not check:
@@ -123,6 +147,10 @@ def write_tsx(check):
             if not line.search(new):
                 sys.exit(f'{repo}: no `const {const} = \'...\';` line in {f}')
             new = line.sub(lambda _: f"const {const} = '{header_html(page)}';", new, count=1)
+        badge = re.compile(r"^const BADGE = '.*';?$", re.M)
+        if not badge.search(new):
+            sys.exit(f"{repo}: no `const BADGE = '...';` line in {f}")
+        new = badge.sub(lambda _: f"const BADGE = '{BADGE}';", new, count=1)
         if new != s:
             changed.append(repo)
             if not check:

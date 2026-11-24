@@ -1,6 +1,9 @@
-'use strict';
 // Decisions (http://beacon/decisions): everything the agents need him to decide, on one page, and every decision he made
 // (hub/questions.py). Builds on shared.js. Views by hash: #/ (open), #/q/<id>, #/log, #/log/<kind>, #/learned[/<rule id>] (#/rules still works), #/finished.
+import { $, ago, api, h, markdown, setDecisionsBadge, showError, snap, toast } from './shared.js';
+import { projChip } from './names.js';
+import { projectName, qCard } from './qcards.js';
+import './viewer.js';
 
 const state = { open: [], endings: [], gone: [], loaded: false };
 

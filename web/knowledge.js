@@ -1,8 +1,8 @@
-'use strict';
 // Knowledge: everything the agents know, for him to read. Search runs over the corpus (mail, iMessage,
 // Claude chats, calls, Hermes), the ai-brain notes and gbrain at once; Notes shows the brain as cards;
 // Calls lists every recorded call, opened by speaker. Reads /api/knowledge/* (hub/knowledge.py).
 // Every text from the corpus goes in as text nodes, never as HTML: mail bodies carry raw markup.
+import { $, ago, api, esc, h, pragueToday, showError, snap, styled } from './shared.js';
 
 const SRC = {
   'icloud-mail': { label: 'Mail', color: 'var(--s1)' },

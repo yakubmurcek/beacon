@@ -1,4 +1,3 @@
-'use strict';
 // Power: the PC's CPU + GPU watts (wall power estimated) and the Shelly plugs, priced by the hour.
 // The data is hal-power's on the home server (the plugs are on the home LAN); the hub passes it through as /api/power.
 const $ = (id) => document.getElementById(id);

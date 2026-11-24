@@ -1,9 +1,8 @@
-'use strict';
 // The AI Rank badge, shared by http://beacon/rank (rank.js) and the slim chip on top of Team > Results (#rank-chip).
 // Rank is a small flex, not a tab (2026-11-22): the chip is its only way in.
-const escB = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+export const escB = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const TIERS = [
+export const TIERS = [
   ['IRON', 'Iron', '#7a7a78', 'Nothing yet'],
   ['BRONZE', 'Bronze', '#a8683c', 'Building'],
   ['SILVER', 'Silver', '#8f9aa5', 'Something live'],
@@ -15,15 +14,15 @@ const TIERS = [
   ['GRANDMASTER', 'Grandmaster', '#d1344b', '~$300 a month passive profit'],
   ['CHALLENGER', 'Challenger', '#e0a100', '~$20,000 a month passive profit'],
 ];
-const TI = Object.fromEntries(TIERS.map((t, i) => [t[0], i]));
-const color = (tier) => TIERS[TI[tier]][2];
-const nf = new Intl.NumberFormat('en-US');
-const fmtN = (n) => (n >= 10000 ? `${nf.format(Math.round(n / 100) / 10)}k`.replace('.0k', 'k') : nf.format(Math.round(n)));
-const fmtKc = (n) => `${n > 0 && n < 10 ? n.toFixed(1) : nf.format(Math.round(n))} Kč`;
-const fmtV = (s, v) => (s.unit === 'kc' ? fmtKc(v) : fmtN(v));
-const dayLabel = (d) => new Date(d + 'T12:00:00').toLocaleDateString(window.hubLocale || 'en-GB', { day: 'numeric', month: 'short' });
+export const TI = Object.fromEntries(TIERS.map((t, i) => [t[0], i]));
+export const color = (tier) => TIERS[TI[tier]][2];
+export const nf = new Intl.NumberFormat('en-US');
+export const fmtN = (n) => (n >= 10000 ? `${nf.format(Math.round(n / 100) / 10)}k`.replace('.0k', 'k') : nf.format(Math.round(n)));
+export const fmtKc = (n) => `${n > 0 && n < 10 ? n.toFixed(1) : nf.format(Math.round(n))} Kč`;
+export const fmtV = (s, v) => (s.unit === 'kc' ? fmtKc(v) : fmtN(v));
+export const dayLabel = (d) => new Date(d + 'T12:00:00').toLocaleDateString(window.hubLocale || 'en-GB', { day: 'numeric', month: 'short' });
 
-function emblem(tier, size) {
+export function emblem(tier, size) {
   const c = color(tier), i = TI[tier];
   // apex tiers (Master, Grandmaster, Challenger) wear a crown with 1-3 gems
   const gems = i >= TI.MASTER ? i - TI.DIAMOND : 0;
@@ -37,7 +36,7 @@ function emblem(tier, size) {
   </svg>`;
 }
 
-async function rankChip() {
+export async function rankChip() {
   const el = document.getElementById('rank-chip');
   if (!el) return;
   try {
@@ -50,4 +49,3 @@ async function rankChip() {
     el.hidden = false;
   } catch { /* the chip is a nicety: the page works without it */ }
 }
-rankChip();

@@ -1,7 +1,7 @@
-'use strict';
 // Outreach: every lead and business we researched or scraped (Leads), and every research report (Research).
 // Data: /api/outreach, read by the hub from ai-brain (hub/outreach.py). The last answer paints at once from
 // localStorage, then the fresh one replaces it.
+import { $, h, showError, snap } from './shared.js';
 let painted = '';  // the JSON last drawn: a refresh with the same data keeps the list, scroll and search as they are
 const STEP = { leads: 25, research: 30 };
 const STATUS = [  // order, colour and plain word for each lead status (the legend under the bar says the same)

@@ -1,13 +1,14 @@
-'use strict';
 // A question card, answerable in one tap: on the Decisions page and on the Tasks home screen
 // ("Decide"). Builds on shared.js. `onChange` runs after an answer, an undo or a dismissal.
+import { ago, api, copyText, h, markdown, showError, toast } from './shared.js';
+import { dropProject, pname, projChip } from './names.js';
 
 // The project's own name, the same as on every hub page (names.js): "alex.example", never "Alex Example".
-const projectName = (slug) => (!slug || slug === 'personal' ? 'Personal' : pname(slug));
-const optionLabel = (o) => o.label.replace(/\s*\(recommended\)\s*$/i, '');
-const LONG_CONTEXT = 700;  // only a long recap folds under "More details"; bullets show by default
-const STEPS_CONTEXT = 1400; // a by-hand card shows its why and the text he sends (a mail) open, not folded
-const SHORT_TITLE = 100;   // a question this long or shorter is the title as it is
+export const projectName = (slug) => (!slug || slug === 'personal' ? 'Personal' : pname(slug));
+export const optionLabel = (o) => o.label.replace(/\s*\(recommended\)\s*$/i, '');
+export const LONG_CONTEXT = 700;  // only a long recap folds under "More details"; bullets show by default
+export const STEPS_CONTEXT = 1400; // a by-hand card shows its why and the text he sends (a mail) open, not folded
+export const SHORT_TITLE = 100;   // a question this long or shorter is the title as it is
 
 // The card reads like the desktop app (2026-11-22: a wall of bold text sent him back to the session):
 // the title is only the question, everything else sits under it as bullets. Agents often pack it all
@@ -16,12 +17,12 @@ const SHORT_TITLE = 100;   // a question this long or shorter is the title as it
 // Returns { title, details (markdown), task (the task title, shown small), long (no clean title found) }.
 // A period after a lone 1-2 digit number is a Czech date or ordinal ("do 5. 12."), not a sentence end;
 // after a name or a long number ("on the PC.", "for 2026.") it is.
-const SENTENCE_END = /(?<=[^\d][.?!…]|\d[?!…]|\d{3,}\.|[^\s\d]\d{1,2}\.)\s+(?=[„"'(\p{Lu}\p{N}\p{Extended_Pictographic}])/u;
-const LIST_TITLE = 120;    // past this, "Lead in three words: a, b, c?" becomes "Lead in three words?" + bullets
+export const SENTENCE_END = /(?<=[^\d][.?!…]|\d[?!…]|\d{3,}\.|[^\s\d]\d{1,2}\.)\s+(?=[„"'(\p{Lu}\p{N}\p{Extended_Pictographic}])/u;
+export const LIST_TITLE = 120;    // past this, "Lead in three words: a, b, c?" becomes "Lead in three words?" + bullets
 
 // A long title sheds what reads better under it: a long "(…)" aside, a link, a ": a, b, c?" list.
-const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
-function trimTitle(title, rest) {
+export const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+export function trimTitle(title, rest) {
   if (title.length <= SHORT_TITLE) return title;
   title = title.replace(/\s*\(([^()]{25,})\)/g, (_, aside) => { rest.push(cap(aside)); return ''; });
   title = title.replace(/\s*(https?:\/\/\S+)/g, (_, url) => { rest.push(`🔗 ${url}`); return ''; });
@@ -33,8 +34,8 @@ function trimTitle(title, rest) {
   return title.trim();
 }
 // The words that only say "here come steps": dropped, the numbers say it. Any other lead ("Order:") stays on top.
-const STEP_WORDS = /^(otestuj|test|try|steps?|kroky|postup|how to test|vyzkoušej)$/i;
-function steps(sentence) {
+export const STEP_WORDS = /^(otestuj|test|try|steps?|kroky|postup|how to test|vyzkoušej)$/i;
+export function steps(sentence) {
   const parts = sentence.split(/\s*→\s*/).map((x) => x.trim()).filter(Boolean);
   if (parts.length < 3) return `- ${cue(sentence)}`;
   const lead = parts[0].match(/^(.{2,40}?):\s+(.+)$/);  // "Otestuj: Play" → the first step is "Play"
@@ -49,12 +50,12 @@ function steps(sentence) {
   return lead && !STEP_WORDS.test(lead[1].trim()) ? `\n**${lead[1].trim()}:**\n\n${list}\n` : list;
 }
 // What should happen at the end of a test: "má se stisknout", "do minuty se objeví", "should open".
-const RESULT = /^(má se|mělo by|měl by|měla by|should|expect|you should see|do minuty|do \d+ s|uvidíš|objeví se)/i;
+export const RESULT = /^(má se|mělo by|měl by|měla by|should|expect|you should see|do minuty|do \d+ s|uvidíš|objeví se)/i;
 // A bullet that is only "Draft: <link>" or "PR: <link>" gets a 🔗 in front, so it reads as "open this".
-const cue = (x) => (/^[^\s:]{1,20}:\s+https?:\/\/\S+\s*\.?$/.test(x) ? `🔗 ${x.replace(/\s+\.$/, '')}` : x);
+export const cue = (x) => (/^[^\s:]{1,20}:\s+https?:\/\/\S+\s*\.?$/.test(x) ? `🔗 ${x.replace(/\s+\.$/, '')}` : x);
 // A recap written as one paragraph of prose is a wall on a phone: each sentence becomes a bullet, a
 // "→" chain numbered steps. Paragraphs already in markdown (lists, headings, code, tables) stay as written.
-function bulletize(md) {
+export function bulletize(md) {
   return md.split(/\n{2,}/).map((para) => {
     if (/^\s*([-*+]\s|\d+[.)]\s|#|\||```|>)/m.test(para) || para.includes('\n')) return para;
     const sentences = para.split(SENTENCE_END).map((x) => x.trim()).filter(Boolean);
@@ -63,7 +64,7 @@ function bulletize(md) {
   }).join('\n\n');
 }
 // A bare link reads as its file or host, not 80 characters of address.
-function shortLinks(el) {
+export function shortLinks(el) {
   for (const a of el.querySelectorAll('a')) {
     const t = a.textContent;
     if (!/^https?:\/\//.test(t) || t.length <= 32) continue;
@@ -77,7 +78,7 @@ function shortLinks(el) {
 }
 
 // A bullet that only repeats a link already shown as a big button ("🔗 PR: <link>") goes.
-function dropShown(el, q) {
+export function dropShown(el, q) {
   const shown = new Set([...(q.see || []), ...(q.steps || [])].map((x) => x.url).filter(Boolean));
   for (const li of el.querySelectorAll('li')) {
     const a = li.querySelector('a');
@@ -86,7 +87,7 @@ function dropShown(el, q) {
   return el;
 }
 
-function splitQuestion(q) {
+export function splitQuestion(q) {
   let context = String(q.context || '');
   let task = '';
   context = context.replace(/^Task #\d+:\s*(.*)(\n|$)/, (_, t) => { task = t.trim(); return ''; })
@@ -126,12 +127,12 @@ function splitQuestion(q) {
 
 // What he looks at or tries before answering (2026-11-22: "I can't decide without seeing it"): pictures
 // show on the card, a tap opens them full size; a link is one big button. Above the bullets, so it is seen first.
-function hostOf(url) {
+export function hostOf(url) {
   try { const u = new URL(url, location.href); return u.hostname.replace(/^www\./, '') + (u.pathname.length > 1 ? u.pathname : ''); } catch { return url; }
 }
 // Several pictures are one slideshow (2026-11-22: "slideshow, not below each other"): swipe or tap the
 // arrows, a counter says where he is, a tap on the picture opens it full size. Links stay big buttons under it.
-function slideshow(pics) {
+export function slideshow(pics) {
   const slide = (x) => h('a', { class: 'see-pic', href: x.picture, target: '_blank', rel: 'noopener' },
     h('img', { src: x.picture, alt: x.label || 'Screenshot', loading: 'lazy', draggable: 'false' }),
     x.label && h('span', { class: 'see-cap' }, x.label));
@@ -153,11 +154,11 @@ function slideshow(pics) {
     dots);
 }
 // Pictures are their own block: a computer screen gives them a column of their own, a phone shows them in place.
-function seePics(q) {
+export function seePics(q) {
   const pics = (q.see || []).filter((x) => x.picture);
   return pics.length ? h('div', { class: 'see-pics' }, slideshow(pics)) : null;
 }
-function seeBlock(q) {
+export function seeBlock(q) {
   const see = q.see || [];
   if (!see.length) {
     return q.needs_see ? h('p', { class: 'see-missing' }, '⚠️ No link or picture to look at yet') : null;
@@ -175,13 +176,13 @@ function seeBlock(q) {
 
 // A command in a step is a chip he taps to copy (2026-11-23: "I can't copy the terminal command"). Agents
 // wrap it in backticks; an older step reading "in Terminal: secrets set KEY, then paste" is found too.
-const CMD_LEAD = /^(.*?\b(?:terminal|run|type)\s*:\s*)(.+?)(\s*(?:,\s*(?:then|and)\b|;|\s+then\b).*)?$/i;
-function stepParts(text) {
+export const CMD_LEAD = /^(.*?\b(?:terminal|run|type)\s*:\s*)(.+?)(\s*(?:,\s*(?:then|and)\b|;|\s+then\b).*)?$/i;
+export function stepParts(text) {
   if (text.includes('`')) return text.split('`').map((s, i) => (i % 2 ? { cmd: s } : s)).filter((x) => x && (x.cmd || x.length));
   const m = text.match(CMD_LEAD);
   return m ? [m[1], { cmd: m[2].trim() }, m[3] || ''].filter((x) => x) : [text];
 }
-function cmdChip(cmd) {
+export function cmdChip(cmd) {
   const chip = h('button', { class: 'step-cmd', type: 'button', title: 'Copy', onclick: async (ev) => {
     ev.stopPropagation();  // copying is not doing the step: the tick stays his
     const ok = await copyText(cmd);
@@ -194,7 +195,7 @@ function cmdChip(cmd) {
 
 // Text he sends as is (an ad, a mail) is quoted on the card: one tap copies it whole (2026-11-23, ?307: "I can't
 // select the text to send or copy it").
-function quoteCopy(ctx) {
+export function quoteCopy(ctx) {
   for (const quote of ctx.querySelectorAll('blockquote')) {
     const chip = h('button', { class: 'quote-copy', type: 'button', onclick: async (ev) => {
       ev.stopPropagation();
@@ -208,7 +209,7 @@ function quoteCopy(ctx) {
 
 // A card he carries out by hand (2026-11-22: "a direct link and clear steps"): a numbered checklist he
 // ticks as he goes; a step with a link is a big button to that exact page. Ticks live on this phone only.
-function stepsBlock(q) {
+export function stepsBlock(q) {
   const steps = q.steps || [];
   if (!steps.length) return null;
   const key = `qsteps:${q.id}`;
@@ -243,7 +244,7 @@ function stepsBlock(q) {
   return el;
 }
 
-async function answerQuestion(q, text, el, onChange, onUndo) {
+export async function answerQuestion(q, text, el, onChange, onUndo) {
   const own = el.querySelector('.answer-own input');
   const note = own && own.value.trim() && own.value.trim() !== text ? own.value.trim() : null;
   try {
@@ -260,7 +261,7 @@ async function answerQuestion(q, text, el, onChange, onUndo) {
   }
 }
 
-async function dismissQuestion(q, onChange) {
+export async function dismissQuestion(q, onChange) {
   try {
     await api(`/api/questions/${q.id}/withdraw`, { note: 'dismissed by him: not needed' });
     toast('Removed');
@@ -274,7 +275,7 @@ async function dismissQuestion(q, onChange) {
 // shown (2026-11-22), and opens a box right under it for what is wrong (2026-11-23: "ať tam můžu něco připsat").
 // The why goes to the asking session's task and teaches every later card a rule (hub/cardrules.py, task 1903). The
 // button says so in words: a bare 👎 was never tapped (0 flags in 282 cards). A second tap takes the flag back.
-function flagButton(q) {
+export function flagButton(q) {
   const b = h('button', { class: `qflag${q.flagged_at ? ' on' : ''}`,
     title: 'Makes no sense: its agent asks again, and every later card learns from it',
     'aria-label': 'Makes no sense', 'aria-pressed': String(!!q.flagged_at) },
@@ -299,7 +300,7 @@ function flagButton(q) {
   return b;
 }
 
-function flagNote(q) {
+export function flagNote(q) {
   const input = h('input', { placeholder: 'What is wrong? No later card repeats it', 'aria-label': 'What is wrong',
     enterkeyhint: 'send', maxlength: '500' });
   const send = h('button', { type: 'submit', class: 'send', 'aria-label': 'Send', disabled: true }, '→');
@@ -322,7 +323,7 @@ function flagNote(q) {
 }
 
 // The deck (questions.js) passes `onAnswer` to animate the card away first and `foot: false` (it has its own buttons).
-function qCard(q, { focus = false, onChange = () => {}, href = `#/q/${q.id}`, onAnswer = null, foot = true } = {}) {
+export function qCard(q, { focus = false, onChange = () => {}, href = `#/q/${q.id}`, onAnswer = null, foot = true } = {}) {
   const el = h('article', { class: `qcard${q.steps?.length ? ' todo' : ''}${q.blocking ? ' blocking' : ''}${focus ? ' focus' : ''}`, id: `q${q.id}` });
   const answer = (text) => (onAnswer ? onAnswer(text) : answerQuestion(q, text, el, onChange));
   // A card with steps is a job for his hands, not a question (2026-11-22): it reads as a to-do, and its

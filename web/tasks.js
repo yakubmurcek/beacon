@@ -1,7 +1,10 @@
-'use strict';
 // Tasks: the hub's task list (docs/specs/2026-10-06-tasks-design.md). Plain JS, no build.
 // Views by hash: #/now (home), #/backlog[/<project>], #/triage[/stale|high], #/task/<id>, #/search/<q>.
 // Old links (#/projects, #/project/<name>, #/stale) land on their new homes.
+import { $, ago, api, closeMenu, DAY, h, markdown, openMenu, pragueToday, setDecisionsBadge, showError, snap, toast } from './shared.js';
+import { pname, projChip, shortTitle } from './names.js';
+import { qCard, slideshow } from './qcards.js';
+import './viewer.js';
 
 const PRIORITY = { 1: 'urgent', 2: 'high', 3: 'normal', 4: 'low' };
 const STALE_DAYS = 14;

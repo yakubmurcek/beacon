@@ -1,10 +1,11 @@
-'use strict';
 // Team: who works on what right now. The owner's card (team lead) first, then one card per project his AI team is on,
 // on the page itself, no stage behind them. Plain words only: kind of work on the tag, a headline, how many helpers
 // work or wait for him, what it should change. Projects nobody is on sit in one "Resting" line.
 // Reads GET /api/team (hub/studio.py).
 // On top: the results strip, only what reached people (reach, users, paying, Kč, shipped, emails, calls), all with
 // equal weight, for today / this week / this month. Reads GET /api/outcomes (hub/outcomes.py); fills itself.
+import { $, api, h, snap } from './shared.js';
+import { rankChip } from './rank-badge.js';
 
 const REFRESH_MS = 15000;
 
@@ -203,3 +204,4 @@ render();
 load();
 setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+rankChip();

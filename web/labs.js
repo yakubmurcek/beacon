@@ -1,4 +1,3 @@
-'use strict';
 // Labs: ask Beacon in words or by voice; the answer streams in as cards (hub/labs.py writes the catalog).
 // Everything the model wrote goes in through textContent, never as markup.
 (function () {

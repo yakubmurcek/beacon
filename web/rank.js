@@ -1,7 +1,9 @@
-'use strict';
 // AI Rank (http://beacon/rank): the badge, how it moved in 30 days, the live numbers behind it, what went out.
 // Data: GET /api/rank (hub/rank.py), fed hourly by the ai-rank collector. Refreshes every 5 minutes.
 // TIERS, color() and emblem() come from rank-badge.js.
+import { $, ago, api, esc, pragueToday, showError, snap } from './shared.js';
+import { pname } from './names.js';
+import { color, dayLabel, emblem, fmtN, fmtV, TI, TIERS } from './rank-badge.js';
 
 function hero(d) {
   const n = d.now, up = n.change.score;

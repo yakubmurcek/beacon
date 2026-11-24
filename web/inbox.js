@@ -1,5 +1,6 @@
 // Inbox: every notice the agents and machines sent (hub/notify.py), whether it reached the phone, and the week's
 // pushes against the daily cap. Nothing is lost when a push is held back: it waits here.
+import { $, ago, h } from './shared.js';
 const st = { filter: 'all', data: null, open: null };
 let painted = '';
 

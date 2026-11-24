@@ -1,4 +1,4 @@
-'use strict';
+import { initials, pname } from './names.js';
 
 // ------------------------------------------------------------------ helpers
 

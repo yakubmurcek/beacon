@@ -1,6 +1,6 @@
-'use strict';
 // AI jobs (http://beacon/ai): every job that runs a model by itself, on which model and effort, what it costs.
 // Data: GET /api/ai (hub/aijobs.py), the last 7 days at API list prices. Refreshes every 2 minutes.
+import { $, ago, api, esc, showError, snap } from './shared.js';
 
 const SHOW = 10;  // jobs shown before "show the smaller ones"
 let last = null;

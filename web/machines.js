@@ -1,7 +1,7 @@
-'use strict';
 // Machines: every tailnet box, how it reaches the hub, its health and its background jobs.
 // Reads GET /api/machines (contract in hub/machines.py). Lighthouse's wall TV draws the same data.
 // The map is Lighthouse's TailnetScene on paper: the hub in the middle, every box a spoke.
+import { $, api, DAY, h, showError, snap } from './shared.js';
 
 const HUB = window.BEACON.hub.machine;
 // a job whose description is only its machine's name ("devbox: …") says nothing more than the card does
