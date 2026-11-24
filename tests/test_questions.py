@@ -1080,6 +1080,11 @@ class BadQuestionsTest(LiveHub, unittest.TestCase):
                                                'session_id': 'lonely-session'}, self.AGENT)
         self.assertEqual(code, 400)
         self.assertEqual(len(self.call('/api/tasks')[1]['tasks']), before)
+        for bad in ({'see_none': 'x' * 301}, {'created_at': 'soon'}):
+            code, _ = self.call('/api/questions', {'question': 'Ship it?', 'options': ['Yes'], 'session_id': 'lonely-session',
+                                                   'context': '- 🚀 the page', **bad}, self.AGENT)
+            self.assertEqual(code, 400, bad)
+            self.assertEqual(len(self.call('/api/tasks')[1]['tasks']), before, bad)
 
     def test_a_card_with_the_long_hub_link_is_refused(self):
         import questions

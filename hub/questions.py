@@ -143,6 +143,16 @@ def put_off(label):
     return bool(PUT_OFF.match(' '.join(re.sub(r'\(recommended\)', '', str(label or ''), flags=re.I).split())))
 
 
+def created_at(v):
+    """An asked time (epoch seconds), or None for now."""
+    if not v:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        raise ValueError('created_at: expected epoch seconds') from None
+
+
 def default_of(default, options):
     """The agent's pick: the one it named, else the option marked (recommended), else the first; None when put off."""
     if put_off(default):
@@ -443,7 +453,7 @@ class Questions:
         """File a question. `hands`: the caller is his own login (an HTTP request with the token is not; code
         inside the hub is), which alone may file it born answered through page or task.
         Everything is checked before anything is written: a refused ask files no task and no card."""
-        ask = self.read_ask(fields)
+        ask = self.read_ask(fields, hands)
         if ask['source']:
             with self.store.connect() as con:
                 hit = con.execute('SELECT id FROM questions WHERE source = ?', (ask['source'],)).fetchone()
@@ -461,7 +471,7 @@ class Questions:
             self.refuse_if_unfit(ask, lint, author)
         if ask['task_id'] is None and self.tasks is not None and not ask['answer']:
             ask['task_id'] = self.file_task(ask['question'], fields.get('context'), ask['project'], ask['session_id'])
-        cols = self.question_row(ask, fields, lint, author, hands)
+        cols = self.question_row(ask, fields, lint, author)
         with self.store.connect() as con:
             names = list(cols)
             cur = con.execute(f'INSERT INTO questions ({", ".join(names)}) VALUES ({", ".join("?" * len(names))})',
@@ -475,7 +485,7 @@ class Questions:
             self.harvest_later(qid)
         return q
 
-    def read_ask(self, fields):
+    def read_ask(self, fields, hands):
         """The asked fields, each validated; raises ValueError naming the first bad one. Writes nothing."""
         if not isinstance(fields, dict):
             raise ValueError('body: expected a JSON object')
@@ -508,7 +518,11 @@ class Questions:
             kind=kind_of(fields.get('kind')),
             context=text(fields.get('context'), 'context', TEXT_MAX) or '',
             asked_by=str(fields.get('asked_by') or '')[:80],
+            see_none=text(fields.get('see_none'), 'see_none', 300),
+            note=text(fields.get('note'), 'note', TEXT_MAX),
+            created_at=created_at(fields.get('created_at')),
         )
+        ask['via'] = answered_via(fields.get('via'), 'chat', hands) if ask['answer'] else None
         return ask
 
     def refuse_if_unfit(self, ask, lint, author):
@@ -528,7 +542,7 @@ class Questions:
             self.cardrules.log('ask', 'refused', {'question': ask['question']}, why=why,
                                session_id=ask['session_id'], asked_by=asked_by)
 
-    def question_row(self, ask, fields, lint, author, hands):
+    def question_row(self, ask, fields, lint, author):
         """The columns of the new questions row."""
         options, default, answer = ask['options'], ask['default'], ask['answer']
         # Layer 1 of the gate: the hub decides, by kind and words, whatever the agent said. In shadow
@@ -542,7 +556,7 @@ class Questions:
             'see': json.dumps(ask['see']),
             'steps': json.dumps(ask['steps']),
             'lint': json.dumps(lint),
-            'see_none': text(fields.get('see_none'), 'see_none', 300),
+            'see_none': ask['see_none'],
             'project': self.tasks.project(ask['project']) if self.tasks is not None else (ask['project'] or 'personal'),
             'question': ask['question'],
             'context': ask['context'],
@@ -559,12 +573,12 @@ class Questions:
             'task_id': ask['task_id'],
             'project_asked': int(ask['project_asked']),
             'source': ask['source'],
-            'created_at': float(fields.get('created_at') or now),
+            'created_at': ask['created_at'] or now,
             'updated_at': now,
         }
         if answer:
-            cols.update(answer=answer, answer_note=text(fields.get('note'), 'note', TEXT_MAX),
-                        standing=int(bool(fields.get('standing'))), answered_via=answered_via(fields.get('via'), 'chat', hands),
+            cols.update(answer=answer, answer_note=ask['note'],
+                        standing=int(bool(fields.get('standing'))), answered_via=ask['via'],
                         answered_at=now,
                         # his feedback (hub/feedback.py) is born answered and still waits for the dispatcher's run
                         applied_at=None if ask['kind'] == FEEDBACK_KIND else now)
