@@ -59,6 +59,13 @@ def plant(tree: Path, canary: Canary) -> None:
         data = json.loads(path.read_text())
         data[section][key] += by
         path.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n")
+    elif "copy" in canary:
+        path.write_text((tree / canary["copy"]).read_text())
+    elif "json_set" in canary:
+        section, key, value = canary["json_set"]
+        data = json.loads(path.read_text())
+        data[section][key] = value
+        path.write_text(json.dumps(data, indent=2) + "\n")
     elif canary.get("secret"):  # made up at run time, so no secret-shaped string sits in the repo
         path.write_text(path.read_text() + f"\n\nGITHUB_TOKEN = 'ghp_{secrets.token_hex(18)}'\n")
 

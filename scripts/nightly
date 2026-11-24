@@ -20,6 +20,7 @@ run() {  # name, command...: runs it, keeps its exit code and the last lines of 
 run check env CHECK_BASE=HEAD scripts/check
 run supply-chain scripts/supply-chain
 run canaries .venv/bin/python scripts/canaries.py --json "$STATE/canaries.json"
+.venv/bin/python scripts/exceptions.py --json "$STATE/exceptions.json" >/dev/null
 
 python3 - "$STATE" "$sha" <<'PY'
 import json, sys, time

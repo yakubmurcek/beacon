@@ -114,6 +114,38 @@
    "secret": true
   },
   {
+   "name": "JS lint finding",
+   "check": "biome ratchet",
+   "run": "fast",
+   "expect": "lint/style/useConst",
+   "file": "web/knowledge.js",
+   "append": "\nlet canaryNeverReassigned = 1;\nconsole.log(canaryNeverReassigned);\n"
+  },
+  {
+   "name": "copied code",
+   "check": "jscpd",
+   "run": "fast",
+   "expect": "too many duplicates",
+   "file": "docs/canary-copy.js",
+   "copy": "web/knowledge.js"
+  },
+  {
+   "name": "vulnerable dependency",
+   "check": "osv-scanner",
+   "run": "supply-chain",
+   "expect": "lodash",
+   "file": "package-lock.json",
+   "json_set": [
+    "packages",
+    "node_modules/lodash",
+    {
+     "version": "4.17.11",
+     "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.11.tgz",
+     "dev": true
+    }
+   ]
+  },
+  {
    "name": "coverage drop",
    "check": "coverage ratchet",
    "run": "full",

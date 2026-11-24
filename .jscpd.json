@@ -1,9 +1,24 @@
 {
   "threshold": 1,
   "minLines": 8,
-  "format": ["python", "javascript"],
-  "ignore": ["**/tests/**", "**/vendor/**", "web/i18n-cs.js", "**/__pycache__/**", "**/node_modules/**", "**/.venv/**", "data/**"],
-  "reporters": ["console"],
+  "format": [
+    "python",
+    "javascript"
+  ],
+  "ignore": [
+    "**/tests/**",
+    "**/vendor/**",
+    "web/i18n-cs.js",
+    "**/__pycache__/**",
+    "**/node_modules/**",
+    "**/.venv/**",
+    "data/**"
+  ],
+  "reporters": [
+    "console"
+  ],
   "silent": true,
-  "gitignore": true
+  "gitignore": true,
+  "maxLines": 20000,
+  "maxSize": "2mb"
 }
