@@ -26,6 +26,9 @@ step "the checks themselves were not loosened"
 # What an agent stuck on a red check is tempted to do instead of fixing the code. Each needs a commit
 # line `Quality-exception: <why>` in this change, so the reason is on record for the owner.
 if git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
+  # Compare with where this branch left the base, not the base's tip: origin/main moves under every worktree when
+  # another session fetches, and a test file added there would read as deleted here.
+  BASE="$(git merge-base "$BASE" HEAD)"
   problems=()
   [ -n "$(git diff --diff-filter=D --name-only "$BASE" -- tests/)" ] && problems+=("deletes a test file")
   git diff "$BASE" -- tests/ | grep -qE '^\+.*(unittest\.skip|skipTest\(|expectedFailure)' && problems+=("skips a test")
