@@ -92,40 +92,56 @@ const browser = await launch();
 const dir = `${OUT}/${STATE}`;
 mkdirSync(dir, { recursive: true });
 const dead = {};
-for (const look of LOOKS) {
+// One page per look and size, as the owner would open it; errors the page throws are kept beside the pictures.
+async function withPage(look, view, fn) {
   const [theme, lang] = look.split('-');
   const mode = MODES.find((m) => m.theme === theme && m.lang === lang) || { theme, lang };
+  // the test hub's token stands in for the owner's tailnet login, so pages that write (answer, save) work as for him
+  const auth = process.env.TASKS_TOKEN ? { extraHTTPHeaders: { Authorization: `Bearer ${process.env.TASKS_TOKEN}` } } : {};
+  const ctx = await context(browser, view, mode, {}, auth);
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await fn(page);
+  if (errors.length) writeFileSync(`${dir}/errors-${view.name}-${look}-${STATE}.json`, JSON.stringify(errors, null, 1));
+  await ctx.close();
+}
+
+// Three passes, so every picture compared side by side shows the same data: all plain pages first, then the taps
+// (a tap may answer a decision), the button probe last (it taps everything).
+for (const look of LOOKS) {
   for (const view of VIEWS) {
-    // the test hub's token stands in for the owner's tailnet login, so pages that write (answer, save) work as for him
-    const auth = process.env.TASKS_TOKEN ? { extraHTTPHeaders: { Authorization: `Bearer ${process.env.TASKS_TOKEN}` } } : {};
-    const ctx = await context(browser, view, mode, {}, auth);
-    const page = await ctx.newPage();
-    const errors = [];
-    page.on('pageerror', (e) => errors.push(e.message));
-    for (const path of ONLY) {
-      await open(page, HUB + path);
-      await shoot(page, dir, `${path.slice(1)}-${view.name}-${look}`, view);
-    }
-    if (flags.includes('--moments')) {
-      for (const [path, name, tap] of MOMENTS.filter(([p]) => ONLY.includes(p))) {
-        await open(page, HUB + path);
-        const target = page.locator(tap).first();
-        if (!(await target.isVisible().catch(() => false))) continue;
-        await target.click({ timeout: 3000 }).catch(() => {});
-        await page.waitForTimeout(400);
-        await shoot(page, dir, `${path.slice(1)}~${name}-${view.name}-${look}`, view);
-        await open(page, HUB + path);  // leave the page as it was for the next look
-      }
-    }
-    if (flags.includes('--probe') && view.name === 'desktop' && look === LOOKS[0]) {
+    await withPage(look, view, async (page) => {
       for (const path of ONLY) {
-        const found = await probe(page, path);
-        if (found.length) dead[path] = found;
+        await open(page, HUB + path);
+        await shoot(page, dir, `${path.slice(1)}-${view.name}-${look}`, view);
       }
-    }
-    if (errors.length) writeFileSync(`${dir}/errors-${view.name}-${look}.json`, JSON.stringify(errors, null, 1));
-    await ctx.close();
+    });
   }
+}
+if (flags.includes('--moments')) {
+  for (const look of LOOKS) {
+    for (const view of VIEWS) {
+      await withPage(look, view, async (page) => {
+        for (const [path, name, tap] of MOMENTS.filter(([p]) => ONLY.includes(p))) {
+          await open(page, HUB + path);
+          const target = page.locator(tap).first();
+          if (!(await target.isVisible().catch(() => false))) continue;
+          await target.click({ timeout: 3000 }).catch(() => {});
+          await page.waitForTimeout(400);
+          await shoot(page, dir, `${path.slice(1)}~${name}-${view.name}-${look}`, view);
+        }
+      });
+    }
+  }
+}
+if (flags.includes('--probe')) {
+  await withPage(LOOKS[0], VIEWS.find((v) => v.name === 'desktop'), async (page) => {
+    for (const path of ONLY) {
+      const found = await probe(page, path);
+      if (found.length) dead[path] = found;
+    }
+  });
 }
 await browser.close();
 if (flags.includes('--probe')) writeFileSync(`${dir}/dead-buttons.json`, JSON.stringify(dead, null, 1));
