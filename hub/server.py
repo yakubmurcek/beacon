@@ -159,6 +159,11 @@ CLI_FILES = {
     '/cli/config.example.json': lambda: os.path.join(ROOT, 'config.example.json'),
     '/cli/config.json': settings_path,  # this deployment's names; no secrets live in it
 }
+# Old and short addresses: where each now lives.
+MOVED = {'/questions': ('/decisions', 301), '/outcomes': ('/team', 302),  # the results sit on top of Team
+         '/system': ('/usage', 302), '/home': ('/power', 302),
+         # an iPhone mic needs https: straight to the secure name
+         '/talk': (lambda: (HUB.get('https') or '').rstrip('/') + '/labs?talk', 302)}
 ENDING_PATH = re.compile(r'^/api/endings/(\d+)/(clear|unclear|act)$')
 QUESTION_BODY_MAX = 24 * 1024 * 1024  # an ask may carry up to 4 screenshots (base64)
 
@@ -209,30 +214,39 @@ class Handler(BaseHTTPRequestHandler):
             return apps.proxy(self, base)
         if url.path == '/api/power':
             return self.get_power(url.query)
-        # The build log shows Claude's replies (an ai-corpus source, gated like Knowledge) and screenshots that can
-        # show his desktop: only he (his tailnet login) or an agent with the token, any other device gets a 401.
-        if (url.path.startswith('/buildlog/img/') or url.path.startswith('/api/buildlog')) and not self.task_writer():
-            return self.send_json(401, {'error': 'unauthorized'})
-        if url.path.startswith('/buildlog/img/') and getattr(self, 'buildlog', None):
-            return self.buildlog.image(self, url.path[len('/buildlog/img/'):], url.query)
+        if self.buildlog_refused(url):
+            return None
         try:
             if self.route_get(url.path, q) is not NOT_MINE:
-                return
+                return None
             if url.path.startswith('/api/'):
                 return self.send_json(404, {'error': 'not found'})
-        except KeyError as e:
-            if e.args and e.args[0] in ('from', 'to', 'q', 'machine', 'session', 'project'):
-                return self.send_json(400, {'error': f'bad request: missing {e.args[0]}'})
-            log.exception('GET %s', url.path)  # a KeyError from inside the store is a bug, not a bad request
-            return self.send_json(500, {'error': 'server error'})
-        except ValueError as e:
-            return self.send_json(400, {'error': f'bad request: {e}'})
         except (BrokenPipeError, ConnectionResetError):
             raise  # the client left; answering it with a 500 would only fail again
-        except Exception:  # the last net under every route: the page gets a 500, the log the traceback
-            log.exception('GET %s', url.path)
-            return self.send_json(500, {'error': 'server error'})
-        self.serve_static(url.path, url.query)
+        except Exception as e:  # the last net under every route: the page gets a 4xx or 500, the log the traceback
+            return self.get_failed(url.path, e)
+        return self.serve_static(url.path, url.query)
+
+    def get_failed(self, path, e):
+        """A GET route raised: a missing query parameter or a bad value is the caller's 400, anything else a 500."""
+        if isinstance(e, KeyError) and e.args and e.args[0] in ('from', 'to', 'q', 'machine', 'session', 'project'):
+            return self.send_json(400, {'error': f'bad request: missing {e.args[0]}'})
+        if isinstance(e, ValueError):
+            return self.send_json(400, {'error': f'bad request: {e}'})
+        log.exception('GET %s', path, exc_info=e)  # a KeyError from inside the store is a bug, not a bad request
+        return self.send_json(500, {'error': 'server error'})
+
+    def buildlog_refused(self, url):
+        """The build log shows Claude's replies (an ai-corpus source, gated like Knowledge) and screenshots that can
+        show his desktop: only he or an agent with the token. Sends the 401, or the screenshot; True when it did."""
+        img = url.path.startswith('/buildlog/img/')
+        if (img or url.path.startswith('/api/buildlog')) and not self.task_writer():
+            self.send_json(401, {'error': 'unauthorized'})
+            return True
+        if img and getattr(self, 'buildlog', None):
+            self.buildlog.image(self, url.path[len('/buildlog/img/'):], url.query)
+            return True
+        return False
 
     def route_get(self, path, q):
         """Answer a GET from the route tables; NOT_MINE when no route (or its service on this box) takes it."""
@@ -332,43 +346,42 @@ class Handler(BaseHTTPRequestHandler):
         if not k:
             return self.send_json(404, {'error': 'not found'})
         what = path[len('/api/knowledge/'):]
+        view = KNOWLEDGE_VIEWS.get(what)
+        if not view:
+            return self.send_json(404, {'error': 'not found'})
         try:
-            if what == 'overview':
-                return self.send_json(200, k.overview())
-            if what == 'search':
-                return self.send_json(200, k.search(q['q'], q.get('source')))
-            if what == 'notes':
-                return self.send_json(200, {'notes': k.notes()})
-            if what == 'calls':
-                return self.send_json(200, {'calls': k.calls()})
-            if what == 'graph':
-                return self.send_json(200, k.graph())
-            if what in ('thread', 'call', 'note', 'gbrain'):
-                x = (k.thread(q['id'], q.get('at')) if what == 'thread' else k.call(q['id']) if what == 'call'
-                     else k.note(q['path']) if what == 'note' else k.gbrain_page(q['slug']))
-                return self.send_json(200 if x else 404, x or {'error': 'not found'})
+            x = view(k, q)
         except KeyError as e:
             if e.args and e.args[0] in ('q', 'id', 'path', 'slug'):
                 return self.send_json(400, {'error': f'bad request: missing {e.args[0]}'})
             raise
         except (LookupError, OSError, sqlite3.Error, subprocess.SubprocessError) as e:  # that source isn't on this box, or is down
             return self.send_json(503, {'error': str(e)})
-        return self.send_json(404, {'error': 'not found'})
+        if what in KNOWLEDGE_LOOKUPS and not x:
+            return self.send_json(404, {'error': 'not found'})
+        return self.send_json(200, x)
 
     # ------------------------------------------------------------ labs
+
+    def mcp_allowed(self, path):
+        """True for the connector key in the link, or his login or the token on the tailnet; else the refusal is sent."""
+        if path.startswith('/mcp/'):
+            if MCP_KEY and len(MCP_KEY) >= 32 and hmac.compare_digest(path[5:], MCP_KEY):
+                return True
+            return self.send_json(404, {'error': 'not found'})
+        who = self.task_writer()
+        if not who:
+            return self.send_json(401, {'jsonrpc': '2.0', 'id': None, 'error': {'code': -32001, 'message': 'unauthorized'}})
+        if who == 'owner' and self.cross_site():
+            return self.send_json(403, {'error': 'forbidden: cross-site write'})
+        return True
 
     def post_mcp(self, path):
         """Beacon inside Claude and ChatGPT (hub/beacon_mcp.py): MCP over HTTP, one JSON answer per POST.
         His login or the token on the tailnet; from Claude's and ChatGPT's servers, the connector key in the link
         is the login. Like Knowledge, it reads his numbers."""
-        keyed = path.startswith('/mcp/')
-        if keyed and not (MCP_KEY and len(MCP_KEY) >= 32 and hmac.compare_digest(path[5:], MCP_KEY)):
-            return self.send_json(404, {'error': 'not found'})
-        who = None if keyed else self.task_writer()
-        if not keyed and not who:
-            return self.send_json(401, {'jsonrpc': '2.0', 'id': None, 'error': {'code': -32001, 'message': 'unauthorized'}})
-        if who == 'owner' and self.cross_site():
-            return self.send_json(403, {'error': 'forbidden: cross-site write'})
+        if not self.mcp_allowed(path):
+            return None
         mcp = getattr(self, 'mcp', None)
         if not mcp:
             return self.send_json(404, {'error': 'not found'})
@@ -416,15 +429,22 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass  # he asked something else, or left
 
-    def post_talk(self, path):
-        """Labs talk mode (hub/talk.py): hears, speaks and acts for him, on his money: his login or the token only."""
+    def talk_writer(self, path):
+        """His login or the token, or None once refused. Another site's page must not answer his decisions or spend
+        his voice minutes; a recorded turn is sent as audio, so only the browser's own site header can say so."""
         who = self.task_writer()
         if not who:
             return self.send_json(401, {'error': 'unauthorized'})
-        if who == 'owner':  # another site's page must not answer his decisions or spend his voice minutes
+        if who == 'owner':
             site = self.headers.get('Sec-Fetch-Site')
             if (site and site not in ('same-origin', 'none')) if path == '/api/talk/hear' else self.cross_site():
                 return self.send_json(403, {'error': 'forbidden: cross-site write'})
+        return who
+
+    def post_talk(self, path):
+        """Labs talk mode (hub/talk.py): hears, speaks and acts for him, on his money: his login or the token only."""
+        if not self.talk_writer(path):
+            return None
         talk = getattr(self, 'talk', None)
         if not talk:
             return self.send_json(404, {'error': 'not found'})
@@ -434,44 +454,48 @@ class Handler(BaseHTTPRequestHandler):
         device = (self.headers.get('X-Talk-Device') or '')[:20]
         try:
             if path == '/api/talk/hear':  # the body is the recorded turn itself
-                secs = self.headers.get('X-Talk-Seconds') or '0'
-                kind = 'wake' if self.headers.get('X-Talk-Kind') == 'wake' else 'hear'
-                text = talk.hear(raw, self.headers.get('Content-Type') or 'audio/webm',
-                                 float(secs) if secs.replace('.', '', 1).isdigit() else 0, kind, device)
-                return self.send_json(200, {'text': text})
+                return self.talk_hear(talk, raw, device)
             body = json.loads(raw)
             if not isinstance(body, dict):
                 raise ValueError('expected a JSON object')
-            if path == '/api/talk/say':
-                data, ctype = talk.say(body.get('text'), device)
-                self.send_response(200)
-                self.send_header('Content-Type', ctype)
-                self.send_header('Content-Length', str(len(data)))
-                self.send_header('Cache-Control', 'no-store')
-                self.end_headers()
-                self.wfile.write(data)
-                return
-            if path == '/api/talk/brief':
-                return self.send_json(200, talk.brief(device))
-            if path == '/api/talk/act':
-                return self.send_json(200, talk.act(body, device))
-            if path == '/api/talk/warm':  # a talk page opened: the own voice loads while he taps
-                return self.send_json(200, {'ok': True, 'warming': talk.warm()})
-            if path == '/api/talk/played':  # did the page's speaker play a line (a silent talk diagnoses itself)
-                how = 'play-ok' if body.get('ok') else 'play-fail'
-                why = ''.join(ch for ch in str(body.get('why') or '') if ch.isalnum() or ch in ' -_/.')[:40]
-                talk.log(f'{how} {why}'.strip(), 0, device)
-                return self.send_json(200, {'ok': True})
-            if path == '/api/talk/start':  # one talk began (the Done-test counts talks per day)
-                talk.log('session', 0, device)
-                return self.send_json(200, {'ok': True, **talk.stats(1)})
-            return self.send_json(404, {'error': 'not found'})
+            action = TALK_ACTIONS.get(path)
+            if not action:
+                return self.send_json(404, {'error': 'not found'})
+            return action(self, talk, body, device)
         except CapReached as e:
             return self.send_json(429, {'error': str(e)})
         except VoiceError as e:
             return self.send_json(502, {'error': f'voice: {e}'})
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
+
+    def talk_hear(self, talk, raw, device):
+        secs = self.headers.get('X-Talk-Seconds') or '0'
+        kind = 'wake' if self.headers.get('X-Talk-Kind') == 'wake' else 'hear'
+        text = talk.hear(raw, self.headers.get('Content-Type') or 'audio/webm',
+                         float(secs) if secs.replace('.', '', 1).isdigit() else 0, kind, device)
+        return self.send_json(200, {'text': text})
+
+    def talk_say(self, talk, body, device):
+        data, ctype = talk.say(body.get('text'), device)
+        self.send_response(200)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def talk_played(self, talk, body, device):
+        """Did the page's speaker play a line: a silent talk diagnoses itself."""
+        how = 'play-ok' if body.get('ok') else 'play-fail'
+        why = ''.join(ch for ch in str(body.get('why') or '') if ch.isalnum() or ch in ' -_/.')[:40]
+        talk.log(f'{how} {why}'.strip(), 0, device)
+        return self.send_json(200, {'ok': True})
+
+    def talk_start(self, talk, body, device):
+        """One talk began (the talks per day are counted)."""
+        talk.log('session', 0, device)
+        return self.send_json(200, {'ok': True, **talk.stats(1)})
 
     # ------------------------------------------------------------ build log
 
@@ -487,21 +511,22 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ tasks
 
-    def get_tasks(self, path, q):
-        if path == '/api/tasks':
-            rows = self.tasks.list(q.get('status') or 'open', q.get('project'), q.get('q'), q.get('due'),
-                                   q.get('stale') in ('1', 'true'), int(q.get('limit') or 500), q.get('session'))
-            return self.send_json(200, {'tasks': brief(rows) if q.get('brief') in ('1', 'true') else rows})
-        if path == '/api/tasks/projects':
-            return self.send_json(200, {'projects': self.tasks.projects()})
-        if path == '/api/tasks/auth':  # the vault's probe for TASKS_TOKEN, and a CLI self-check
-            who = self.task_writer()
-            return self.send_json(200 if who else 401, {'writer': who} if who else {'error': 'unauthorized'})
+    def get_task_list(self, path, q):
+        rows = self.tasks.list(q.get('status') or 'open', q.get('project'), q.get('q'), q.get('due'),
+                               q.get('stale') in ('1', 'true'), int(q.get('limit') or 500), q.get('session'))
+        return self.send_json(200, {'tasks': brief(rows) if q.get('brief') in ('1', 'true') else rows})
+
+    def get_task_auth(self, path, q):
+        """The vault's probe for TASKS_TOKEN, and a CLI self-check."""
+        who = self.task_writer()
+        return self.send_json(200 if who else 401, {'writer': who} if who else {'error': 'unauthorized'})
+
+    def get_task(self, path, q):
+        """One task, each linked session with what it is doing now (None: not open on any machine)."""
         m = TASK_PATH.match(path)
         t = self.tasks.get(int(m.group(1))) if m and not m.group(2) else None
         if not t:
             return self.send_json(404, {'error': 'not found'})
-        # Each linked session with what it is doing now (None: not open on any machine).
         live = {x['id']: x for mach in self.store.live_now()['machines'] for x in mach['sessions']}
         for s in t['sessions']:
             x = live.get(s['session_id']) or {}
@@ -648,31 +673,30 @@ class Handler(BaseHTTPRequestHandler):
         if not who:
             return
         author = str(body.get('author') or (OWNER_ID if who == 'owner' else 'agent'))[:80]
+        m = TASK_PATH.match(path)
+        if path != '/api/tasks' and not m:
+            return self.send_json(404, {'error': 'not found'})
+        sub = m.group(2) if m else None
         try:
-            if who != 'owner' and (path == '/api/tasks' or TASK_PATH.match(path) and not TASK_PATH.match(path).group(2)):
+            if who != 'owner' and not sub:  # an agent's task must carry a plan and a done-test (hub/tasks.py)
                 why = agent_problem(body, path == '/api/tasks')
                 if why:
                     return self.send_json(400, {'error': f'refused: {why}'})
             if path == '/api/tasks':
                 return self.send_json(201, self.tasks.create(body, author))
-            m = TASK_PATH.match(path)
-            if not m:
-                return self.send_json(404, {'error': 'not found'})
-            tid, sub = int(m.group(1)), m.group(2)
-            if sub == 'comments':
-                out = self.tasks.comment(tid, body.get('text'), author)
-            elif sub == 'sessions':
-                out = self.tasks.link(tid, body.get('session_id'))
-            else:
-                out = self.tasks.update(tid, body)
+            out = self.task_write(int(m.group(1)), sub, body, author)
             if out is None:
                 return self.send_json(404, {'error': 'not found'})
             return self.send_json(201 if sub else 200, out)
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
-        except Exception:
-            log.exception('post_tasks failed')
-            return self.send_json(500, {'error': 'server error'})
+
+    def task_write(self, tid, sub, body, author):
+        if sub == 'comments':
+            return self.tasks.comment(tid, body.get('text'), author)
+        if sub == 'sessions':
+            return self.tasks.link(tid, body.get('session_id'))
+        return self.tasks.update(tid, body)
 
     # ------------------------------------------------------------ rules (his only: an agent never turns a rule on)
 
@@ -714,21 +738,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ questions
 
-    def get_questions(self, path, q):
-        if path == '/api/questions':
-            task = q.get('task')
-            rows = self.questions.list(
-                q.get('status') or 'open', q.get('project'), q.get('kind'), q.get('q'),
-                float(q['since']) if q.get('since') else None,
-                True if task in ('true', 'any') else int(task) if task else None,  # task=1 is task #1
-                q.get('pending') in ('1', 'true'), int(q.get('limit') or 500), q.get('session'))
-            return self.send_json(200, {'questions': self.rules.annotate(rows) if self.rules else rows})
-        if path == '/api/questions/rules':  # his rules about cards, today's 👎 lessons against the cap, what was held back
-            return self.send_json(200, self.cardrules.summary() if getattr(self, 'cardrules', None) else {'rules': []})
-        if path == '/api/questions/bad':  # the one log of bad cards: his 👎 flags and the lint's catches
-            return self.send_json(200, {'questions': self.questions.bad(float(q['since']) if q.get('since') else None)})
-        if path == '/api/questions/kinds':
-            return self.send_json(200, {'kinds': self.questions.kinds(float(q['since']) if q.get('since') else None)})
+    def get_question_list(self, path, q):
+        task = q.get('task')
+        rows = self.questions.list(
+            q.get('status') or 'open', q.get('project'), q.get('kind'), q.get('q'), since(q),
+            True if task in ('true', 'any') else int(task) if task else None,  # task=1 is task #1
+            q.get('pending') in ('1', 'true'), int(q.get('limit') or 500), q.get('session'))
+        return self.send_json(200, {'questions': self.rules.annotate(rows) if self.rules else rows})
+
+    def get_question(self, path, q):
         m = QUESTION_PATH.match(path)
         x = self.questions.get(int(m.group(1))) if m and not m.group(2) else None
         if x and self.rules:
@@ -761,9 +779,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, out) if out else self.send_json(404, {'error': 'not found'})
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
-        except Exception:
-            log.exception('post_endings failed')
-            return self.send_json(500, {'error': 'server error'})
 
     def post_names(self, path):
         who, body = self.writer_body()
@@ -786,36 +801,12 @@ class Handler(BaseHTTPRequestHandler):
             if not m or not m.group(2):
                 return self.send_json(404, {'error': 'not found'})
             qid, act = int(m.group(1)), m.group(2)
-            if act == 'answer':
-                out = self.questions.answer(qid, body, 'page' if who == 'owner' else 'cli', hands=who == 'owner')
-            elif act == 'reopen':
-                out = self.questions.reopen(qid)
-            elif act == 'withdraw':
-                out = self.questions.withdraw(qid, body.get('note'))
-            elif act == 'claim':
-                won, out = self.questions.claim(qid, body.get('by'))
-                out = out and dict(out, won=won)
-            elif act == 'release':
-                done, out = self.questions.release(qid, body.get('by'))
-                out = out and dict(out, released=done)
-            elif act == 'waiting':
-                out = self.questions.waiting(qid)
-            elif act == 'handoff':
-                out = self.questions.handoff(qid, body.get('reason'))
-            elif act == 'see':
-                out = self.questions.add_see(qid, body)
-            elif act == 'flag':
-                if who != 'owner':  # his judgement of a card, never an agent's
-                    return self.send_json(403, {'error': 'only he flags a card'})
-                out = self.questions.flag(qid, body.get('note'))
-            else:
-                out = self.questions.applied(qid)
+            if act == 'flag' and who != 'owner':  # his judgement of a card, never an agent's
+                return self.send_json(403, {'error': 'only he flags a card'})
+            out = QUESTION_ACTIONS[act](self.questions, qid, body, who)
             return self.send_json(200, out) if out else self.send_json(404, {'error': 'not found'})
         except ValueError as e:
             return self.send_json(400, {'error': f'bad request: {e}'})
-        except Exception:
-            log.exception('post_questions failed')
-            return self.send_json(500, {'error': 'server error'})
 
     def send_doc(self, ref):
         got = self.outreach.doc(ref)
@@ -864,66 +855,66 @@ class Handler(BaseHTTPRequestHandler):
                 log.exception('titled failed')
         return data
 
-    def serve_static(self, path, query=''):
-        # http://beacon is the hub's one name (renamed from inside, 2026-11-22): tasks at /, decisions at /decisions,
-        # usage at /usage, machines at /machines, team (who is doing what) at /team; Home at /power, /budget, /lighthouse.
-        host = (self.headers.get('Host') or '').split('.')[0].split(':')[0].lower()
-        page = path.rstrip('/') or '/'
-        if page == '/questions':
-            return self.redirect('/decisions')
-        if page == '/outcomes':  # the results live on top of Team (2026-11-22: no new tab)
-            return self.redirect('/team', 302)
-        if page == '/talk':  # the short link to talk: straight to the secure name, as an iPhone mic needs https
-            return self.redirect((HUB.get('https') or '').rstrip('/') + '/labs?talk', 302)
-        if page == '/system':  # System = Usage, Machines, Home, Labs, each on its own page with one sub-row
-            return self.redirect('/usage', 302)
-        if page in CLI_FILES:  # the agents' CLI and the settings it reads: boxes without a GitHub login refresh from here
+    def send_bytes(self, body, ctype, cache='no-cache'):
+        self.send_response(200)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', cache)
+        self.end_headers()
+        if not self.head:
+            self.wfile.write(body)
+
+    def send_generated(self, page):
+        """The agents' CLI and the settings it reads (boxes without a GitHub login refresh from here), and the
+        deployment's names every page reads first (/config.js). True when the page was one of them."""
+        if page in CLI_FILES:
             got = CLI_FILES[page]()
             if got is None:
-                return self.send_json(404, {'error': 'not found'})
+                self.send_json(404, {'error': 'not found'})
+                return True
             with open(got, 'rb') as f:
-                body = f.read()
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json' if got.endswith('.json') else 'text/x-python; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
-            self.send_header('Cache-Control', 'no-cache')
-            self.end_headers()
-            if not self.head:
-                self.wfile.write(body)
-            return
-        if page == '/config.js':  # the deployment's names (owner, machines, projects), read before any page script
+                self.send_bytes(f.read(), 'application/json' if got.endswith('.json') else 'text/x-python; charset=utf-8')
+            return True
+        if page == '/config.js':
             body = ('window.BEACON = ' + json.dumps(browser_settings(), ensure_ascii=False) + ';\n').encode()
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/javascript; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
-            self.send_header('Cache-Control', 'no-cache')
-            self.end_headers()
-            if not self.head:
-                self.wfile.write(body)
-            return
+            self.send_bytes(body, 'application/javascript; charset=utf-8')
+            return True
+        return False
+
+    def page_file(self, page, path):
+        """The file under web/ a path names. Every page links the others by path, on whatever name it was opened;
+        the bare hub name opens on the tasks."""
+        tasks_host = (self.headers.get('Host') or '').split('.')[0].split(':')[0].lower() == 'beacon'
+        if page in PAGE_FILES:
+            return PAGE_FILES[page]
+        if page == '/' or (page == '/new' and tasks_host):
+            return 'tasks.html' if tasks_host else 'index.html'
+        return urllib.parse.unquote(path).lstrip('/')
+
+    def serve_static(self, path, query=''):
+        page = path.rstrip('/') or '/'
+        if page in MOVED:
+            to, code = MOVED[page]
+            return self.redirect(to() if callable(to) else to, code)
+        if self.send_generated(page):
+            return None
         if path != page and page != '/':  # /decisions/ would load its files from /decisions/...
             return self.redirect(page + ('?' + query if query else ''), 302)
-        tasks_host = host == 'beacon'
-        if page in PAGE_FILES:  # every page links the others by path, on whatever name it was opened
-            rel = PAGE_FILES[page]
-        elif page == '/':
-            rel = 'tasks.html' if tasks_host else 'index.html'
-        elif page == '/new' and tasks_host:
-            rel = 'tasks.html'
-        elif page == '/home':  # Home groups his other tools: Power, Money (budget), Lighthouse
-            return self.redirect('/power', 302)
-        else:
-            rel = urllib.parse.unquote(path).lstrip('/')
+        rel = self.page_file(page, path)
         full = os.path.realpath(os.path.join(WEB, rel))
         if not full.startswith(os.path.realpath(WEB) + os.sep) or not os.path.isfile(full):
             self.send_error(404)
             return
+        return self.send_web_file(full, rel, query)
+
+    def send_web_file(self, full, rel, query):
+        """A file under web/, with its ETag. A page is revalidated on every load (edits go live at once) and names
+        its own CSS and JS with a version (?v=), so those are cached for good and a page switch never waits on a
+        round trip per file."""
         st = os.stat(full)
         etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
         if full.endswith('.html'):  # its links carry the versions of its CSS and JS: a change to any of them is a new page
             etag = etag[:-1] + f'-{assets_changed():x}"'
-        # A page is revalidated on every load (edits go live at once) and names its own CSS and JS with a version
-        # (?v=), so those are cached for good and a page switch never waits on a round trip per file.
         versioned = 'v=' in (query or '')
         cache = 'public, max-age=31536000, immutable' if versioned or rel.startswith('fonts/') else 'no-cache'
         if self.headers.get('If-None-Match') == etag:
@@ -933,8 +924,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         ctype = mimetypes.guess_type(full)[0] or 'application/octet-stream'
-        gz = 'gzip' in self.headers.get('Accept-Encoding', '')
-        body = static_body(full, etag, ctype, gz)
+        body = static_body(full, etag, ctype, 'gzip' in self.headers.get('Accept-Encoding', ''))
         self.send_response(200)
         self.send_header('Content-Type', ctype)
         if ctype.startswith('text/') or ctype in ('application/javascript', 'image/svg+xml'):
@@ -1018,11 +1008,30 @@ class Handler(BaseHTTPRequestHandler):
 NOT_MINE = object()  # route_get: no route here, so the static files (or the /api/ 404) answer
 
 
+def since(q):
+    """The `since` query parameter as a timestamp, or None."""
+    return float(q['since']) if q.get('since') else None
+
+
 def _view(service, method):
     """A route that answers with one service method's view, as JSON."""
     return lambda h, path, q: h.send_json(200, getattr(getattr(h, service), method)())
 
 
+# Knowledge's views by the last part of the path: each reads one source (a missing key is a 400, a source that is
+# down a 503). The lookups of one item answer 404 when it isn't there.
+KNOWLEDGE_VIEWS = {
+    'overview': lambda k, q: k.overview(),
+    'search': lambda k, q: k.search(q['q'], q.get('source')),
+    'notes': lambda k, q: {'notes': k.notes()},
+    'calls': lambda k, q: {'calls': k.calls()},
+    'graph': lambda k, q: k.graph(),
+    'thread': lambda k, q: k.thread(q['id'], q.get('at')),
+    'call': lambda k, q: k.call(q['id']),
+    'note': lambda k, q: k.note(q['path']),
+    'gbrain': lambda k, q: k.gbrain_page(q['slug']),
+}
+KNOWLEDGE_LOOKUPS = ('thread', 'call', 'note', 'gbrain')
 # Exact paths: (the Handler attribute that must be set on this box, or None; the handler).
 GET_ROUTES = {
     '/ca.crt': (None, lambda h, path, q: h.send_ca()),  # the authority behind https://<hub>, for his devices
@@ -1059,17 +1068,63 @@ GET_ROUTES = {
     '/api/rules': (None, Handler.get_rules),
     '/api/gate/approval': (None, Handler.get_gate_approval),
     '/api/gate/log': (None, Handler.get_gate_log),
+    '/api/tasks': (None, Handler.get_task_list),
+    '/api/tasks/projects': (None, lambda h, path, q: h.send_json(200, {'projects': h.tasks.projects()})),
+    '/api/tasks/auth': (None, Handler.get_task_auth),
+    '/api/questions': (None, Handler.get_question_list),
+    # his rules about cards, today's 👎 lessons against the cap, what was held back
+    '/api/questions/rules': (None, lambda h, path, q: h.send_json(
+        200, h.cardrules.summary() if getattr(h, 'cardrules', None) else {'rules': []})),
+    # the one log of bad cards: his 👎 flags and the lint's catches
+    '/api/questions/bad': (None, lambda h, path, q: h.send_json(200, {'questions': h.questions.bad(since(q))})),
+    '/api/questions/kinds': (None, lambda h, path, q: h.send_json(200, {'kinds': h.questions.kinds(since(q))})),
 }
 # Prefixes, tried in order after the exact paths: the longer prefix first where two overlap.
 GET_PREFIXES = (
     ('/api/buildlog', ('buildlog', Handler.get_buildlog)),
     ('/api/knowledge/', (None, Handler.get_knowledge)),
     ('/mcp/', GET_ROUTES['/mcp']),
-    ('/api/tasks', (None, Handler.get_tasks)),
+    ('/api/tasks', (None, Handler.get_task)),
     ('/api/questions/file/', (None, Handler.get_question_file)),
-    ('/api/questions', (None, Handler.get_questions)),
+    ('/api/questions', (None, Handler.get_question)),
 )
 
+
+def _claimed(questions, qid, body, who):
+    won, out = questions.claim(qid, body.get('by'))
+    return out and dict(out, won=won)
+
+
+def _released(questions, qid, body, who):
+    done, out = questions.release(qid, body.get('by'))
+    return out and dict(out, released=done)
+
+
+# What a POST to /api/questions/<id>/<act> does. His tap on the page is his answer ('page'); an agent's token
+# passing his words on logs as 'cli'.
+QUESTION_ACTIONS = {
+    'answer': lambda qs, qid, body, who: qs.answer(qid, body, 'page' if who == 'owner' else 'cli', hands=who == 'owner'),
+    'reopen': lambda qs, qid, body, who: qs.reopen(qid),
+    'withdraw': lambda qs, qid, body, who: qs.withdraw(qid, body.get('note')),
+    'claim': _claimed,
+    'release': _released,
+    'waiting': lambda qs, qid, body, who: qs.waiting(qid),
+    'handoff': lambda qs, qid, body, who: qs.handoff(qid, body.get('reason')),
+    'see': lambda qs, qid, body, who: qs.add_see(qid, body),
+    'flag': lambda qs, qid, body, who: qs.flag(qid, body.get('note')),
+    'applied': lambda qs, qid, body, who: qs.applied(qid),
+}
+
+# Labs talk's JSON actions (hearing a recorded turn is the one raw-audio POST).
+TALK_ACTIONS = {
+    '/api/talk/say': Handler.talk_say,
+    '/api/talk/brief': lambda h, talk, body, device: h.send_json(200, talk.brief(device)),
+    '/api/talk/act': lambda h, talk, body, device: h.send_json(200, talk.act(body, device)),
+    # a talk page opened: the own voice loads while he taps
+    '/api/talk/warm': lambda h, talk, body, device: h.send_json(200, {'ok': True, 'warming': talk.warm()}),
+    '/api/talk/played': Handler.talk_played,
+    '/api/talk/start': Handler.talk_start,
+}
 
 # POSTs, like the GETs: exact paths first, then prefixes in order. (service, handler): a route whose service is not
 # set on this box answers 404. Every handler checks its own caller: a writer, a collector, or the MCP key.

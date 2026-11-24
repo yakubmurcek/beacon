@@ -17,6 +17,7 @@ CASES = [
     ('/decisions/', {}, (302, {'Location': '/decisions'}, False)),
     ('/machines/?a=1', {}, (302, {'Location': '/machines?a=1'}, False)),
     ('/cli/tasks', {}, (200, {'Content-Type': 'text/x-python; charset=utf-8', 'Cache-Control': 'no-cache'}, False)),
+    ('/cli/tasks/', {}, (200, {'Content-Type': 'text/x-python; charset=utf-8', 'Cache-Control': 'no-cache'}, False)),
     ('/cli/config.example.json', {}, (200, {'Content-Type': 'application/json', 'Cache-Control': 'no-cache'}, False)),
     ('/config.js', {}, (200, {'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache'}, False)),
     ('/', {}, (200, {'Content-Type': 'text/html', 'Cache-Control': 'no-cache', 'Vary': 'Accept-Encoding'}, True)),
