@@ -15,6 +15,15 @@ const STATUS = [  // order, colour and plain word for each lead status (the lege
   ['rejected', 'var(--bad)', 'Rejected'],
   ['dropped', '#8f8676', 'Dropped'],
 ];
+// the band across the top of a card: where this lead stands, said as what it means for him
+const BAND = { client: ['star', 'Client'], meeting: ['user', 'Meeting set'], replied: ['mail', 'They replied'],
+  sent: ['mail', 'Sent, waiting for a reply'], contacted: ['phone', 'Contacted'], drafted: ['send', 'Draft ready to send'],
+  'not contacted': ['user', 'Not contacted yet'], rejected: ['x', 'Rejected'], dropped: ['x', 'Dropped'] };
+function band(r) {
+  const closed = r.ad === 'closed' && ['drafted', 'not contacted'].includes(r.status);
+  const [icn, word] = closed ? ['x', r.status === 'drafted' ? "Ad closed: don't send" : 'Ad closed: skip it'] : BAND[r.status] || ['target', SWORD[r.status] || r.status];
+  return h('div', { class: 'band', style: `--sc:${closed ? 'var(--bad)' : SCOLOR[r.status] || 'var(--dim)'}` }, ic(icn), word);
+}
 const SCOLOR = Object.fromEntries(STATUS.map(([k, c]) => [k, c]));
 const SWORD = Object.fromEntries(STATUS.map(([k, , w]) => [k, w]));
 const CHANCE = { high: ['High', 'var(--good)'], mid: ['Medium', 'var(--accent)'], low: ['Low', 'var(--dim)'] };
@@ -273,11 +282,12 @@ function leadCard(r) {
   const filtered = st.facets.Field || st.facets.AI;
   const segment = filtered && matching.length ? matching[0].text : r.segment;
   const ai = filtered ? bestAi(matching) || r.ai : r.ai;
-  // a written draft is the next step itself: the chip says it, so the card drops the 'Next' line
+  // a written draft is the next step itself: the state says it, so the card drops the 'Next' line
   const mail = (r.detail || []).some((x) => x.mail) && r.status === 'drafted';
   return h('article', { class: 'lead', style: `--c:${pcolor(r.project)}`, tabindex: '0', role: 'button', 'aria-label': `${r.name}: open the detail`,
     onclick: (e) => { if (!e.target.closest('a')) openLead(r); },
     onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) openLead(r); } },
+    band(r),
     h('div', { class: 'lead-top' },
       avatar(r.name, r.web),
       h('div', { class: 'lead-id' },
@@ -286,17 +296,15 @@ function leadCard(r) {
           st.project ? null : h('span', null, ic('building'), pname(r.project)),
           segment ? h('span', null, ic((r.facets || {}).Field ? fieldIc((openRoles(r).find((x) => x.text.startsWith(segment)) || matching[0] || {}).field || ((r.facets || {}).Field || [])[0]) : 'briefcase'), segment) : null,
           r.town ? h('span', null, ic(placeIc(r.town)), r.town) : null)),
-      h('span', { class: 'st', style: `--sc:${SCOLOR[r.status] || 'var(--dim)'}` }, SWORD[r.status] || r.status)),
-    r.chance || r.person || roles || mail || r.ai || r.posted ? h('div', { class: 'badges' },
+    ),
+    r.chance || r.person || roles || r.ai || r.posted ? h('div', { class: 'badges' },
       r.chance ? chanceChip(r.chance) : null,
       ai ? aiChip(ai) : null,
-      r.ad === 'closed' ? h('span', { class: 'bdg adclosed' }, ic('x'), mail ? "Ad closed · don't send" : 'Ad closed')
-        : mail ? h('span', { class: 'bdg mailready' }, ic('send'), 'Draft ready to send') : null,
       roles ? h('span', { class: 'bdg' }, ic('briefcase'), (roles === 1 ? '1 open role' : roles + ' open roles') + (filtered ? ' that match' : '')) : null,
       r.person && !/^not found$/i.test(r.person) ? h('span', { class: 'bdg' }, ic('user'), r.person) : null,
       r.posted && r.posted !== 'unknown' ? h('span', { class: 'bdg' + (postedAge(r.posted) === POSTED[0] ? ' fresh' : ''), title: r.posted }, ic('clock'), 'Posted ' + fmtDate(r.posted)) : null) : null,
     r.know ? h('p', { class: 'know' }, r.know) : null,
-    mail ? null : h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
+    mail || r.ad === 'closed' ? null : h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
     h('div', { class: 'foot' }, h('span', { class: 'links' }, links), r.touched ? h('span', { class: 'when', title: r.touched }, fmtDate(r.touched)) : null));
 }
 

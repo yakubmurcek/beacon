@@ -79,6 +79,11 @@
 .leads { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
 .lead { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px 12px; border-radius: var(--r-xl); border: 1px solid var(--line);
   background: var(--panel); min-width: 0; }
+.band { display: flex; align-items: center; gap: 8px; margin: -14px -16px 6px; padding: 9px 16px;
+  border-radius: calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px) 0 0; font: 700 13.5px/1.2 var(--sans);
+  background: color-mix(in srgb, var(--sc) 16%, var(--panel)); color: color-mix(in srgb, var(--sc) 70%, var(--text));
+  border-bottom: 2px solid color-mix(in srgb, var(--sc) 55%, transparent); }
+.band .ic { width: 16px; height: 16px; color: var(--sc); }
 .lead-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .lead h3 { margin: 0; font: 750 16.5px/1.25 var(--sans); overflow-wrap: anywhere; }
 .lead .st { flex: none; display: inline-flex; align-items: center; gap: 4px; font: 600 12px/1 var(--sans); color: var(--muted);
@@ -108,8 +113,6 @@
 .bdg, .chance, .grp { display: inline-flex; align-items: center; gap: 5px; font: 600 12px/1 var(--sans); padding: 5px 9px;
   border-radius: var(--r-pill); background: var(--panel-2); color: var(--text); max-width: 100%; }
 .bdg .ic { width: 13px; height: 13px; color: var(--muted); }
-.bdg.mailready { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); color: var(--accent-ink); }
-.bdg.mailready .ic { color: var(--accent-ink); }
 .aichip { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; font: 650 12px/1 var(--sans); padding: 4px 9px 4px 7px; border-radius: var(--r-pill);
   background: color-mix(in srgb, var(--cyan) 14%, var(--panel)); color: color-mix(in srgb, var(--cyan) 55%, var(--text)); }
 .aichip .ic { width: 13px; height: 13px; color: var(--cyan); }
@@ -122,9 +125,9 @@
 .role .posted .ic { width: 13px; height: 13px; }
 .role .posted.fresh .ic { color: var(--good); }
 .role .fitm { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
-.bdg.adclosed, .role .adclosed { display: inline-flex; align-items: center; gap: 4px; font-weight: 700;
+.role .adclosed { display: inline-flex; align-items: center; gap: 4px; font-weight: 700;
   color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--panel)); border-radius: var(--r-pill); padding: 3px 8px 3px 6px; }
-.role .adclosed .ic, .bdg.adclosed .ic { width: 13px; height: 13px; color: var(--bad); }
+.role .adclosed .ic { width: 13px; height: 13px; color: var(--bad); }
 .role-q { font-size: 12.5px; line-height: 1.4; color: var(--muted); font-style: italic; }
 .meter { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
 .meter i { width: 4px; border-radius: 2px; background: color-mix(in srgb, var(--dim) 45%, transparent); }
