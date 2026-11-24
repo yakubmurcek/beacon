@@ -56,6 +56,14 @@ class SniffTest(unittest.TestCase):
         self.assertEqual(ai['providers'], ['DeepSeek'])
         self.assertEqual(ai['models'], ['deepseek-chat'])
 
+    def test_a_sibling_script_named_by_its_file_name(self):
+        # a job that runs a script next to it by name ('ui_review.py' from scripts/), not by a full path
+        script(self.d, 'review.py', 'subprocess.run([CLAUDE, "-p", "--model", "claude-sonnet-5-5"])\n')
+        outer = script(self.d, 'review_job.py', "run([sys.executable, str(HERE / 'review.py')])\n")
+        ai = llm.sniff(['/usr/bin/python3', outer])
+        self.assertEqual(ai['tools'], ['Claude Code'])
+        self.assertEqual(ai['models'], ['claude-sonnet-5-5'])
+
     def test_the_agent_is_the_program_not_a_wrapper(self):
         self.assertEqual(llm.agent_of('/root/.local/bin/claude -p hi'), 'Claude Code')
         self.assertIsNone(llm.agent_of('timeout 2h /root/.local/bin/claude -p hi'))
