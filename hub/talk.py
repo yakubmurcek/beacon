@@ -4,7 +4,8 @@ The same talk mode runs in any browser (phone, desk, an always-on wall screen), 
 - Listening is on the hub. The page records each spoken turn (its own voice detection, echo cancel on) and posts
   the clip here; OpenAI transcribes it. Browser speech recognition differs per browser and is missing on Linux
   Chromium, so it is not used.
-- Speaking is on the hub too: TALK_PC_URL (the same voice on his PC, tried first, skipped for a minute when it does not answer), then TALK_TTS_URL (a self-hosted voice, bearer TALK_TTS_TOKEN) when set and answering,
+- Speaking is on the hub too: TALK_PC_URL (the same voice on his PC, tried first, skipped a minute when silent),
+  then TALK_TTS_URL (a self-hosted voice, bearer TALK_TTS_TOKEN) when set and answering,
   else OpenAI TTS. The voice answers 503 for a render under its quality bar, so a bad clip is never played or
   cached; a talk page opening warms it (TALK_TTS_WARM_URL). Its misses are counted and alarm. Keys never reach the page.
 - The brief is built from live data with no model call, so it starts at once. It ends on a question.
@@ -35,7 +36,7 @@ STYLE = os.environ.get('TALK_VOICE_STYLE', 'Warm, calm and confident. A sharp ch
                                             'update. Natural pace, no drama.')
 TTS_URL = os.environ.get('TALK_TTS_URL', '')  # a self-hosted voice: POST {"text"} -> audio, 503 when below its bar
 TTS_WARM_URL = os.environ.get('TALK_TTS_WARM_URL', '')  # POST: loads the model before the first line is needed
-PC_URL = os.environ.get('TALK_PC_URL', '')  # the same voice on his own PC: tried first, free; same contract as TTS_URL
+PC_URL = os.environ.get('TALK_PC_URL', '')  # his own PC's copy of the voice: tried first, free
 PC_TIMEOUT = float(os.environ.get('TALK_PC_TIMEOUT', '12'))
 PC_RETRY = 60  # seconds an unanswering PC is skipped, so an off PC never slows a line
 TTS_TIMEOUT = float(os.environ.get('TALK_TTS_TIMEOUT', '30'))  # a cold start takes ~25-40 s
@@ -262,7 +263,7 @@ class Talk:
             audio = self.http(req, 40)
         data, ctype = audio
         self.log(kind, len(text.split()) / WORDS_PER_SECOND, device)
-        if (TTS_URL or PC_URL) and kind == 'say':  # a fallback line is not kept: next time the own voice may answer
+        if (TTS_URL or PC_URL) and kind == 'say':  # a fallback line is not kept: the own voice may answer next
             return data, ctype or 'audio/mpeg'
         with self.lock:
             if len(self.cache) > 60:
@@ -270,13 +271,17 @@ class Talk:
             self.cache[h] = (data, ctype or 'audio/mpeg')
         return self.cache[h]
 
+    def post_voice(self, url, text, timeout):
+        req = urllib.request.Request(url, data=json.dumps({'text': text}).encode(), method='POST',
+                                     headers=own_voice_headers())
+        return self.http(req, timeout)
+
     def pc_voice(self, text):
-        """The voice on his PC, or None (PC off, busy with a game, or a render under the bar). Never alarms: the cloud takes over."""
+        """The voice on his PC, or None (off, busy, under the bar). Never alarms: the cloud takes over."""
         if not PC_URL or time.time() < getattr(self, 'pc_skip', 0):
             return None
         try:
-            audio = self.http(urllib.request.Request(PC_URL, data=json.dumps({'text': text}).encode(), method='POST',
-                                                     headers=own_voice_headers()), PC_TIMEOUT)
+            audio = self.post_voice(PC_URL, text, PC_TIMEOUT)
         except VoiceError as e:
             self.pc_skip = time.time() + PC_RETRY
             log.info('PC voice skipped for %ss: %s', PC_RETRY, e)
@@ -287,8 +292,7 @@ class Talk:
     def own_voice(self, text):
         """The self-hosted voice's clip, or None (asleep, too slow, or no render passed its bar): counted, alarmed."""
         try:
-            audio = self.http(urllib.request.Request(TTS_URL, data=json.dumps({'text': text}).encode(), method='POST',
-                                                     headers=own_voice_headers()), TTS_TIMEOUT)
+            audio = self.post_voice(TTS_URL, text, TTS_TIMEOUT)
         except VoiceError as e:
             self.log('say-miss', 0)
             self.misses += 1
