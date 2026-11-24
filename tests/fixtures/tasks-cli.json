@@ -1,0 +1,1351 @@
+{
+ "ls": {
+  "requests": [
+   [
+    "/api/tasks?status=open",
+    null,
+    false
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  high  due 2026-11-30  #claude\n",
+  "exit": null
+ },
+ "ls everything": {
+  "requests": [
+   [
+    "/api/tasks?status=all&project=beacon&due=today&q=login",
+    null,
+    false
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  high  due 2026-11-30  #claude\n",
+  "exit": null
+ },
+ "ls stale json": {
+  "requests": [
+   [
+    "/api/tasks?status=open&stale=1",
+    null,
+    false
+   ]
+  ],
+  "stdout": "[\n {\n  \"id\": 8,\n  \"title\": \"Fix the login\",\n  \"project\": \"beacon\",\n  \"status\": \"todo\",\n  \"tags\": [\n   \"parked\"\n  ],\n  \"priority\": 1,\n  \"due\": null,\n  \"updated_at\": 5,\n  \"body\": \"Why.\\n\\n## Steps\\n1. 🤖 a\\n2. 👤 b\",\n  \"plan\": [\n   {\n    \"label\": \"a\",\n    \"owner\": false,\n    \"done\": false\n   },\n   {\n    \"label\": \"b\",\n    \"owner\": true,\n    \"done\": false\n   }\n  ],\n  \"comments\": [\n   {\n    \"author\": \"Claude Code abc\",\n    \"text\": \"started\"\n   }\n  ],\n  \"sessions\": [\n   {\n    \"session_id\": \"Claude Code:abc\",\n    \"state\": \"working\",\n    \"machine\": \"box\"\n   }\n  ],\n  \"source\": \"chat\"\n },\n {\n  \"id\": 7,\n  \"title\": \"Fix the login\",\n  \"project\": \"beacon\",\n  \"status\": \"todo\",\n  \"tags\": [\n   \"claude\"\n  ],\n  \"priority\": 2,\n  \"due\": \"2026-11-30\",\n  \"updated_at\": 5,\n  \"body\": \"Why.\\n\\n## Steps\\n1. 🤖 a\\n2. 👤 b\",\n  \"plan\": [\n   {\n    \"label\": \"a\",\n    \"owner\": false,\n    \"done\": false\n   },\n   {\n    \"label\": \"b\",\n    \"owner\": true,\n    \"done\": false\n   }\n  ],\n  \"comments\": [\n   {\n    \"author\": \"Claude Code abc\",\n    \"text\": \"started\"\n   }\n  ],\n  \"sessions\": [\n   {\n    \"session_id\": \"Claude Code:abc\",\n    \"state\": \"working\",\n    \"machine\": \"box\"\n   }\n  ],\n  \"source\": \"chat\"\n }\n]\n",
+  "exit": null
+ },
+ "ls none": {
+  "requests": [
+   [
+    "/api/tasks?status=open",
+    null,
+    false
+   ]
+  ],
+  "stdout": "nothing open\n",
+  "exit": null
+ },
+ "auth": {
+  "requests": [
+   [
+    "/api/tasks/auth",
+    null,
+    true
+   ]
+  ],
+  "stdout": "owner\n",
+  "exit": null
+ },
+ "add": {
+  "requests": [
+   [
+    "/api/tasks",
+    {
+     "title": "Ship it",
+     "project": "beacon",
+     "tags": [
+      "x"
+     ],
+     "body": "the body",
+     "priority": 2,
+     "due": "2026-12-01",
+     "status": "doing",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/tasks/7/sessions",
+    {
+     "session_id": "Claude Code:abc12345-0000"
+    },
+    true
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  high  due 2026-11-30  #claude\nhttp://beacon/#/task/7\n",
+  "exit": null
+ },
+ "add no link json": {
+  "requests": [
+   [
+    "/api/tasks",
+    {
+     "title": "Ship it",
+     "project": "other",
+     "tags": []
+    },
+    true
+   ]
+  ],
+  "stdout": "{\n \"id\": 7,\n \"title\": \"Fix the login\",\n \"project\": \"beacon\",\n \"status\": \"todo\",\n \"tags\": [\n  \"claude\"\n ],\n \"priority\": 2,\n \"due\": \"2026-11-30\",\n \"updated_at\": 5,\n \"body\": \"Why.\\n\\n## Steps\\n1. 🤖 a\\n2. 👤 b\",\n \"plan\": [\n  {\n   \"label\": \"a\",\n   \"owner\": false,\n   \"done\": false\n  },\n  {\n   \"label\": \"b\",\n   \"owner\": true,\n   \"done\": false\n  }\n ],\n \"comments\": [\n  {\n   \"author\": \"Claude Code abc\",\n   \"text\": \"started\"\n  }\n ],\n \"sessions\": [\n  {\n   \"session_id\": \"Claude Code:abc\",\n   \"state\": \"working\",\n   \"machine\": \"box\"\n  }\n ],\n \"source\": \"chat\"\n}\n",
+  "exit": null
+ },
+ "add progress refused": {
+  "requests": [],
+  "stdout": "",
+  "exit": "tasks: refused: that title/body records progress, which belongs in the status.\n  Status is where it stands (tasks doing/done/drop, or status= in the same set).\n  The body is what REMAINS plus the done-test. What happened goes in a note:\n  tasks done ID -m \"✅ Done — …\"  /  tasks note ID \"⚠️ Partial — …\""
+ },
+ "show": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  high  due 2026-11-30  #claude\nhttp://beacon/#/task/7\nfrom chat\n\nWhy.\n\n## Steps\n1. 🤖 a\n2. 👤 b\n\n· Claude Code abc: started\n\nsession Claude Code:abc (working on box)\n",
+  "exit": null
+ },
+ "show json": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ]
+  ],
+  "stdout": "{\n \"id\": 7,\n \"title\": \"Fix the login\",\n \"project\": \"beacon\",\n \"status\": \"todo\",\n \"tags\": [\n  \"claude\"\n ],\n \"priority\": 2,\n \"due\": \"2026-11-30\",\n \"updated_at\": 5,\n \"body\": \"Why.\\n\\n## Steps\\n1. 🤖 a\\n2. 👤 b\",\n \"plan\": [\n  {\n   \"label\": \"a\",\n   \"owner\": false,\n   \"done\": false\n  },\n  {\n   \"label\": \"b\",\n   \"owner\": true,\n   \"done\": false\n  }\n ],\n \"comments\": [\n  {\n   \"author\": \"Claude Code abc\",\n   \"text\": \"started\"\n  }\n ],\n \"sessions\": [\n  {\n   \"session_id\": \"Claude Code:abc\",\n   \"state\": \"working\",\n   \"machine\": \"box\"\n  }\n ],\n \"source\": \"chat\"\n}\n",
+  "exit": null
+ },
+ "done": {
+  "requests": [
+   [
+    "/api/tasks/7/comments",
+    {
+     "text": "merged",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/tasks/7",
+    {
+     "status": "done"
+    },
+    true
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  done  high  due 2026-11-30  #claude\n",
+  "exit": null
+ },
+ "drop": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    {
+     "status": "dropped"
+    },
+    true
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  dropped  high  due 2026-11-30  #claude\n",
+  "exit": null
+ },
+ "todo": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    {
+     "status": "todo"
+    },
+    true
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  high  due 2026-11-30  #claude\n",
+  "exit": null
+ },
+ "doing": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    {
+     "status": "doing"
+    },
+    true
+   ],
+   [
+    "/api/tasks/7/sessions",
+    {
+     "session_id": "Claude Code:abc12345-0000"
+    },
+    true
+   ],
+   [
+    "/api/tasks/7",
+    {
+     "step": 1
+    },
+    true
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  high  due 2026-11-30  #claude\nPlan (## Steps):\n  ▶ 1. a\n    2. 👤 b\nWork the steps in order; starting each one, mark it: `tasks step 7 N` (the Team card shows it).\n",
+  "exit": null
+ },
+ "doing parked": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    {
+     "status": "doing"
+    },
+    true
+   ],
+   [
+    "/api/tasks/7",
+    {
+     "tags": [
+      "claude"
+     ]
+    },
+    true
+   ],
+   [
+    "/api/tasks/7/sessions",
+    {
+     "session_id": "Claude Code:abc12345-0000"
+    },
+    true
+   ],
+   [
+    "/api/tasks/7",
+    {
+     "step": 1
+    },
+    true
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  high  due 2026-11-30  #claude\nPlan (## Steps):\n  ▶ 1. a\n    2. 👤 b\nWork the steps in order; starting each one, mark it: `tasks step 7 N` (the Team card shows it).\n",
+  "exit": null
+ },
+ "doing no plan": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    {
+     "status": "doing"
+    },
+    true
+   ],
+   [
+    "/api/tasks/7/sessions",
+    {
+     "session_id": "Claude Code:abc12345-0000"
+    },
+    true
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  high  due 2026-11-30  #claude\n⚠️ #7 has no ## Steps. Write the plan first, then work it: `tasks set 7 body=-` with the body plus a numbered ## Steps (🤖 agent / 👤 him); the Team card shows the step you are on.\n",
+  "exit": null
+ },
+ "step": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    {
+     "step": 2
+    },
+    true
+   ]
+  ],
+  "stdout": "Plan (## Steps):\n  ✓ 1. a\n  ▶ 2. 👤 b\nWork the steps in order; starting each one, mark it: `tasks step 7 N` (the Team card shows it).\n",
+  "exit": null
+ },
+ "step out of range": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ]
+  ],
+  "stdout": "",
+  "exit": "tasks: #7 has 2 steps in ## Steps; write the plan there first"
+ },
+ "set": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    {
+     "priority": 1,
+     "tags": [
+      "a",
+      "b"
+     ],
+     "due": null,
+     "title": "New"
+    },
+    true
+   ]
+  ],
+  "stdout": "#7  New  [beacon]  urgent  #a #b\n",
+  "exit": null
+ },
+ "set bad field": {
+  "requests": [],
+  "stdout": "",
+  "exit": "tasks: unknown field colour (title, body, project, status, priority, due, tags)"
+ },
+ "set no equals": {
+  "requests": [],
+  "stdout": "",
+  "exit": "tasks: expected key=value, got 'priority'"
+ },
+ "handoff": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7/comments",
+    {
+     "text": "↪ Left for the task agent: finish step 2",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/tasks/7",
+    {
+     "status": "todo",
+     "tags": [
+      "claude"
+     ]
+    },
+    true
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  high  due 2026-11-30\nthe task agent picks it up (claude)\n",
+  "exit": null
+ },
+ "handoff auto": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7/comments",
+    {
+     "text": "↪ Left for the task agent: later",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/tasks/7",
+    {
+     "status": "todo",
+     "tags": [
+      "auto"
+     ]
+    },
+    true
+   ]
+  ],
+  "stdout": "#7  Fix the login  [beacon]  high  due 2026-11-30  #auto\nauto: waits for his OK (he adds claude)\n",
+  "exit": null
+ },
+ "handoff running": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ]
+  ],
+  "stdout": "",
+  "exit": "tasks: the task agent is running #7 now; `tasks note 7 \"…\"` instead"
+ },
+ "handoff closed": {
+  "requests": [
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ]
+  ],
+  "stdout": "",
+  "exit": "tasks: #7 is done; file the rest as a new task"
+ },
+ "note": {
+  "requests": [
+   [
+    "/api/tasks/7/comments",
+    {
+     "text": "progress",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ]
+  ],
+  "stdout": "noted on #7\n",
+  "exit": null
+ },
+ "link": {
+  "requests": [
+   [
+    "/api/tasks/7/sessions",
+    {
+     "session_id": "Claude Code:abc"
+    },
+    true
+   ]
+  ],
+  "stdout": "#7 linked to abc\n",
+  "exit": null
+ },
+ "link full id": {
+  "requests": [
+   [
+    "/api/tasks/7/sessions",
+    {
+     "session_id": "Codex:xyz"
+    },
+    true
+   ]
+  ],
+  "stdout": "#7 linked to Codex:xyz\n",
+  "exit": null
+ },
+ "ask": {
+  "requests": [
+   [
+    "/api/questions",
+    {
+     "question": "Which name?",
+     "options": [
+      {
+       "label": "Beacon",
+       "detail": "short"
+      },
+      "Hub"
+     ],
+     "kind": "naming",
+     "project_asked": false,
+     "blocking": false,
+     "project": "beacon",
+     "strict": true,
+     "default": "Beacon",
+     "context": "- 💰 free",
+     "task_id": 7,
+     "session_id": "Claude Code:abc12345-0000",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/questions/bad?since=1798790400",
+    null,
+    false
+   ],
+   [
+    "/api/questions/rules",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  going on with: Beacon\nhttp://beacon/decisions#/q/41\nHe flagged these cards as bad lately; if yours reads like them, fix it now (`tasks see`):\n  👎 ?2 „Which name?“ (vague)\nHis rules about cards (from his own 👎 and complaints); if yours breaks one, fix it now (`tasks see`, `tasks withdraw`):\n  - One plain line.\nGo on with 'Beacon' now. Don't run `tasks wait`: if he picks otherwise, answer-dispatcher resumes this session with his answer. If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.\n",
+  "exit": null
+ },
+ "ask blocking": {
+  "requests": [
+   [
+    "/api/questions",
+    {
+     "question": "Which name?",
+     "options": [
+      "Beacon"
+     ],
+     "kind": "other",
+     "project_asked": true,
+     "blocking": true,
+     "project": "other",
+     "strict": true,
+     "session_id": "Claude Code:abc12345-0000",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/questions/bad?since=1798790400",
+    null,
+    false
+   ],
+   [
+    "/api/questions/rules",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  blocking\nhttp://beacon/decisions#/q/41\nHe flagged these cards as bad lately; if yours reads like them, fix it now (`tasks see`):\n  👎 ?2 „Which name?“ (vague)\nHis rules about cards (from his own 👎 and complaints); if yours breaks one, fix it now (`tasks see`, `tasks withdraw`):\n  - One plain line.\nOn task #7 (your session's task, or one filed for it): his answer resumes it.\nBlocking: hold the work that depends on it, do everything else, then end your turn. Don't run `tasks wait`: when he answers, answer-dispatcher resumes this session with his answer. If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.\n",
+  "exit": null
+ },
+ "ask gate": {
+  "requests": [
+   [
+    "/api/questions",
+    {
+     "question": "Which name?",
+     "options": [
+      "Beacon"
+     ],
+     "kind": "other",
+     "project_asked": false,
+     "blocking": false,
+     "project": "beacon",
+     "strict": true,
+     "session_id": "Claude Code:abc12345-0000",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/questions/bad?since=1798790400",
+    null,
+    false
+   ],
+   [
+    "/api/questions/rules",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  going on with: Beacon\nhttp://beacon/decisions#/q/41\nHe flagged these cards as bad lately; if yours reads like them, fix it now (`tasks see`):\n  👎 ?2 „Which name?“ (vague)\nHis rules about cards (from his own 👎 and complaints); if yours breaks one, fix it now (`tasks see`, `tasks withdraw`):\n  - One plain line.\nGo on with 'Beacon' now. Don't run `tasks wait`: if he picks otherwise, answer-dispatcher resumes this session with his answer. If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.\nThe approval gate would hold this one (it only records for now). If you hold the work until he answers, run `tasks block 41` (the same card turns blocking, never ask it twice), so his answer is carried out, not dropped.\n",
+  "exit": null
+ },
+ "ask json": {
+  "requests": [
+   [
+    "/api/questions",
+    {
+     "question": "Which name?",
+     "options": [],
+     "kind": "other",
+     "project_asked": false,
+     "blocking": false,
+     "project": "beacon",
+     "strict": true,
+     "session_id": "Claude Code:abc12345-0000",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ]
+  ],
+  "stdout": "{\n \"id\": 41,\n \"question\": \"Which name?\",\n \"project\": \"beacon\",\n \"kind\": \"naming\",\n \"status\": \"open\",\n \"blocking\": false,\n \"default_answer\": \"Beacon\",\n \"answer\": null,\n \"task_id\": 7,\n \"see\": [],\n \"steps\": []\n}\n",
+  "exit": null
+ },
+ "ask other work": {
+  "requests": [
+   [
+    "/api/questions",
+    {
+     "question": "Which name?",
+     "options": [],
+     "kind": "other",
+     "project_asked": true,
+     "blocking": false,
+     "project": "other",
+     "strict": true,
+     "session_id": "Claude Code:abc12345-0000",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/questions/bad?since=1798790400",
+    null,
+    false
+   ],
+   [
+    "/api/questions/rules",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41  Which name?  [other]  naming  going on with: Beacon\nhttp://beacon/decisions#/q/41\nHe flagged these cards as bad lately; if yours reads like them, fix it now (`tasks see`):\n  👎 ?2 „Which name?“ (vague)\nHis rules about cards (from his own 👎 and complaints); if yours breaks one, fix it now (`tasks see`, `tasks withdraw`):\n  - One plain line.\nOn task #7 (your session's task, or one filed for it): his answer resumes it.\nHis answer runs in a fresh session (it is work in other, not this task's beacon): it gets task #7, its last notes and this card only. Make the card's context say what each answer means there (repo, PR, checks).\nGo on with 'Beacon' now. Don't run `tasks wait`: if he picks otherwise, answer-dispatcher resumes this session with his answer. If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.\n",
+  "exit": null
+ },
+ "ask too long": {
+  "requests": [],
+  "stdout": "",
+  "exit": "tasks: refused: the question is 130 chars, keep it under 120: only the question itself. Put the rest in -c as 2-4 short markdown bullets, each starting with an emoji (\"- 💰 costs 0 Kč\", \"- ⏱️ 10 min of your time\"), and option details in -o \"Label :: detail\"."
+ },
+ "ask look refused": {
+  "requests": [],
+  "stdout": "",
+  "exit": "tasks: refused: \"landing\" means he has to look at or try something to decide, and he decides on his phone without opening Claude. Add what he looks at: --see <preview link> (http://<project> on the tailnet, or a public Vercel preview that opens logged out) and/or --see <screenshot.png> (390 px wide, cropped to the part he decides on; a frame for a video). Several --see are fine. Nothing to see at all? --no-see \"why\"."
+ },
+ "ask look seen": {
+  "requests": [
+   [
+    "/api/questions",
+    {
+     "question": "Does the landing page look good?",
+     "options": [],
+     "kind": "other",
+     "project_asked": false,
+     "blocking": false,
+     "project": "beacon",
+     "strict": true,
+     "see": [
+      {
+       "url": "http://beacon"
+      }
+     ],
+     "see_none": "n/a",
+     "session_id": "Claude Code:abc12345-0000",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/questions/bad?since=1798790400",
+    null,
+    false
+   ],
+   [
+    "/api/questions/rules",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  going on with: Beacon\nhttp://beacon/decisions#/q/41\nHe flagged these cards as bad lately; if yours reads like them, fix it now (`tasks see`):\n  👎 ?2 „Which name?“ (vague)\nHis rules about cards (from his own 👎 and complaints); if yours breaks one, fix it now (`tasks see`, `tasks withdraw`):\n  - One plain line.\nOn task #7 (your session's task, or one filed for it): his answer resumes it.\nGo on with 'Beacon' now. Don't run `tasks wait`: if he picks otherwise, answer-dispatcher resumes this session with his answer. If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.\n",
+  "exit": null
+ },
+ "ask hands refused": {
+  "requests": [],
+  "stdout": "",
+  "exit": "tasks: refused: \"Sign the\" means he has to do something by hand, on his phone, without opening Claude. Give him a checklist: --step \"Open Agreements :: <exact page link>\" --step \"Tap Accept on Paid Apps\" … (2-6 short steps in plain words; open the link first and check it lands on that page). Keep the question one plain line (\"Sign Apple's Paid Apps agreement?\"), one short option (\"Done\"; never \"Not now\": his Later button puts it off without waking an agent), and put ids, error codes and script names after a \"---\" line in -c. Not by hand after all? Add a --step anyway."
+ },
+ "ask hands steps": {
+  "requests": [
+   [
+    "/api/questions",
+    {
+     "question": "Sign the agreement?",
+     "options": [
+      "Done"
+     ],
+     "kind": "other",
+     "project_asked": false,
+     "blocking": false,
+     "project": "beacon",
+     "strict": true,
+     "steps": [
+      {
+       "text": "Open it",
+       "url": "https://example.com/a"
+      }
+     ],
+     "session_id": "Claude Code:abc12345-0000",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/questions/bad?since=1798790400",
+    null,
+    false
+   ],
+   [
+    "/api/questions/rules",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  going on with: Beacon\nhttp://beacon/decisions#/q/41\nHe flagged these cards as bad lately; if yours reads like them, fix it now (`tasks see`):\n  👎 ?2 „Which name?“ (vague)\nHis rules about cards (from his own 👎 and complaints); if yours breaks one, fix it now (`tasks see`, `tasks withdraw`):\n  - One plain line.\nOn task #7 (your session's task, or one filed for it): his answer resumes it.\nGo on with 'Beacon' now. Don't run `tasks wait`: if he picks otherwise, answer-dispatcher resumes this session with his answer. If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.\n",
+  "exit": null
+ },
+ "ask refused by hub": {
+  "requests": [
+   [
+    "/api/questions",
+    {
+     "question": "Which name?",
+     "options": [],
+     "kind": "other",
+     "project_asked": false,
+     "blocking": false,
+     "project": "beacon",
+     "strict": true,
+     "session_id": "Claude Code:abc12345-0000",
+     "author": "Claude Code abc12345"
+    },
+    true
+   ],
+   [
+    "/api/questions/rules",
+    null,
+    false
+   ]
+  ],
+  "stdout": "His rules about cards (from his own 👎 and complaints); if yours breaks one, fix it now (`tasks see`, `tasks withdraw`):\n  - One plain line.\n",
+  "exit": "tasks: refused by the hub"
+ },
+ "block": {
+  "requests": [
+   [
+    "/api/questions/41/see",
+    {
+     "blocking": true
+    },
+    true
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  blocking\n  ⏸️ blocking: hold the work that depends on it and end your turn; his answer resumes you\n",
+  "exit": null
+ },
+ "see": {
+  "requests": [
+   [
+    "/api/questions/41/see",
+    {
+     "see": [
+      {
+       "url": "https://example.com/shot"
+      }
+     ]
+    },
+    true
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  going on with: Beacon\n  👀 1 to look at on the card\n",
+  "exit": null
+ },
+ "steps": {
+  "requests": [
+   [
+    "/api/questions/41/see",
+    {
+     "steps": [
+      {
+       "text": "Open it",
+       "url": "https://example.com"
+      },
+      {
+       "text": "Tap Accept"
+      }
+     ]
+    },
+    true
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  going on with: Beacon\n  ☑️ 2 steps on the card\n",
+  "exit": null
+ },
+ "questions": {
+  "requests": [
+   [
+    "/api/questions?status=open&limit=2000",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  going on with: Beacon\n",
+  "exit": null
+ },
+ "questions none": {
+  "requests": [
+   [
+    "/api/questions?status=answered&limit=2000&kind=naming&project=beacon&since=1799827200.0",
+    null,
+    false
+   ]
+  ],
+  "stdout": "nothing logged\n",
+  "exit": null
+ },
+ "questions open none": {
+  "requests": [
+   [
+    "/api/questions?status=open&limit=2000",
+    null,
+    false
+   ]
+  ],
+  "stdout": "nothing open\n",
+  "exit": null
+ },
+ "questions json": {
+  "requests": [
+   [
+    "/api/questions?status=all&limit=2000",
+    null,
+    false
+   ]
+  ],
+  "stdout": "[\n {\n  \"id\": 41,\n  \"question\": \"Which name?\",\n  \"project\": \"beacon\",\n  \"kind\": \"naming\",\n  \"status\": \"open\",\n  \"blocking\": false,\n  \"default_answer\": \"Beacon\",\n  \"answer\": null,\n  \"task_id\": 7,\n  \"see\": [],\n  \"steps\": []\n }\n]\n",
+  "exit": null
+ },
+ "questions kinds": {
+  "requests": [
+   [
+    "/api/questions/kinds?since=1799913600.0",
+    null,
+    false
+   ]
+  ],
+  "stdout": "naming           answered   3  took the agent's default   1  standing 0\n",
+  "exit": null
+ },
+ "questions kinds json": {
+  "requests": [
+   [
+    "/api/questions/kinds?",
+    null,
+    false
+   ]
+  ],
+  "stdout": "[\n {\n  \"kind\": \"naming\",\n  \"answered\": 3,\n  \"took_default\": 1,\n  \"standing\": 0\n }\n]\n",
+  "exit": null
+ },
+ "answer": {
+  "requests": [
+   [
+    "/api/questions/41/answer",
+    {
+     "answer": "Beacon",
+     "standing": true,
+     "via": "chat",
+     "note": "why"
+    },
+    true
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  answered: Beacon\n",
+  "exit": null
+ },
+ "withdraw": {
+  "requests": [
+   [
+    "/api/questions/41/withdraw",
+    {
+     "note": "moot"
+    },
+    true
+   ]
+  ],
+  "stdout": "?41  Which name?  [beacon]  naming  answered\n",
+  "exit": null
+ },
+ "wait withdrawn": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41 withdrawn: moot\n",
+  "exit": 3
+ },
+ "wait timeout": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ]
+  ],
+  "stdout": "no answer yet: ?41. Stop waiting: don't run `tasks wait` again, end your turn now with no text. When he answers, answer-dispatcher resumes this session with his answer.\n",
+  "exit": 2
+ },
+ "wait claimed": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/42/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/claim",
+    {
+     "by": "Claude Code:abc12345-0000"
+    },
+    true
+   ]
+  ],
+  "stdout": "?41 answered: Lighthouse\n(not your default: you went on with 'Beacon'; change course)\nIn the desktop app, end the turn that acts on this with the next-step box (wrap_up) so the old question disappears.\nstill open: ?42 (end your turn; the dispatcher brings those answers back)\n",
+  "exit": null
+ },
+ "wait lost claim": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/claim",
+    {
+     "by": "Claude Code:abc12345-0000"
+    },
+    true
+   ]
+  ],
+  "stdout": "no answer yet: ?41. Stop waiting: don't run `tasks wait` again, end your turn now with no text. When he answers, answer-dispatcher resumes this session with his answer.\n",
+  "exit": 2
+ },
+ "wait applied": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/42/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41 answered: Lighthouse\nAlready carried out in this chat: check its result, do not repeat it.\nstill open: ?42 (end your turn; the dispatcher brings those answers back)\n",
+  "exit": null
+ },
+ "wait handed earlier": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41 answered: Lighthouse\nHanded to a fresh session, because big. Do not carry it out here.\nThe asking session already went on with 'Beacon'; he picked 'Lighthouse', so the fresh session switches it. Stop work that depends on your default; leave the switch to it.\nIt starts shortly with task #7, its notes and the card. If it needs something only you know (branch or worktree, files, what you ruled out, how to check), add it now: tasks note 7 \"…\"\n",
+  "exit": null
+ },
+ "wait hand off": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/handoff",
+    {
+     "reason": "it is work in other, not this task's beacon"
+    },
+    true
+   ]
+  ],
+  "stdout": "?41 answered: Lighthouse\nHanded to a fresh session, because it is work in other, not this task's beacon. Do not carry it out here.\nThe asking session already went on with 'Beacon'; he picked 'Lighthouse', so the fresh session switches it. Stop work that depends on your default; leave the switch to it.\nIt starts shortly with task #7, its notes and the card. If it needs something only you know (branch or worktree, files, what you ruled out, how to check), add it now: tasks note 7 \"…\"\n",
+  "exit": null
+ },
+ "wait unreachable": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ]
+  ],
+  "stdout": "no answer yet: ?41. Stop waiting: don't run `tasks wait` again, end your turn now with no text. When he answers, answer-dispatcher resumes this session with his answer.\n",
+  "exit": 2
+ },
+ "wait handoff fails": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/handoff",
+    {
+     "reason": "it is work in other, not this task's beacon"
+    },
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/handoff",
+    {
+     "reason": "it is work in other, not this task's beacon"
+    },
+    true
+   ],
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/handoff",
+    {
+     "reason": "it is work in other, not this task's beacon"
+    },
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/handoff",
+    {
+     "reason": "it is work in other, not this task's beacon"
+    },
+    true
+   ],
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/handoff",
+    {
+     "reason": "it is work in other, not this task's beacon"
+    },
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/handoff",
+    {
+     "reason": "it is work in other, not this task's beacon"
+    },
+    true
+   ],
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/claim",
+    {
+     "by": "Claude Code:abc12345-0000"
+    },
+    true
+   ]
+  ],
+  "stdout": "?41 answered: Lighthouse\n(not your default: you went on with 'Beacon'; change course)\nIn the desktop app, end the turn that acts on this with the next-step box (wrap_up) so the old question disappears.\n",
+  "exit": null
+ },
+ "wait claim fails": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/claim",
+    {
+     "by": "Claude Code:abc12345-0000"
+    },
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/claim",
+    {
+     "by": "Claude Code:abc12345-0000"
+    },
+    true
+   ],
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/claim",
+    {
+     "by": "Claude Code:abc12345-0000"
+    },
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/claim",
+    {
+     "by": "Claude Code:abc12345-0000"
+    },
+    true
+   ],
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/claim",
+    {
+     "by": "Claude Code:abc12345-0000"
+    },
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ],
+   [
+    "/api/tasks/7",
+    null,
+    false
+   ],
+   [
+    "/api/questions/41/claim",
+    {
+     "by": "Claude Code:abc12345-0000"
+    },
+    true
+   ]
+  ],
+  "stdout": "?41 answered: Lighthouse\n(not your default: you went on with 'Beacon'; change course)\nIn the desktop app, end the turn that acts on this with the next-step box (wrap_up) so the old question disappears.\n",
+  "exit": null
+ },
+ "wait started for it": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ]
+  ],
+  "stdout": "?41 answered: Lighthouse\n(not your default: you went on with 'Beacon'; change course)\nIn the desktop app, end the turn that acts on this with the next-step box (wrap_up) so the old question disappears.\nThis run was started to carry it out: do it now.\n",
+  "exit": null
+ },
+ "wait hub error": {
+  "requests": [
+   [
+    "/api/questions/41/waiting",
+    {},
+    true
+   ],
+   [
+    "/api/questions/41",
+    null,
+    false
+   ]
+  ],
+  "stdout": "",
+  "exit": "tasks: no such question"
+ }
+}
