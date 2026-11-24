@@ -62,7 +62,7 @@ Writes: `Authorization: Bearer TASKS_TOKEN` = agent; the owner's tailnet login (
 never a header) = owner; plus a cross-site check (JSON content type, `Sec-Fetch-Site`). Ingest uses `USAGE_TOKEN`.
 Reads are open to the tailnet except the owner-only ones marked above.
 
-## 4. Tables (35, SQLite `usage.db`, 138 MB; integrity and foreign-key checks clean; no column holds mixed types)
+## 4. Tables (34 plus `sqlite_sequence`, SQLite `usage.db`, 138 MB; integrity and foreign-key checks clean; no column holds mixed types)
 
 | Domain | Tables (rows on 2026-11-24) | Written by |
 |---|---|---|
