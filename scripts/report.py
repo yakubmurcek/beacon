@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any, cast
 
@@ -41,6 +42,8 @@ CHECKS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("Known CVEs", "osv-scanner + OSV API", "no known vulnerability in any lockfile or vendored file",
      "every push + nightly", ("vulnerable dependency",)),
     ("Secrets", "gitleaks + GitHub push protection", "no secret in the history", "every push", ("committed secret",)),
+    ("Code grades", "SonarQube Cloud", "report only: reliability, security, maintainability grades", "every push (Sonar)",
+     ()),
     ("Code scanning", "CodeQL (GitHub default setup)", "Python, JS and Actions queries", "every push (GitHub)", ()),
 ]
 
@@ -60,6 +63,24 @@ def versions() -> dict[str, str]:
     return found
 
 
+SONAR_PROJECT = "yakubmurcek_beacon"
+SONAR_URL = ("https://sonarcloud.io/api/measures/component?component=" + SONAR_PROJECT
+             + "&metricKeys=reliability_rating,security_rating,sqale_rating,bugs,vulnerabilities")
+
+
+def sonar_grades() -> str:
+    """The project's public grades from SonarQube Cloud; empty when the service can't be reached."""
+    try:
+        with urllib.request.urlopen(SONAR_URL, timeout=10) as reply:
+            found = {m["metric"]: m["value"] for m in json.load(reply)["component"]["measures"]}
+    except (OSError, ValueError, KeyError):
+        return "unreachable"
+    grade = {"1.0": "A", "2.0": "B", "3.0": "C", "4.0": "D", "5.0": "E"}
+    return (f"reliability {grade.get(found.get('reliability_rating', ''), '?')}, "
+            f"security {grade.get(found.get('security_rating', ''), '?')}, "
+            f"maintainability {grade.get(found.get('sqale_rating', ''), '?')}")
+
+
 def numbers(baseline: dict[str, Any]) -> dict[str, str]:
     lint = cast("dict[str, int]", baseline.get("lint", {}))
     py = sum(n for rule, n in lint.items() if not rule.startswith("lint/"))
@@ -67,6 +88,7 @@ def numbers(baseline: dict[str, Any]) -> dict[str, str]:
     cov = cast("dict[str, float]", baseline.get("at_least", {}))
     types = cast("dict[str, int]", baseline.get("at_most", {}))
     return {
+        "Code grades": sonar_grades(),
         "Lint ratchet": f"{py} old findings held",
         "JS lint ratchet": f"{js} old findings held",
         "Type errors": ", ".join(f"{k.split()[1]} {v}" for k, v in sorted(types.items())),
