@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+# pyright: strict
+"""cards-check: open decision cards and old tasks, checked twice a day for whether they still matter.
+
+Cards used to leave the deck only by age (3 days): a moot one ("Replug the wall TV Pi?" after the Pi came back)
+stayed up to 3 days, a still-needed one died on day 3. Here a model reads each open card next to its task (status,
+body, latest notes), the newer cards on that task and the machines' live state, may look further (the hub's API,
+the project's git log, a PR) and says keep or moot. A moot card is withdrawn with the reason, the same reason goes
+on its task as a note. Age stays only as a fallback (hub/questions.py STALE_DAYS).
+
+Once a day (--tasks) the same pass reads to-do tasks nobody touched in a week and files ONE card proposing which
+to park; nothing is parked until he says so. A task proposed once is not proposed again for a month.
+His idea 2026-11-24 (task 1989).
+
+  cards-check                  judge every open card, print, change nothing
+  cards-check --apply          withdraw the moot ones (the timer's run)
+  cards-check --apply --tasks  also the old-task pass (the morning run)
+"""
+import argparse
+import contextlib
+import datetime
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+from typing import Any, cast
+
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'hub'))
+import settings  # hub/settings.py: the deployment's names
+
+URL = os.environ.get('TASKS_URL', 'http://beacon').rstrip('/')
+REPOS: str = os.environ.get('SWEEP_REPOS') or str(settings.p('projects'))  # pyright: ignore[reportUnknownMemberType]
+CLAUDE = os.environ.get('CLAUDE_BIN', 'claude')
+MODEL = os.environ.get('CHECK_MODEL', 'sonnet')
+DAY = 86400
+BATCH = 10          # cards per model call
+MAX_CALLS = 4       # a hard cap per run: ~2 runs a day, at most 8 Sonnet calls
+OLD_DAYS = 7        # a to-do task untouched this long is read by the old-task pass
+OLD_MAX = 25        # at most this many old tasks per pass
+MARK = 'relevance-check'
+COST: list[float] = []
+FAILED: list[int] = []
+J = dict[str, Any]  # one card, task, comment or verdict as the hub's JSON gives it
+
+SCHEMA = json.dumps({
+    'type': 'object', 'required': ['decisions'],
+    'properties': {'decisions': {'type': 'array', 'items': {
+        'type': 'object', 'required': ['id', 'verdict', 'evidence'],
+        'properties': {'id': {'type': 'integer'}, 'verdict': {'enum': ['keep', 'moot']},
+                       'evidence': {'type': 'string'}}}}}})
+
+CARD_RULES = f"""You keep {settings.OWNER_NAME}'s decision deck clean. Agents asked him these cards; some no longer need him.
+For EVERY card below give one verdict. Removing a card he still needs is far worse than keeping a moot one: when
+in doubt, keep.
+- moot: you verified one of these: what the card asks already happened (a note, a newer card, a closed task, a
+  commit, a machine's live state shows it); it can no longer happen or matter (the task was dropped, the plan
+  changed, a newer card on the same task replaces it); or the thing it asks him to fix is already fine (e.g. a
+  machine the card says is offline is online now with no problem).
+- keep: anything else, including cards that are simply old. Age alone never makes a card moot.
+You may look further, read only: `curl -s {URL}/api/...` (tasks/<id>, machines, questions?limit=50), `git log` in
+a project's repo under {REPOS}, `gh pr view`. Evidence: one short English line (max 200 chars) quoting what you
+verified (task note date + words, machine + state, commit hash). Edit nothing."""
+
+TASK_RULES = f"""You keep {settings.OWNER_NAME}'s task list honest. These to-do tasks were not touched in over a week.
+For EVERY task give one verdict:
+- moot: you verified the reason for it is gone (a later task or note covers it, the project or plan changed, it was
+  done elsewhere) or it is clearly an agent's idea nobody picked up and nothing depends on it.
+- keep: anything else, and every task that is his own idea or has a date, a client or money in it.
+When in doubt, keep. You may look further, read only: `curl -s {URL}/api/tasks/<id>`, `git log` in a repo under
+{REPOS}. Evidence: one short English line (max 200 chars) quoting what you verified. Edit nothing."""
+
+
+def get(path: str) -> Any:
+    if not URL.startswith(('http://', 'https://')):
+        raise ValueError(f'TASKS_URL is not a web address: {URL}')
+    with urllib.request.urlopen(URL + path, timeout=30) as r:  # noqa: S310  (checked just above)
+        return json.load(r)
+
+
+def day(ts: float | None) -> str:
+    return datetime.date.fromtimestamp(ts).isoformat() if ts else '?'
+
+
+def clip(s: str | None, n: int) -> str:
+    s = ' '.join((s or '').split())
+    return s if len(s) <= n else s[:n - 1] + '…'
+
+
+def ago(ts: float, now: float) -> str:
+    h = (now - ts) / 3600
+    return f'{h:.0f} h' if h < 48 else f'{h / 24:.0f} days'
+
+
+def task_lines(t: J | None, notes: int = 4) -> list[str]:
+    if not t:
+        return ['   task: none']
+    comments: list[J] = t.get('comments') or []
+    out = [f"   task #{t['id']} [{t['status']}] {clip(t['title'], 160)}"]
+    if t.get('body'):
+        out.append(f"   body: {clip(t['body'], 400)}")
+    for c in sorted(comments, key=lambda c: -c['at'])[:notes]:
+        out.append(f"   note {day(c['at'])}: {clip(c['text'], 260)}")
+    return out
+
+
+def machines_lines() -> list[str]:
+    try:
+        ms: list[J] = get('/api/machines').get('machines', [])
+    except (OSError, ValueError):
+        return ['(machines not readable)']
+    return [f"{m['machine']}: {'online' if m.get('online') else 'OFFLINE'}"
+            + (f" | problems: {clip('; '.join(m['problems']), 200)}" if m.get('problems') else '') for m in ms]
+
+
+def card_prompt(batch: list[J], tasks: dict[int, J], cards: list[J], now: float) -> str:
+    lines = [CARD_RULES, '', f'Now: {datetime.datetime.fromtimestamp(now):%Y-%m-%d %H:%M}.', '', '## Cards to judge']
+    for q in batch:
+        options: list[J] = q.get('options') or []
+        steps: list[J] = q.get('steps') or []
+        opts = ' / '.join(str(o.get('label', '')) for o in options)
+        lines.append(f"?{q['id']} asked {ago(q['created_at'], now)} ago, project {q.get('project')}: {clip(q['question'], 200)}")
+        if q.get('context'):
+            lines.append(f"   context: {clip(q['context'], 400)}")
+        if opts:
+            lines.append(f'   options: {clip(opts, 200)}')
+        if steps:
+            lines.append('   steps: ' + clip(' | '.join(str(s.get('text', '')) for s in steps), 300))
+        lines += task_lines(tasks.get(q.get('task_id') or 0))
+        newer = [c for c in cards if c.get('task_id') and c['task_id'] == q.get('task_id') and c['created_at'] > q['created_at']]
+        for c in newer[:3]:
+            lines.append(f"   newer card ?{c['id']} [{c['status']}] {clip(c['question'], 140)}"
+                         + (f" -> answer: {clip(c.get('answer'), 120)}" if c.get('answer') else ''))
+    lines += ['', '## Machines now', *machines_lines()]
+    return '\n'.join(lines)
+
+
+def tasks_prompt(batch: list[J]) -> str:
+    lines = [TASK_RULES, '', f'Today: {datetime.date.today()}.', '', '## Tasks to judge']
+    for t in batch:
+        lines.append(f"#{t['id']} filed {day(t['created_at'])}, last touched {day(t['updated_at'])}, project {t['project']}, "
+                     f"tags {','.join(t['tags']) or '-'}")
+        lines += task_lines(t, notes=2)
+    return '\n'.join(lines)
+
+
+def judge(text: str, ids: set[int]) -> list[J]:
+    if len(COST) + len(FAILED) >= MAX_CALLS:
+        print(f'cap of {MAX_CALLS} model calls reached: the rest wait for the next run', file=sys.stderr)
+        return []
+    cmd = [CLAUDE, '-p', '--model', MODEL, '--effort', 'medium',  # the prompt goes on stdin
+           '--setting-sources', '', '--strict-mcp-config', '--tools', 'Read,Grep,Glob,Bash',
+           '--allowedTools', f'Read,Grep,Glob,Bash(curl -s {URL}/api/*),Bash(git log:*),Bash(git -C:*),Bash(gh pr view:*)',
+           '--output-format', 'json', '--json-schema', SCHEMA,
+           '--system-prompt', 'You judge items against evidence. Answer only with the JSON asked for.']
+    env = {k: v for k, v in os.environ.items() if k != 'CLAUDE_CODE_SESSION_ID'}
+    try:
+        r = subprocess.run(cmd, input=text, cwd=REPOS, env=env, capture_output=True, text=True, timeout=1200, check=False)
+        res = json.loads(r.stdout)
+        COST.append(res.get('total_cost_usd') or 0)
+        out: J = res.get('structured_output') or {}
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError) as e:
+        print(f'no answer ({e})', file=sys.stderr)
+        FAILED.append(1)
+        return []
+    got: list[J] = out.get('decisions', [])
+    return [d for d in got if d.get('id') in ids and d.get('evidence')]
+
+
+def tasks_by_id(ids: list[int] | set[int]) -> dict[int, J]:
+    out: dict[int, J] = {}
+    for i in ids:
+        with contextlib.suppress(OSError, ValueError):
+            out[i] = get(f'/api/tasks/{i}')
+    return out
+
+
+def check_cards(now: float) -> tuple[list[J], int]:
+    cards: list[J] = get('/api/questions?limit=300').get('questions', [])
+    open_ = sorted([q for q in cards if q['status'] == 'open'], key=lambda q: q['created_at'])
+    open_ = [q for q in open_ if now - q['created_at'] > 3600]  # a card from the last hour: its session is on it
+    tasks = tasks_by_id({q['task_id'] for q in open_ if q.get('task_id')})
+    decisions: list[J] = []
+    for i in range(0, len(open_), BATCH):
+        batch = open_[i:i + BATCH]
+        decisions += judge(card_prompt(batch, tasks, cards, now), {q['id'] for q in batch})
+    by = {q['id']: q for q in open_}
+    for d in decisions:
+        d['card'] = by[d['id']]
+    return decisions, len(open_)
+
+
+def old_tasks(now: float) -> tuple[list[J], dict[int, J]]:
+    got: Any = get('/api/tasks?status=all&limit=3000')
+    tasks = cast('list[J]', got['tasks'] if isinstance(got, dict) else got)
+    old = [t for t in tasks if t['status'] == 'todo' and 'parked' not in t['tags']
+           and now - t['updated_at'] > OLD_DAYS * DAY]
+    full = tasks_by_id([t['id'] for t in sorted(old, key=lambda t: t['updated_at'])])
+    # proposed once: not again for a month (a note marked MARK touches the task, so updated_at moves anyway)
+    old = [t for t in full.values() if not any(MARK in c['text'] and now - c['at'] < 30 * DAY for c in comments_of(t))]
+    old = old[:OLD_MAX]
+    if not old:
+        return [], {}
+    decisions = judge(tasks_prompt(old), {t['id'] for t in old})
+    return decisions, {t['id']: t for t in old}
+
+
+def comments_of(t: J) -> list[J]:
+    return t.get('comments') or []
+
+
+def run(*args: str) -> 'subprocess.CompletedProcess[str]':
+    r = subprocess.run(['tasks', *args], capture_output=True, text=True, check=False)
+    if r.returncode:
+        print(f"tasks {args[0]} {args[1]}: {r.stderr.strip()[:300]}", file=sys.stderr)
+    return r
+
+
+def withdraw(d: J) -> bool:
+    q: J = d['card']
+    why = clip(d['evidence'], 300)
+    r = run('withdraw', str(q['id']), '-m', f'{MARK}: moot, {why}')
+    if r.returncode == 0 and q.get('task_id'):
+        run('note', str(q['task_id']), f"🧹 {MARK}: card ?{q['id']} „{clip(q['question'], 120)}“ left his deck as moot: {why}")
+    return r.returncode == 0
+
+
+def propose_park(moot: list[J], by: dict[int, J]) -> bool:
+    """One card for the whole list, on a task of its own: his 'Park them' reaches a fresh run through the dispatcher."""
+    ids = [d['id'] for d in moot]
+
+    def title(d: J, n: int) -> str:
+        return clip(by[d['id']]['title'], n)
+    lines = [f"- #{d['id']} {title(d, 90)}: {clip(d['evidence'], 160)}" for d in moot]
+    body = ('## Goal\nOld to-do tasks the relevance check found moot leave his list (parked: hidden, kept).\n\n'
+            '## Done-test\n- On his "Park them": each listed task carries the `parked` tag and a note;\n'
+            '- on "Keep": nothing changes.\n\n'
+            '## Steps\n1. 👤 Park them or keep them (the card).\n'
+            f"2. 🤖 Park: for each id `tasks set ID tags=<its tags>,parked` and `tasks note ID \"{MARK}: parked on his OK\"`; "
+            'a subset he names: only those. Then close this task.\n\n'
+            '## Context\n' + '\n'.join(lines))
+    r = run('add', f'Old tasks: {len(ids)} moot ones parked', '-p', 'beacon', '-t', 'auto', '-b', body)
+    tid = (r.stdout.split() or ['#'])[0].lstrip('#')
+    if not tid.isdigit():
+        return False
+    ctx = '\n'.join([f'{len(ids)} to-do tasks nobody touched in over a week look moot (reasons on the task).',
+                     'Parked = hidden from lists, kept, back with one tap.',
+                     *(f"#{d['id']} {title(d, 70)}" for d in moot[:6])])
+    run('ask', f'Park {len(ids)} old tasks that look moot?', '-c', ctx,
+        '-o', 'Park them :: they leave your lists, kept', '-o', 'Keep them :: nothing changes', '-k', 'decision', '--task', tid)
+    for d in moot:
+        run('note', str(d['id']), f"{MARK}: proposed for parking (task #{tid}): {clip(d['evidence'], 200)}")
+    return True
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--apply', action='store_true', help='withdraw moot cards (and file the parking card with --tasks)')
+    ap.add_argument('--tasks', action='store_true', help='also read to-do tasks untouched for a week')
+    a = ap.parse_args()
+    now = time.time()
+    decisions, n_open = check_cards(now)
+    moot = [d for d in decisions if d['verdict'] == 'moot']
+    print(f'{n_open} open cards, judged {len(decisions)}, moot {len(moot)}')
+    for d in moot:
+        print(f"  ?{d['id']} {clip(d['card']['question'], 70)} | {clip(d['evidence'], 140)}")
+    old_moot: list[J] = []
+    by: dict[int, J] = {}
+    if a.tasks:
+        tdec, by = old_tasks(now)
+        old_moot = [d for d in tdec if d['verdict'] == 'moot']
+        print(f'{len(by)} old to-do tasks judged, {len(old_moot)} look moot')
+        for d in old_moot:
+            print(f"  #{d['id']} {clip(by[d['id']]['title'], 70)} | {clip(d['evidence'], 140)}")
+    print(f'cost ${sum(COST):.2f} ({len(COST)} calls, {len(FAILED)} failed)')
+    if a.apply:
+        os.environ['TASKS_TOKEN'] = os.environ.get('TASKS_TOKEN') or subprocess.run(
+            ['secrets', 'get', 'TASKS_TOKEN'], capture_output=True, text=True, check=False).stdout.strip()
+        print(f'withdrew {sum(withdraw(d) for d in moot)}')
+        if old_moot:
+            print('parking card filed' if propose_park(old_moot, by) else 'parking card failed')
+    if FAILED and not COST:
+        sys.exit(f'cards-check: every model call failed ({len(FAILED)}): is the Claude login alive?')
+
+
+if __name__ == '__main__':
+    main()

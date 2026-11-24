@@ -1,7 +1,7 @@
 # Lint: pyflakes (unused names, undefined names) and syntax errors, on the hub, collectors, scripts, tests
 # and the extensionless agent CLIs in client/.
 line-length = 130
-extend-include = ["client/tasks", "client/task-agent", "client/answer-dispatcher", "client/tasks-sweep", "client/endings-backstop", "client/beacon-mcp"]
+extend-include = ["client/tasks", "client/task-agent", "client/answer-dispatcher", "client/tasks-sweep", "client/endings-backstop", "client/beacon-mcp", "client/cards-check"]
 
 [lint]
 select = ["F", "E9"]

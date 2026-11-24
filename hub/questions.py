@@ -210,9 +210,10 @@ def long_hub_link(s):
     return m.group(0) if m else ''
 
 
-# A card nobody answered in 3 days is stale: the work moved on or it was never his (a "send it today" card from
-# 2026-11-18 was still on the deck 6 days later). It leaves the deck with a note on its task.
-STALE_DAYS = 3
+# Whether a card still matters is judged twice a day by client/cards-check (a model reads it next to its task and
+# the machines; moot ones leave with the reason, task 1989). Age is only the fallback: a card nobody answered in 7
+# days leaves the deck with a note on its task (a "send it today" card from 2026-11-18 was still up 6 days later).
+STALE_DAYS = 7
 # A session's open card older than this, on the same task as a newer one he just answered, is behind the work
 # (?328 "plug in a cable" stayed after the pad worked, 2026-11-23). Cards asked together, in one go, are kept.
 SUPERSEDED_SEC = 600

@@ -574,8 +574,14 @@ Any name serves the decisions page at `/decisions`; the old path `/questions` re
   answered in his own words (not the agent's pick, last 7 days) is refused once per session with those words, and
   again after each new answer of his; a look or approval card first gets a fresh reviewer against each point. His
   answer takes the same session's older open cards on that task (asked 10+ minutes earlier, not to-dos) off the
-  deck, and a card nobody answered in 3 days leaves it with a note on its task. A session in a folder outside git
-  (an Unreal game) files under that folder's name, like the usage collector names it.
+  deck. A session in a folder outside git (an Unreal game) files under that folder's name, like the usage
+  collector names it.
+- **Relevance check** (`client/cards-check`, task 1989): twice a day Sonnet (at most 4 calls a run) reads every
+  open card older than an hour next to its task's latest notes, newer cards on that task and the machines' live
+  state, and withdraws the moot ones (what it asked already happened, can no longer matter, or the machine is fine
+  again) with the reason on the card and its task; age alone never counts. Age is only the fallback: a card nobody
+  answered in 7 days leaves the deck. The morning run (`--tasks`) also reads to-do tasks untouched for a week and
+  files one "Park N old tasks?" card; nothing is parked before his yes, and a task proposed once waits a month.
 - **Card rules** (`hub/cardrules.py`): the owner's rules about cards (a file outside the repo, settings
   `paths.card_rules`, `- ` lines under `## Rules`) plus one rule per 👎: Haiku reads the flagged card once (with
   his words, or after a few minutes without them) and either names the rule it already broke (a repeat) or
