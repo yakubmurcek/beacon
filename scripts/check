@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# The one quality command. The pre-push hook runs it, CI runs it, agents run it before calling work done.
+# Red means not done: fix the code, never lower a limit, skip a test or push with --no-verify.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+BASE="${CHECK_BASE:-origin/main}"   # what this change is compared with (CI passes the commit before the push)
+FAST="${1:-}"                       # --fast: everything but the test suite (~3 min), for the pre-push hook
+
+step() { printf '\n› %s\n' "$1"; }
+
+step "lint: zero tolerance (ruff.toml)"
+uvx ruff@0.17.6 check --quiet
+
+step "quality ratchet: strict rules for new code, old code may not get worse"
+python3 scripts/ratchet.py
+
+step "copy-paste (jscpd, .jscpd.json)"
+npx -y jscpd@4.0.5 --config .jscpd.json . >/dev/null || { npx -y jscpd@4.0.5 --config .jscpd.json --reporters consoleFull .; exit 1; }
+
+step "tests were not weakened"
+if git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
+  deleted=$(git diff --diff-filter=D --name-only "$BASE" -- tests/)
+  skipped=$(git diff "$BASE" -- tests/ | grep -E '^\+.*(unittest\.skip|skipTest\(|expectedFailure)' || true)
+  if [ -n "$deleted$skipped" ]; then
+    echo "A change deletes or skips tests. Fix the code instead, or explain it to the owner first:"
+    printf '%s\n' "$deleted" "$skipped"
+    exit 1
+  fi
+fi
+
+if [ "$FAST" = "--fast" ]; then printf '\n✓ fast check passed (CI runs the tests)\n'; exit 0; fi
+
+step "tests"
+python3 -m unittest discover -s tests -q 2>&1 | tail -3
+test "${PIPESTATUS[0]}" -eq 0
+
+printf '\n✓ check passed\n'

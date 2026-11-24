@@ -39,11 +39,30 @@ Open http://127.0.0.1:4829/tasks and http://127.0.0.1:4829/decisions.
 ## Test
 
 ```sh
-python3 -m unittest discover -s tests   # runs on config.example.json only
-ruff check
+scripts/check                       # everything below, in order; red = not done
+scripts/check --fast                # all but the test suite (~20 s instead of ~3 min)
+git config core.hooksPath .githooks # once per clone: every push runs `scripts/check --fast` first
 ```
 
-CI runs both on every push (`.github/workflows/ci.yml`).
+`scripts/check` (needs Python 3.12+, [uv](https://docs.astral.sh/uv/) and Node for `npx`):
+
+| Step | Tool | Rule |
+|---|---|---|
+| Lint | `ruff check` (`ruff.toml`) | zero findings: syntax errors, undefined and unused names |
+| Quality ratchet | `scripts/ratchet.py`: ruff with `ruff.strict.toml` (complexity 15, size limits, bugbear, security, imports, modern syntax) and Biome on `web/` (`biome.json`) | new code meets the strict rules; old code may not get worse. Findings are counted per rule in `quality-baseline.json`; a fix lowers the count with `scripts/ratchet.py --update`, nothing ever raises it |
+| Copy-paste | `jscpd` (`.jscpd.json`) | under 1% duplicated lines (0.27% on 2026-11-24) |
+| Tests not weakened | git diff against `origin/main` | a change may not delete test files or add skips |
+| Tests | `python3 -m unittest discover -s tests` | runs on `config.example.json` only |
+
+CI runs the same `scripts/check` on every push and pull request (`.github/workflows/ci.yml`); Dependabot keeps
+the Actions current.
+
+### Quality baseline (2026-11-24)
+
+The strict rules arrived after 36k lines were written, so the old findings are held by the ratchet rather
+than fixed in one big rewrite: 2,696 findings across 63 rules on day one. The biggest debts are long
+functions (the `client/tasks` CLI's `main` has complexity 108, `hub/server.py`'s `do_GET` 48).
+Each fix lowers the baseline for good.
 
 ## Configure
 

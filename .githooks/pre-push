@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Every push passes the fast half of CI's check (lint, ratchet, copy-paste, tests not weakened; ~20 s).
+# The test suite (~3 min) runs in CI and before an agent calls work done. Per clone: git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/check" --fast
