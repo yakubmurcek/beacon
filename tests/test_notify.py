@@ -28,6 +28,7 @@ class NotifyTest(unittest.TestCase):
         self.sent = []
         self.ok = True
         self.n = Notify(Store(os.path.join(self.tmp.name, 'u.db')), self.send, TZ, 'http://hub')
+        self.n.inline = True
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -119,6 +120,38 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(self.n.view(now=at(20, 11))['notices'][0]['state'], 'pushed')
 
+    def test_the_same_trouble_buzzes_once_a_day(self):
+        self.n.post({'level': 'urgent', 'title': '🔴 Claude login needs a refresh on devbox'}, now=at(20, 9))
+        again = self.n.post({'level': 'urgent', 'title': '🔴 Claude login needs a refresh on cloud, devbox'},
+                            now=at(20, 16))
+        self.assertEqual(again['level'], 'normal')  # its urgent slot stays free for a new problem
+        new = self.n.post({'level': 'urgent', 'title': '🔴 cloud is down'}, now=at(20, 16, 1))
+        self.assertEqual(new['state'], 'pushed')
+
+    def test_his_own_tap_comes_back_alone_and_soon(self):
+        self.n.post({'title': 'news 1'}, now=at(20, 9))
+        self.n.flush(at(20, 9, 15))  # a digest just went
+        self.sent.clear()
+        x = self.n.post({'title': '✅ Write the draft: Acme', 'link': '/outreach#leads?l=acme', 'alone': True},
+                        now=at(20, 9, 30))
+        self.assertEqual(x['state'], 'pushed')
+        self.assertEqual(self.sent, [('alone', '✅ Write the draft: Acme', '', 'http://hub/outreach#leads?l=acme')])
+
+    def test_a_slow_push_never_holds_up_a_sender(self):
+        import threading
+        import time as clock
+        gate = threading.Event()
+        self.n.inline = False
+        self.n.send = lambda *a: (gate.wait(5), (True, 'test', None))[1]
+        self.n.post({'level': 'urgent', 'title': '🔴 box down'})
+        start = clock.monotonic()
+        self.n.post({'title': 'news while it sends'})
+        self.assertLess(clock.monotonic() - start, 1)
+        gate.set()
+        clock.sleep(.05)
+        with self.n.sending:  # the push thread is done before the database goes
+            pass
+
     def test_read(self):
         a = self.n.post({'title': 'a'}, now=at(20, 10))
         self.n.post({'title': 'b'}, now=at(20, 10))
@@ -129,7 +162,7 @@ class NotifyTest(unittest.TestCase):
 
     def test_alarm_levels(self):
         self.assertEqual(from_alarm('🔴 devbox down')['level'], 'urgent')
-        self.assertEqual(from_alarm('🔴 job failed', quiet=True)['level'], 'normal')
+        self.assertEqual(from_alarm('🔴 job failed', quiet=True)['level'], 'inbox')
         self.assertEqual(from_alarm('❄️ 89 new players')['level'], 'normal')
         with self.assertRaises(ValueError):
             self.n.post({'title': ' '})

@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS notices (
   key TEXT NOT NULL DEFAULT '',
   topic TEXT NOT NULL DEFAULT '',
   repeats INTEGER NOT NULL DEFAULT 0,
+  alone INTEGER NOT NULL DEFAULT 0, -- his own tap's result: goes out by itself, not in a digest
   state TEXT NOT NULL,              -- held | pushed | kept (inbox only) | resolved | dropped
   push_id INTEGER,
   read_at REAL
@@ -93,9 +94,13 @@ class Notify:
         self.send = send  # f(kind, title, body, link) -> (ok, channel, error); None: nothing leaves the hub
         self.tz = ZoneInfo(tz)
         self.base = base.rstrip('/')  # http://<hub>: a push's link must work from the phone
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()  # a notice's dedupe and insert; never held while a push is sent
+        self.sending = threading.Lock()  # one flush at a time (the minute loop and an urgent post's thread)
+        self.inline = False  # tests: an urgent post flushes before it returns
         with store.connect() as con:
             con.executescript(SCHEMA)
+            if 'alone' not in {r[1] for r in con.execute('PRAGMA table_info(notices)')}:
+                con.execute('ALTER TABLE notices ADD COLUMN alone INTEGER NOT NULL DEFAULT 0')
 
     # ------------------------------------------------------------ in
 
@@ -120,7 +125,7 @@ class Notify:
         if resolved:
             level = 'inbox'  # a self-fixed failure never pings
         row = {'created_at': now, 'level': level, 'title': title, 'body': body, 'link': clean(n.get('link'), 500),
-               'source': clean(n.get('source'), 80), 'key': key, 'topic': topic(title),
+               'source': clean(n.get('source'), 80), 'key': key, 'topic': topic(title), 'alone': int(bool(n.get('alone'))),
                'state': 'kept' if level == 'inbox' else 'held'}
         with self.lock, self.store.connect() as con:
             if resolved and key:  # its alarm, still waiting for a digest, is old news now
@@ -136,11 +141,19 @@ class Notify:
             if same:
                 con.execute('UPDATE notices SET repeats = repeats + 1 WHERE id = ?', (same['id'],))
                 return dict(self.get(same['id'], con), repeat=True)
-            cur = con.execute('INSERT INTO notices (created_at, level, title, body, link, source, key, topic, state) '
-                              'VALUES (:created_at, :level, :title, :body, :link, :source, :key, :topic, :state)', row)
+            if level == 'urgent' and con.execute(  # the same trouble already buzzed today: its slot stays for new ones
+                    "SELECT 1 FROM notices WHERE level = 'urgent' AND state = 'pushed' AND created_at > ? "
+                    "AND (topic = ? OR (key != '' AND key = ?)) LIMIT 1", (now - 86400, row['topic'], key)).fetchone():
+                row['level'] = level = 'normal'
+            cur = con.execute('INSERT INTO notices (created_at, level, title, body, link, source, key, topic, alone, state) '
+                              'VALUES (:created_at, :level, :title, :body, :link, :source, :key, :topic, :alone, :state)',
+                              row)
             nid = cur.lastrowid
-        if level == 'urgent':
-            self.flush(now)
+        if level == 'urgent' or row['alone']:  # sent behind the request: a slow push never holds up the sender
+            if self.inline:
+                self.flush(now)
+            else:
+                threading.Thread(target=self.flush, daemon=True, name='notify-now').start()
         with self.store.connect() as con:
             return self.get(nid, con)
 
@@ -170,25 +183,30 @@ class Notify:
 
     def flush(self, now=None):
         """One pass of the rules: push what may go now. The live hub runs it every minute; an urgent post runs it at once."""
-        now = now or time.time()
-        with self.lock:
-            with self.store.connect() as con:
-                held = [dict(r) for r in con.execute(
-                    "SELECT * FROM notices WHERE state = 'held' ORDER BY id").fetchall()]
-                pushes = [dict(r) for r in con.execute(
-                    'SELECT at, level FROM pushes WHERE ok = 1 AND at >= ? ORDER BY at', (self.day_start(now),))]
-            if not held or len(pushes) >= DAY_CAP:
-                return None
-            last = max((p['at'] for p in pushes), default=0)
-            urgent = [x for x in held if x['level'] == 'urgent']
-            sent = [p['at'] for p in pushes if p['level'] == 'urgent']
-            if not self.awake(now):  # nothing an agent saw so far was worth waking him for: it waits for the morning
-                return None
-            if urgent and len(sent) < URGENT_CAP and now - max(sent, default=0) >= URGENT_GAP:
-                return self.push('urgent', urgent, now)
-            if not self.awake(now) or now - last < DIGEST_GAP or now - held[0]['created_at'] < BATCH:
-                return None
-            return self.push('digest', held, now)
+        with self.sending:
+            now = now or time.time()
+            kind, items = self.due(now)
+            return self.push(kind, items, now) if items else None
+
+    def due(self, now):
+        """(kind, notices) the rules let out now, or (None, [])."""
+        with self.store.connect() as con:
+            held = [dict(r) for r in con.execute("SELECT * FROM notices WHERE state = 'held' ORDER BY id").fetchall()]
+            pushes = [dict(r) for r in con.execute(
+                'SELECT at, level FROM pushes WHERE ok = 1 AND at >= ? ORDER BY at', (self.day_start(now),))]
+        if not held or len(pushes) >= DAY_CAP or not self.awake(now):
+            return None, []  # night: nothing an agent saw so far was worth waking him for, it waits for the morning
+        sent = [p['at'] for p in pushes if p['level'] == 'urgent']
+        urgent = [x for x in held if x['level'] == 'urgent']
+        if urgent and len(sent) < URGENT_CAP and now - max(sent, default=0) >= URGENT_GAP:
+            return 'urgent', urgent
+        alone = [x for x in held if x['alone']]
+        if alone:  # what his own tap started: by itself and quiet, no digest wait
+            return 'alone', alone[:1]
+        last = max((p['at'] for p in pushes), default=0)
+        if now - last < DIGEST_GAP or now - held[0]['created_at'] < BATCH:
+            return None, []
+        return 'digest', held
 
     def push(self, kind, items, now):
         if len(items) == 1:
@@ -295,9 +313,9 @@ def topic(title):
 
 
 def from_alarm(text, key='', quiet=False, source='', urgent=False):
-    """A notice from an old-style alarm line (the hub's machine and talk alarms, the telegram-alarm shim):
-    🔴 that buzzed = urgent, a 🟢 = inbox, everything else waits for the digest."""
+    """A notice from an old-style alarm line (the hub's machine and talk alarms): 🔴 that buzzed = urgent, a quiet
+    line (news, not a call to act) and a 🟢 = inbox only, everything else waits for the digest."""
     title = str(text).split('\n', 1)[0]
-    level = 'urgent' if urgent or (title.startswith('🔴') and not quiet) else 'normal'
+    level = 'urgent' if urgent or (title.startswith('🔴') and not quiet) else 'inbox' if quiet else 'normal'
     return {'text': text, 'key': key, 'source': source, 'level': level}
 

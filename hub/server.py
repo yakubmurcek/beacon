@@ -1090,7 +1090,7 @@ def outreach_done(tasks, notices, then=None):
             if link:
                 done = t['status'] == 'done'
                 notices.post({'title': ('✅ ' if done else '🗑️ ') + t['title'], 'link': link, 'source': 'Outreach',
-                              'key': f'outreach-move:{tid}', 'level': 'normal' if done else 'inbox'})
+                              'key': f'outreach-move:{tid}', 'level': 'normal' if done else 'inbox', 'alone': done})
         except Exception:  # the task is closed either way; only its notice is lost, and the log says why
             log.exception('the outreach move notice for task %s failed', tid)
     return closed
