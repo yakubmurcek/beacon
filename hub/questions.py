@@ -143,6 +143,16 @@ def put_off(label):
     return bool(PUT_OFF.match(' '.join(re.sub(r'\(recommended\)', '', str(label or ''), flags=re.I).split())))
 
 
+def default_of(default, options):
+    """The agent's pick: the one it named, else the option marked (recommended), else the first; None when put off."""
+    if put_off(default):
+        default = None
+    if default is None and options:
+        picked = [o['label'] for o in options if '(recommended)' in o['label'].lower()]
+        default = picked[0] if picked else options[0]['label']
+    return default
+
+
 def check_options(v):
     """[{label, detail}], from plain strings or objects; the agent's pick usually comes first. "Not now" and its
     kin are dropped: the deck's Later button does that without waking an agent."""
@@ -431,19 +441,51 @@ class Questions:
 
     def create(self, fields, author='agent', hands=True):
         """File a question. `hands`: the caller is his own login (an HTTP request with the token is not; code
-        inside the hub is), which alone may file it born answered through page or task."""
+        inside the hub is), which alone may file it born answered through page or task.
+        Everything is checked before anything is written: a refused ask files no task and no card."""
+        ask = self.read_ask(fields)
+        if ask['source']:
+            with self.store.connect() as con:
+                hit = con.execute('SELECT id FROM questions WHERE source = ?', (ask['source'],)).fetchone()
+            if hit:
+                return self.get(hit['id'])
+        if ask['task_id'] is None and self.tasks is not None:
+            # Every question belongs to a task, so an answer always has work to resume (task 1776): the
+            # asking session's own task, else a small one filed for it (below, once the ask passed).
+            ask['task_id'] = self.session_task(ask['session_id'])
+            if ask['task_id'] is not None and not ask['project_asked']:
+                ask['project'] = self.tasks.get(ask['task_id'])['project']
+        lint = [] if ask['answer'] else self.lint(ask['question'], ask['context'], ask['options'], ask['default'],
+                                                  ask['steps'], ask['see'])
+        if fields.get('strict') and not ask['answer']:
+            self.refuse_if_unfit(ask, lint, author)
+        if ask['task_id'] is None and self.tasks is not None and not ask['answer']:
+            ask['task_id'] = self.file_task(ask['question'], fields.get('context'), ask['project'], ask['session_id'])
+        cols = self.question_row(ask, fields, lint, author, hands)
+        with self.store.connect() as con:
+            names = list(cols)
+            cur = con.execute(f'INSERT INTO questions ({", ".join(names)}) VALUES ({", ".join("?" * len(names))})',
+                              [cols[n] for n in names])
+            qid = cur.lastrowid
+        if not ask['answer'] and ask['session_id'] and ask['kind'] != 'ending':
+            self.withdraw_ending_cards(ask['session_id'], qid)
+        q = self.get(qid)
+        self.notify(self.on_answered if ask['answer'] else self.on_created, q)
+        if not ask['answer']:
+            self.harvest_later(qid)
+        return q
+
+    def read_ask(self, fields):
+        """The asked fields, each validated; raises ValueError naming the first bad one. Writes nothing."""
         if not isinstance(fields, dict):
             raise ValueError('body: expected a JSON object')
-        question = text(fields.get('question'), 'question', QUESTION_MAX, required=True)
-        options = check_options(fields.get('options'))
-        see = self.check_see(fields.get('see'))  # before anything is filed: a bad picture refuses the whole ask
-        steps = self.check_steps(fields.get('steps'))
-        default = text(fields.get('default'), 'default', OPTION_MAX)
-        if put_off(default):
-            default = None
-        if default is None and options:
-            picked = [o['label'] for o in options if '(recommended)' in o['label'].lower()]
-            default = picked[0] if picked else options[0]['label']
+        ask = {
+            'question': text(fields.get('question'), 'question', QUESTION_MAX, required=True),
+            'options': check_options(fields.get('options')),
+            'see': self.check_see(fields.get('see')),  # a bad picture refuses the whole ask
+            'steps': self.check_steps(fields.get('steps')),
+        }
+        ask['default'] = default_of(text(fields.get('default'), 'default', OPTION_MAX), ask['options'])
         task_id = fields.get('task_id')
         if task_id is not None and (isinstance(task_id, bool) or not isinstance(task_id, int)):
             raise ValueError('task_id: expected a task number')
@@ -458,91 +500,83 @@ class Questions:
             # A question on a task is about that task's project; the asking session's folder only counts when
             # the asker named it (a Kha'Zix card filed from a session in the Beacon folder showed as Beacon).
             project = project if project_asked else t['project']
-        answer = text(fields.get('answer'), 'answer', TEXT_MAX)  # a question answered elsewhere, logged
-        session_id = text(fields.get('session_id'), 'session_id', 200)
-        source = text(fields.get('source'), 'source', 200)
-        if source:
-            with self.store.connect() as con:
-                hit = con.execute('SELECT id FROM questions WHERE source = ?', (source,)).fetchone()
-            if hit:
-                return self.get(hit['id'])
-        if task_id is None and self.tasks is not None:
-            # Every question belongs to a task, so an answer always has work to resume (task 1776): the
-            # asking session's own task, else a small one filed for it. A chat answer, logged, needs neither.
-            task_id = self.session_task(session_id)
-            if task_id is not None and not project_asked:
-                project = self.tasks.get(task_id)['project']
-            if task_id is None and not answer:
-                task_id = self.file_task(question, fields.get('context'), project, session_id)
-        now = time.time()
-        kind = kind_of(fields.get('kind'))
-        context = text(fields.get('context'), 'context', TEXT_MAX) or ''
-        lint = [] if answer else self.lint(question, context, options, default, steps, see)
-        if lint and fields.get('strict'):  # `tasks ask`: refused, so the agent fixes it before he sees it
-            if self.cardrules is not None:  # held back before he saw it: the check log shows it
-                self.cardrules.log('ask', 'refused', {'question': question}, why='; '.join(lint),
-                                   session_id=session_id, asked_by=str(fields.get('asked_by') or author)[:80])
+        ask.update(
+            task_id=task_id, project=project, project_asked=project_asked,
+            answer=text(fields.get('answer'), 'answer', TEXT_MAX),  # a question answered elsewhere, logged
+            session_id=text(fields.get('session_id'), 'session_id', 200),
+            source=text(fields.get('source'), 'source', 200),
+            kind=kind_of(fields.get('kind')),
+            context=text(fields.get('context'), 'context', TEXT_MAX) or '',
+            asked_by=str(fields.get('asked_by') or '')[:80],
+        )
+        return ask
+
+    def refuse_if_unfit(self, ask, lint, author):
+        """`tasks ask` (strict): a card that would leave him guessing, or one he already answered in other
+        words, is refused before he sees it, and the refusal goes to the check log."""
+        asked_by = ask['asked_by'] or str(author)[:80]
+        if lint:
+            self.log_refusal(ask, '; '.join(lint), asked_by)
             raise ValueError('this card would leave him guessing: ' + '; '.join(lint))
-        said = self.already_said(task_id, session_id) if fields.get('strict') and not answer else []
-        if said:
-            if self.cardrules is not None:  # the next ask from this session on this task passes: it has read them
-                self.cardrules.log('ask', 'refused', {'question': question}, why=SAID_WHY.format(task_id),
-                                   session_id=session_id, asked_by=str(fields.get('asked_by') or author)[:80])
-            raise ValueError(said_text(task_id, said))
+        said = self.already_said(ask['task_id'], ask['session_id'])
+        if said:  # the next ask from this session on this task passes: it has read them
+            self.log_refusal(ask, SAID_WHY.format(ask['task_id']), asked_by)
+            raise ValueError(said_text(ask['task_id'], said))
+
+    def log_refusal(self, ask, why, asked_by):
+        if self.cardrules is not None:
+            self.cardrules.log('ask', 'refused', {'question': ask['question']}, why=why,
+                               session_id=ask['session_id'], asked_by=asked_by)
+
+    def question_row(self, ask, fields, lint, author, hands):
+        """The columns of the new questions row."""
+        options, default, answer = ask['options'], ask['default'], ask['answer']
         # Layer 1 of the gate: the hub decides, by kind and words, whatever the agent said. In shadow
         # mode (the default, until he says "zapni") it only records what it would have decided.
-        gate_blocking, why = gate.question_blocks(kind, [question, context, default, *[o['label'] + ' ' + (o.get('detail') or '')
-                                                                                   for o in options]],
-                                                  bool(fields.get('blocking')), default)
+        words = [ask['question'], ask['context'], default, *[o['label'] + ' ' + (o.get('detail') or '') for o in options]]
+        gate_blocking, why = gate.question_blocks(ask['kind'], words, bool(fields.get('blocking')), default)
         # With no default the agent has nothing to go on with: it is waiting, whatever it said.
         blocking = gate_blocking if gate.rules.gate_mode() == 'enforce' else bool(fields.get('blocking')) or default is None
+        now = time.time()
         cols = {
-            'see': json.dumps(see),
-            'steps': json.dumps(steps),
+            'see': json.dumps(ask['see']),
+            'steps': json.dumps(ask['steps']),
             'lint': json.dumps(lint),
             'see_none': text(fields.get('see_none'), 'see_none', 300),
-            'project': self.tasks.project(project) if self.tasks is not None else (project or 'personal'),
-            'question': question,
-            'context': context,
+            'project': self.tasks.project(ask['project']) if self.tasks is not None else (ask['project'] or 'personal'),
+            'question': ask['question'],
+            'context': ask['context'],
             'options': json.dumps(options),
             'default_answer': default,
-            'kind': kind,
+            'kind': ask['kind'],
             'blocking': int(blocking),
             'blocking_reason': why,
             'gate_blocking': int(gate_blocking),
             'asked_blocking': int(bool(fields.get('blocking'))),
             'status': 'answered' if answer else 'open',
-            'asked_by': str(fields.get('asked_by') or author)[:80],
-            'session_id': session_id,
-            'task_id': task_id,
-            'project_asked': int(project_asked),
-            'source': source,
+            'asked_by': ask['asked_by'] or str(author)[:80],
+            'session_id': ask['session_id'],
+            'task_id': ask['task_id'],
+            'project_asked': int(ask['project_asked']),
+            'source': ask['source'],
             'created_at': float(fields.get('created_at') or now),
             'updated_at': now,
         }
         if answer:
-            via = answered_via(fields.get('via'), 'chat', hands)
             cols.update(answer=answer, answer_note=text(fields.get('note'), 'note', TEXT_MAX),
-                        standing=int(bool(fields.get('standing'))), answered_via=via, answered_at=now,
+                        standing=int(bool(fields.get('standing'))), answered_via=answered_via(fields.get('via'), 'chat', hands),
+                        answered_at=now,
                         # his feedback (hub/feedback.py) is born answered and still waits for the dispatcher's run
-                        applied_at=None if kind == FEEDBACK_KIND else now)
+                        applied_at=None if ask['kind'] == FEEDBACK_KIND else now)
+        return cols
+
+    def withdraw_ending_cards(self, session_id, qid):
+        """The session filed its own decision: the deck card the hub made from its reply (hub/endings.py) goes."""
         with self.store.connect() as con:
-            names = list(cols)
-            cur = con.execute(f'INSERT INTO questions ({", ".join(names)}) VALUES ({", ".join("?" * len(names))})',
-                              [cols[n] for n in names])
-            qid = cur.lastrowid
-        if not answer and session_id and kind != 'ending':
-            # The session filed its own decision: the deck card the hub made from its reply (hub/endings.py) goes.
-            with self.store.connect() as con:
-                cards = [r['id'] for r in con.execute("SELECT id FROM questions WHERE session_id = ? AND status = 'open' "
-                                                      "AND kind = 'ending' AND id != ?", (session_id, qid))]
-            for c in cards:
-                self.withdraw(c, 'the session filed its own decision')
-        q = self.get(qid)
-        self.notify(self.on_answered if answer else self.on_created, q)
-        if not answer:
-            self.harvest_later(qid)
-        return q
+            cards = [r['id'] for r in con.execute("SELECT id FROM questions WHERE session_id = ? AND status = 'open' "
+                                                  "AND kind = 'ending' AND id != ?", (session_id, qid))]
+        for c in cards:
+            self.withdraw(c, 'the session filed its own decision')
 
     def already_said(self, task_id, session_id):
         """His own words on this task (answers that were not the agent's pick) this session has not been shown yet:

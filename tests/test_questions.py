@@ -1074,6 +1074,13 @@ class BadQuestionsTest(LiveHub, unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn('the same words as 1 open card', out['error'])
 
+    def test_a_refused_ask_outside_any_task_files_no_task(self):
+        before = len(self.call('/api/tasks')[1]['tasks'])
+        code, _ = self.call('/api/questions', {'question': 'Ship it?', 'options': ['Yes', 'No'], 'strict': True,
+                                               'session_id': 'lonely-session'}, self.AGENT)
+        self.assertEqual(code, 400)
+        self.assertEqual(len(self.call('/api/tasks')[1]['tasks']), before)
+
     def test_a_card_with_the_long_hub_link_is_refused(self):
         import questions
         with mock.patch.dict(questions.HUB, {'https': 'https://hub.example.ts.net'}):
