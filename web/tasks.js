@@ -164,7 +164,7 @@ function row(t, opts = {}) {
     opts.actions ? opts.actions(t) : moreButton(t));
 }
 
-const moreButton = (t) => h('button', { class: 'more', 'aria-label': 'More', onclick: (e) => { e.stopPropagation(); openMenu(e.currentTarget, taskMenu(t)); } }, '⋯');
+const moreButton = (t) => h('button', { class: 'more', 'aria-label': 'More', onclick: (e) => { e.stopPropagation(); openMenu(e.currentTarget, taskMenu(t)); } }, '···');
 
 function agentLine(st) {
   return h('span', { class: `agent-line ${st.cls}` }, h('span', { class: `state ${st.cls}` }), h('span', {}, st.text),
@@ -313,7 +313,7 @@ function heroCard(t) {
     h('div', { class: 'hero-actions' },
       h('button', { class: 'primary', onclick: () => done(t) }, '✓ Done'),
       h('button', { onclick: () => snooze(t, 1, 'Moved to tomorrow') }, 'Tomorrow'),
-      h('button', { class: 'more', 'aria-label': 'More', onclick: (e) => { e.stopPropagation(); openMenu(e.currentTarget, taskMenu(t)); } }, '⋯')));
+      h('button', { class: 'more', 'aria-label': 'More', onclick: (e) => { e.stopPropagation(); openMenu(e.currentTarget, taskMenu(t)); } }, '···')));
 }
 
 // Every open task by project, sorted the way he picks (remembered on this device). All: one block per project,

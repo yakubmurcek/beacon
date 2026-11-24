@@ -220,7 +220,7 @@ main .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--st)
 .panel.jobs .nm-tiles { margin-bottom: 14px; }
 .nm-tile.st-run { --st: var(--s1); }
 .nm-tile.st-quiet { --st: var(--faint); }
-.job-why { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--bad); margin-top: 3px; overflow-wrap: anywhere; }
+.job-why { font: 12px/1.4 var(--mono); color: var(--bad); margin-top: 3px; overflow-wrap: anywhere; }
 .more summary { cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 600; padding: 6px 0; }
 .jobgroup .job-list { margin-top: 2px; }
 
