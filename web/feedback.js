@@ -108,6 +108,8 @@
     const oneLine = oneLineText(h);
     try {
       return await ms.domToCanvas(document.documentElement, {
+        // lazy logos below the fold never load, and the library waits 30 s for every image: cap the wait
+        timeout: 2500,
         width: w, height: h, scale, backgroundColor: getComputedStyle(document.body).backgroundColor,
         filter: (n) => !(n.classList && ['fb-toggle', 'fb', 'fb-toast'].some((c) => n.classList.contains(c))),
         style: { transform: `translate(${-x}px, ${-y}px)` },
