@@ -2310,29 +2310,10 @@ def pause(cmd):
 def run(a):
     if not a.dry_run:
         step('held messages', flush_held)  # the night's messages first, in the order they were held
-    # His answers on http://beacon/decisions are answer-dispatcher's (task 1776): it calls `reply` for this agent's tasks.
-    if not a.dry_run and not a.id and ONLY:
-        step('stale reports', stale_reports)
-        step('weekly summary', weekly)
-    if not a.dry_run and not a.id and TAPPED_ONLY:
-        step('moves land', land_moves)
-    if not a.dry_run and not a.id and not ONLY and not TAPPED_ONLY:
-        step('PR sync', sync_prs)
-        if not paused():  # paused: nothing routed, and only a move he tapped is worked
-            for t in step('routing', to_route) or []:
-                step(f'routing #{t["id"]}', route, t)
     if not a.dry_run and not a.id:
-        if stopped():
-            return 0  # the kill switch or the circuit breaker: `start` lifts it
-        why = step('spend cap', money_stop)
-        if why:
-            if ONLY:
-                step('cap notice', cap_notice, why)
+        chores()
+        if held_back():
             return 0
-        if len(runs_today()) >= MAX_RUNS_A_DAY:
-            if ONLY:
-                step('cap notice', cap_notice)
-            return 0  # the day's runs are used up; the queue waits
     ready = queue()
     if (paused() or TAPPED_ONLY) and not a.id and not ONLY:
         ready = [t for t in ready if tapped(t)]
@@ -2349,6 +2330,36 @@ def run(a):
         return 0
     return work(ready[0], dry=a.dry_run)
 
+
+def chores():
+    """The passes of a scheduled run before any task is worked; which ones depends on this agent's scope."""
+    # His answers on http://beacon/decisions are answer-dispatcher's (task 1776): it calls `reply` for this agent's tasks.
+    if ONLY:
+        step('stale reports', stale_reports)
+        step('weekly summary', weekly)
+    if TAPPED_ONLY:
+        step('moves land', land_moves)
+    if not ONLY and not TAPPED_ONLY:
+        step('PR sync', sync_prs)
+        if not paused():  # paused: nothing routed, and only a move he tapped is worked
+            for t in step('routing', to_route) or []:
+                step(f'routing #{t["id"]}', route, t)
+
+
+def held_back():
+    """True when no task may start now: the kill switch, the spend cap or the day's runs used up."""
+    if stopped():
+        return True  # the kill switch or the circuit breaker: `start` lifts it
+    why = step('spend cap', money_stop)
+    if why:
+        if ONLY:
+            step('cap notice', cap_notice, why)
+        return True
+    if len(runs_today()) >= MAX_RUNS_A_DAY:
+        if ONLY:
+            step('cap notice', cap_notice)
+        return True  # the day's runs are used up; the queue waits
+    return False
 
 if __name__ == '__main__':
     sys.exit(main())
