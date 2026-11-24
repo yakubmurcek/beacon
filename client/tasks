@@ -1722,7 +1722,6 @@ def hook_ask_shown(ev):
         quick('/api/questions', {
             'question': q['question'][:400], 'kind': q.get('header') or 'chat', 'project': project_of(ev.get('cwd')),
             'options': chat_options(q),
-            'context': "_Asked with buttons in the chat; answer here or there._",
             'session_id': f'Claude Code:{sid}', 'asked_by': f'Claude Code {sid[:8]}',
             'source': chat_card_source(ev, i)})
 
