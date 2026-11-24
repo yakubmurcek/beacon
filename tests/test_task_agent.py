@@ -59,6 +59,8 @@ PROVEN = {'reproduced_without_fix': True, 'criteria': [{'line': 'Klíč po reset
 
 GH_STUB = r'''#!/bin/sh
 echo "$@" >> "$STUB_GH_LOG"
+[ "$1 $2" = "pr merge" ] && echo MERGED > "$STUB_GH_LOG.merged"
+[ "$1 $2" = "pr view" ] && [ -f "$STUB_GH_LOG.merged" ] && { cat "$STUB_GH_LOG.merged"; exit 0; }
 [ "$1 $2" = "pr view" ] && [ -n "$STUB_GH_STATE" ] && echo "$STUB_GH_STATE"
 exit "${STUB_GH_EXIT:-0}"
 '''
@@ -539,6 +541,26 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         self.hand('Write the draft', 'close', body='Beacon move: draft')
         self.assertEqual(self.agent.main([]), 0)
         self.assertTrue(os.path.exists(self.seen))
+
+    def test_a_tapped_move_in_his_notes_repo_lands_its_own_pr(self):
+        self.agent.TAPPED_ONLY = True
+        self.agent.AGENT['self_merge'] = ['notes']
+        pr = '👉 PR https://github.com/o/notes/pull/7 (draft → main): the draft, not sent'
+        mine = self.tasks.create({'title': 'Write the draft', 'tags': ['claude'], 'status': 'doing', 'project': 'notes',
+                                  'body': '## Goal\nA draft\n\nBeacon move: draft'})
+        self.tasks.comment(mine['id'], pr, 'Claude Code 1234abcd')
+        other = self.tasks.create({'title': 'Fix login', 'tags': ['claude'], 'status': 'doing', 'project': 'app',
+                                   'body': 'Beacon move: fix'})
+        self.tasks.comment(other['id'], pr.replace('/notes/', '/app/'), 'Claude Code 1234abcd')
+        os.environ['STUB_GH_STATE'] = 'OPEN'
+        self.assertEqual(self.agent.main([]), 0)
+        t = self.tasks.get(mine['id'])
+        self.assertEqual((t['status'], t['tags']), ('done', []))
+        with open(self.gh_log) as f:
+            log = f.read()
+        self.assertIn('pr merge https://github.com/o/notes/pull/7', log)
+        self.assertNotIn('/app/pull/7', log)  # not a notes repo: the PR waits for review
+        self.assertEqual(self.tasks.get(other['id'])['status'], 'doing')
 
     def test_paused_it_neither_routes_nor_works_but_still_tidies(self):
         self.assertEqual(self.agent.main(['pause']), 0)

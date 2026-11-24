@@ -2110,6 +2110,32 @@ def sync_prs(force=False):
             note(t['id'], f'↩️ PR {names} was closed without merging. Back on his list.')
 
 
+def land_moves():
+    """A tapped move in a repo of his own notes (agent.self_merge: job-search drafts and the like) that ended at an open
+    PR is merged here and its task closed, so the page shows the result. The auto mode classifier refuses an agent's
+    push to main even when the brief asks for it (Wattstor draft sat on a branch, 2026-11-24); nothing in these repos
+    goes out to anyone, a draft is still only a draft."""
+    own = set(AGENT.get('self_merge') or ())
+    env = None
+    for t in cli.call('/api/tasks?status=doing&limit=2000', auth=False)['tasks']:
+        if t['project'] not in own or not tapped(t) or not PR_URL.search((t.get('last_note') or {}).get('text') or ''):
+            continue
+        env = env or gh_env()
+        full = cli.call(f"/api/tasks/{t['id']}", auth=False)
+        prs = list(dict.fromkeys(PR_URL.findall(full['comments'][-1]['text'])))
+        if not prs or any(f"/{t['project']}/pull/" not in pr for pr in prs):
+            continue  # a PR in another repo is not ours to merge
+        for pr in prs:
+            if pr_state(pr, env) == 'OPEN':
+                r = subprocess.run([GH, 'pr', 'merge', pr, '--squash', '--delete-branch'], env=env,
+                                   capture_output=True, text=True, timeout=120, check=False)
+                if r.returncode:
+                    print(f"task-agent: couldn't merge {pr}: {(r.stderr or r.stdout).strip()[-200:]}", file=sys.stderr)
+        if all(pr_state(pr, env) == 'MERGED' for pr in prs):
+            cli.call(f"/api/tasks/{t['id']}", {'status': 'done', 'tags': [x for x in full['tags'] if x != TAG]})
+            note(t['id'], f"✅ {', '.join('#' + p.rsplit('/', 1)[-1] for p in prs)} merged, so the result is on the page.")
+
+
 # ------------------------------------------------------------------ his replies
 
 def latest_pr(task):
@@ -2288,6 +2314,8 @@ def run(a):
     if not a.dry_run and not a.id and ONLY:
         step('stale reports', stale_reports)
         step('weekly summary', weekly)
+    if not a.dry_run and not a.id and TAPPED_ONLY:
+        step('moves land', land_moves)
     if not a.dry_run and not a.id and not ONLY and not TAPPED_ONLY:
         step('PR sync', sync_prs)
         if not paused():  # paused: nothing routed, and only a move he tapped is worked

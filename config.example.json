@@ -163,7 +163,10 @@
     ],
     "forward_hints": {
       "Pošli Kovovi": "Přepošli Kovovi, napiš ok až to opraví."
-    }
+    },
+    "self_merge": [
+      "job-notes"
+    ]
   },
   "freshness": {
     "_about": "Copies every machine must keep current (hub/freshness.py). checkouts: a git clone by path(s) and its GitHub repo, compared on the given branch; files: a copy of a file in the hub's checkout. machines: where it applies (all when left out). grace_h: how old the source may be before a copy lacking it is a problem. version_lag: how many patch releases a tool may trail the newest machine.",
