@@ -4,7 +4,7 @@ The same talk mode runs in any browser (phone, desk, an always-on wall screen), 
 - Listening is on the hub. The page records each spoken turn (its own voice detection, echo cancel on) and posts
   the clip here; OpenAI transcribes it. Browser speech recognition differs per browser and is missing on Linux
   Chromium, so it is not used.
-- Speaking is on the hub too: TALK_TTS_URL (a self-hosted voice, bearer TALK_TTS_TOKEN) when set and answering,
+- Speaking is on the hub too: TALK_PC_URL (the same voice on his PC, tried first, skipped for a minute when it does not answer), then TALK_TTS_URL (a self-hosted voice, bearer TALK_TTS_TOKEN) when set and answering,
   else OpenAI TTS. The voice answers 503 for a render under its quality bar, so a bad clip is never played or
   cached; a talk page opening warms it (TALK_TTS_WARM_URL). Its misses are counted and alarm. Keys never reach the page.
 - The brief is built from live data with no model call, so it starts at once. It ends on a question.
@@ -35,6 +35,9 @@ STYLE = os.environ.get('TALK_VOICE_STYLE', 'Warm, calm and confident. A sharp ch
                                             'update. Natural pace, no drama.')
 TTS_URL = os.environ.get('TALK_TTS_URL', '')  # a self-hosted voice: POST {"text"} -> audio, 503 when below its bar
 TTS_WARM_URL = os.environ.get('TALK_TTS_WARM_URL', '')  # POST: loads the model before the first line is needed
+PC_URL = os.environ.get('TALK_PC_URL', '')  # the same voice on his own PC: tried first, free; same contract as TTS_URL
+PC_TIMEOUT = float(os.environ.get('TALK_PC_TIMEOUT', '12'))
+PC_RETRY = 60  # seconds an unanswering PC is skipped, so an off PC never slows a line
 TTS_TIMEOUT = float(os.environ.get('TALK_TTS_TIMEOUT', '30'))  # a cold start takes ~25-40 s
 # How long the own voice stays up after its last line (the host's idle window, 300 s, less a margin). Past it, and
 # with a warm URL to wake it, a line never waits on a cold start: the quick voice says it while the own one wakes.
@@ -43,7 +46,7 @@ DAY_MINUTES = float(os.environ.get('TALK_DAY_MINUTES', '30'))  # heard + spoken,
 # USD per minute (vendor price pages, 2026): transcribe $0.003, mini TTS ~$0.015. The own voice runs on a rented
 # GPU (L40S $1.95/h, 2026-11-24) and renders a sentence in ~0.85x its length; a warm keeps it up ~5 min more.
 GPU_PER_MIN = float(os.environ.get('TALK_TTS_GPU_PER_HOUR', '1.95')) / 60
-PRICE = {'hear': 0.003, 'say': 0.015, 'wake': 0.003, 'say-own': round(GPU_PER_MIN * 0.85, 4)}
+PRICE = {'hear': 0.003, 'say': 0.015, 'wake': 0.003, 'say-own': round(GPU_PER_MIN * 0.85, 4), 'say-pc': 0.0}
 WARM_COST = GPU_PER_MIN * 5.5
 MISS_ALARM = 3  # own-voice misses in a row before Telegram hears (once a day)
 MAX_AUDIO = 4 * 1024 * 1024
@@ -239,13 +242,16 @@ class Talk:
         text = ' '.join(str(text or '').split())[:1200]
         if not text:
             raise VoiceError('nothing to say')
-        h = hashlib.sha1(f'{VOICE}|{STYLE}|{TTS_URL}|{text}'.encode()).hexdigest()
+        h = hashlib.sha1(f'{VOICE}|{STYLE}|{PC_URL}|{TTS_URL}|{text}'.encode()).hexdigest()
         hit = self.cache.get(h)
         if hit:
             return hit
         self.check_cap()
-        audio = self.own_voice(text) if TTS_URL and self.own_voice_up() else None
-        kind = 'say-own' if audio else 'say'
+        audio = self.pc_voice(text)
+        kind = 'say-pc' if audio else None
+        if audio is None:
+            audio = self.own_voice(text) if TTS_URL and self.own_voice_up() else None
+            kind = 'say-own' if audio else 'say'
         if audio is None:
             key = openai_key()
             if not key:
@@ -256,13 +262,27 @@ class Talk:
             audio = self.http(req, 40)
         data, ctype = audio
         self.log(kind, len(text.split()) / WORDS_PER_SECOND, device)
-        if TTS_URL and kind == 'say':  # a fallback line is not kept: next time the own voice may answer
+        if (TTS_URL or PC_URL) and kind == 'say':  # a fallback line is not kept: next time the own voice may answer
             return data, ctype or 'audio/mpeg'
         with self.lock:
             if len(self.cache) > 60:
                 self.cache.clear()
             self.cache[h] = (data, ctype or 'audio/mpeg')
         return self.cache[h]
+
+    def pc_voice(self, text):
+        """The voice on his PC, or None (PC off, busy with a game, or a render under the bar). Never alarms: the cloud takes over."""
+        if not PC_URL or time.time() < getattr(self, 'pc_skip', 0):
+            return None
+        try:
+            audio = self.http(urllib.request.Request(PC_URL, data=json.dumps({'text': text}).encode(), method='POST',
+                                                     headers=own_voice_headers()), PC_TIMEOUT)
+        except VoiceError as e:
+            self.pc_skip = time.time() + PC_RETRY
+            log.info('PC voice skipped for %ss: %s', PC_RETRY, e)
+            return None
+        self.pc_skip = 0
+        return audio
 
     def own_voice(self, text):
         """The self-hosted voice's clip, or None (asleep, too slow, or no render passed its bar): counted, alarmed."""
