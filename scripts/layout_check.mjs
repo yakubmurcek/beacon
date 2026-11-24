@@ -112,9 +112,13 @@ for (const view of VIEWS) {
     const seen = [];
     for (const path of PAGES) {
       const label = `${path} (${view.name}, ${mode.theme}, ${mode.lang})`;
-      await page.goto(HUB + path, { waitUntil: 'networkidle', timeout: 20000 }).catch(() => page.waitForLoadState('load'));
-      await page.evaluate(() => document.fonts.ready);
-      const m = await page.evaluate(measure, [COUNT, LIVE]);
+      // a page may reload itself once (a new service worker right after a deploy): measure again after it settles
+      const settle = async () => {
+        await page.goto(HUB + path, { waitUntil: 'networkidle', timeout: 20000 }).catch(() => page.waitForLoadState('load'));
+        await page.evaluate(() => document.fonts.ready);
+        return page.evaluate(measure, [COUNT, LIVE]);
+      };
+      const m = await settle().catch(async () => { await page.waitForLoadState('load'); return settle(); });
       seen.push([path, m.header]);
       for (const p of m.pills) problems.push(`${label}: a header pill is stretched: ${p}`);
       if (m.overflow > 1) problems.push(`${label}: the page is ${m.overflow}px wider than the screen`);
