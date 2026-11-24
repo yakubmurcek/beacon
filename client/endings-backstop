@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""endings-backstop: the nightly catch for session endings the Stop hook missed (task 1857).
+
+The hook posts every Claude Code reply as a card on http://beacon/decisions. A reply can still slip by: the hub
+was down for that one try, a Codex or OpenCode session has no hook, a box ran an old client. The hub remembers
+every turn that ended (the machines' live snapshots, `/api/endings/missed`); once a night on the home server this posts
+those with no card yet:
+
+  - a line that starts with ✅ / ⚠️ / ❓ (his reply format) is posted as it is, no model;
+  - the rest go to ONE Haiku call (batched, hard cap MAX_CALLS a night), which says done / stuck / needs you
+    and writes the one plain line.
+
+A session with an open decision already shows as that decision: skipped. Nothing missed means no call.
+
+  endings-backstop            one night's run (endings-backstop.timer)
+  endings-backstop --dry-run  what it would post, no model call, nothing posted
+
+Uses the `tasks` command's client (next to this file). Standard library only.
+"""
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+_spec = importlib.util.spec_from_loader('tasks_cli', importlib.machinery.SourceFileLoader('tasks_cli', os.path.join(HERE, 'tasks')))
+cli = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cli)
+
+CLAUDE = os.environ.get('BACKSTOP_CLAUDE') or shutil.which('claude') or os.path.expanduser('~/.local/bin/claude')
+MODEL = 'claude-haiku-4-5'
+BATCH = 40       # turns per call
+MAX_CALLS = 3    # a night's hard cap (2026-11-22: cheap, under $0.10 a night)
+HOURS = 24
+MARKED = ('✅', '⚠', '❓')
+
+PROMPT = """You sort the last replies of AI coding sessions for a busy product owner's phone feed.
+For each item, decide its state:
+- "done": the work is finished or it was just an answer
+- "stuck": work is left, something failed or is blocked
+- "needs": it waits for the owner's decision or hands
+and write "line": the result in one plain sentence, at most 110 characters, no ids, no markdown.
+Reply with ONLY a JSON array, one object per item, in order: [{{"i": 0, "state": "done", "line": "..."}}]
+
+Items:
+{items}"""
+
+
+def ask_haiku(batch):
+    items = '\n'.join(json.dumps({'i': i, 'project': m.get('project'), 'session': m.get('title'), 'reply': m['line']},
+                                 ensure_ascii=False) for i, m in enumerate(batch))
+    for attempt in (1, 2):  # a call that hangs once (2026-11-23 03:55, 300 s) goes through on the retry
+        try:
+            r = subprocess.run([CLAUDE, '-p', PROMPT.format(items=items), '--model', MODEL, '--setting-sources', '', '--tools', '',
+                                '--strict-mcp-config', '--output-format', 'json'],
+                               capture_output=True, text=True, timeout=300, cwd=os.path.expanduser('~'),
+                               env={**os.environ, 'TASKS_HOOKS': '0'}, stdin=subprocess.DEVNULL)
+            break
+        except subprocess.TimeoutExpired:
+            if attempt == 2:
+                raise SystemExit('Haiku call hung twice (300 s each)')
+            print('Haiku call hung for 300 s, trying once more')
+    out = json.loads(r.stdout or '{}')
+    if r.returncode or out.get('is_error'):
+        raise SystemExit(f"Haiku call failed (exit {r.returncode}): {(out.get('result') or r.stderr or '')[:300]}")
+    text = (out.get('result') or '').strip()
+    start, end = text.find('['), text.rfind(']')
+    rows = json.loads(text[start:end + 1]) if start >= 0 < end else []
+    return rows, float(out.get('total_cost_usd') or 0)
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    dry = '--dry-run' in argv
+    missed = cli.call(f'/api/endings/missed?hours={HOURS}&limit={BATCH * MAX_CALLS + 60}', auth=False).get('missed') or []
+    open_q = {q.get('session_id') for q in cli.call('/api/questions?status=open&limit=1000', auth=False).get('questions') or []}
+    todo = [m for m in missed if m['session_id'] not in open_q]
+    print(f'{len(missed)} turns with no card in {HOURS} h, {len(missed) - len(todo)} already a decision')
+    for m in todo:
+        print(f"  {m['machine']:<8} {m.get('project') or '?':<24} {m['session_id'][:40]}  {m['line'][:70]}")
+    marked = [m for m in todo if m['line'].lstrip().startswith(MARKED)]
+    plain = [m for m in todo if m not in marked]
+    posts = [dict(m, state=None) for m in marked]
+    calls, cost = 0, 0.0
+    for i in range(0, len(plain), BATCH):
+        if calls >= MAX_CALLS:
+            print(f'cap of {MAX_CALLS} calls reached: {len(plain) - i} left for tomorrow')
+            break
+        batch = plain[i:i + BATCH]
+        if dry:
+            print(f'would ask {MODEL} about {len(batch)}')
+            continue
+        rows, c = ask_haiku(batch)
+        calls, cost = calls + 1, cost + c
+        for row in rows:
+            try:
+                m = batch[int(row['i'])]
+            except (KeyError, ValueError, IndexError, TypeError):
+                continue
+            state = row.get('state') if row.get('state') in ('done', 'stuck', 'needs') else 'done'
+            posts.append(dict(m, line=str(row.get('line') or m['line']), state=state))
+    sent = 0
+    for m in posts:
+        if dry:
+            print(f"would post {m['session_id'][:40]} {m['state'] or 'by its mark'}: {m['line'][:70]}")
+            continue
+        cli.call('/api/endings', {'session_id': m['session_id'], 'line': m['line'], 'state': m['state'],
+                                  'agent': m.get('agent'), 'machine': m.get('machine'), 'project': m.get('project'),
+                                  'title': m.get('title'), 'source': 'backstop'})
+        sent += 1
+    print(f'posted {sent} cards, {calls} model call(s), ${cost:.4f}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

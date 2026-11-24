@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+data/
+.env
+.playwright-mcp/
+config.json
+CLAUDE.local.md

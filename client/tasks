@@ -1,0 +1,2744 @@
+#!/usr/bin/env python3
+"""tasks: the command line for the hub's task list (http://beacon), for agents and for him.
+
+  tasks                              open tasks, most urgent first (same as `tasks ls`)
+  tasks ls [-p PROJECT] [--claude] [--due today] [--stale] [-q TEXT] [--parked] [--all] [--json]
+  tasks add "Title" [-b BODY|-b -] [-p PROJECT] [--priority 1-4] [--due 2026-10-07[T14:00]] [-t TAG]... [--doing]
+  tasks show ID          tasks done ID [-m NOTE]     tasks drop ID [-m NOTE]
+  tasks doing ID         tasks todo ID               tasks note ID "text" (or - for stdin)
+  tasks set ID priority=2 due=2026-10-08 project=x tags=claude,marketing title="..."
+  tasks link ID [SESSION_ID]         tasks auth (is the token good?)
+  tasks handoff ID "what is left"    left for the task agent: noted, back to todo with his go-ahead (claude)
+                                     unless it is an agent's own idea (auto), which still waits for his OK
+
+Decisions for him (http://beacon/decisions), so an agent never stops a turn to ask:
+  tasks ask (or tasks decide) "Question?" -o "your pick" -o "other" [-k KIND] [-c CONTEXT|-c -] [--blocking] [--task ID]
+  tasks wait ID [ID...] [--timeout SECONDS]   only while he is chatting live (10 min at most); else end your turn
+  tasks questions [--answered|--all] [-k KIND] [--since DAYS] [--kinds] [--json]
+  tasks answer ID "text" [-m NOTE] [--always] [--chat]   tasks withdraw ID [-m WHY]
+  (--chat: he answered in your own chat. Log it that way, never withdraw a question he answered.)
+  tasks block ID   you hold the work until he answers after all: the same card turns blocking (never ask twice)
+
+A task filed from inside a Claude Code session is linked to that session, so the hub can tell
+when everything the session asked for is done. The project defaults to the git repo you are in,
+else "personal". Writes use TASKS_TOKEN (env, else `secrets get TASKS_TOKEN`); the hub is
+TASKS_URL (default http://beacon). Standard library only.
+"""
+import base64
+import json
+import os
+import re
+import sys
+import time
+import unicodedata
+
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'hub'))
+import settings  # noqa: E402  (hub/settings.py: the deployment's names)
+
+URL = os.environ.get('TASKS_URL', 'http://beacon').rstrip('/')
+SITE = os.environ.get('TASKS_PAGE', 'http://beacon').rstrip('/')  # where he opens the hub's pages
+PAGE = os.environ.get('QUESTIONS_URL', 'http://beacon/decisions').rstrip('/')  # the same hub's decisions page
+
+# ------------------------------------------------------------ approval gate (task 1764)
+# Two layers keep an agent from sending, paying, publishing, deleting, going live or reaching other
+# people on its own default. Both use the code below, and so does the hub (hub/gate.py loads this
+# file), so a question and an action are judged by the same words. Deterministic: no model here.
+#   Layer 1, the hub: every question blocks unless its kind is on LOW_RISK_KINDS and its text hits
+#     no RISK_TEXT word. The agent's --blocking can raise that, never lower it.
+#   Layer 2, `tasks hook-gate` (a global PreToolUse hook): a risky tool call (RISK_CALLS) passes only
+#     with his yes: his own words in this chat, or a question he answered on the page or a task.
+#     GATE_MODE (~/.claude/gate-mode, else shadow) decides: shadow only logs, enforce denies.
+# Kept above the heavy imports: the hook runs before every Bash and MCP call (~40 ms).
+
+def fold(text):
+    """Lowercase without accents: 'Pošli' and 'posli' are one word."""
+    return ''.join(c for c in unicodedata.normalize('NFKD', str(text or '').casefold())
+                   if not unicodedata.combining(c))
+
+
+# Kinds a default may run on without him, and only when no risk word shows (2026-11-22: "broad",
+# every other question waits). The agent names the kind, so the words are checked too.
+LOW_RISK_KINDS = frozenset({'naming', 'wording', 'docs', 'internal-docs', 'tech', 'tech-choice', 'technical',
+                            'internal-design', 'internal-tool'})
+CATEGORIES = ('send', 'pay', 'publish', 'delete', 'live', 'people', 'account')
+CZ = {'send': 'posílá zprávu/mail', 'pay': 'platí nebo utrácí', 'publish': 'zveřejňuje', 'delete': 'maže',
+      'live': 'jde naostro', 'people': 'osloví jiné lidi', 'account': 'sahá na účty, hesla nebo právo'}
+# On folded text (no accents). Stems, so Czech cases match: posl- (poslat, pošli, pošlu), smaz- ...
+RISK_TEXT = {
+    'pay': r'money|\bpenez|\bpeniz|\d\s*(kc|czk|eur|usd)\b|\bkc\b|\bczk\b|\$\s?\d|\bpay|\bpaid\b|platb|plati[tl]|zaplat|'
+           r'\bkoup|\bkup[ti]|nakoup|\bbuy|purchas|\border|objedn|\bprice|pricing|\bcen[auyei]?\b|cenik|invoice|faktur|'
+           r'subscri|predplat|refund|budget|rozpoc|\bspend|utrat|billing|\bcost|naklad|\bstripe|paypal|kredit|credit|'
+           r'\boffer|nabid|\bgems?\b|robux|\bpass(es)?\b|starter pack|\bshop\b|\bobchod|monetiz|premium|\blimit',
+    'send': r'\bsend|\bsent\b|\bposl|\bposil|odesl|odesil|\bmail|e-mail|\bemail|message|zprav|\bsms\b|whatsapp|'
+            r'\bdm\b|newsletter|outreach|\bnapis (mu|ji|jim)|\breply|odpovez (mu|ji|jim)|prihlask|\bapplication|\bapply|'
+            r'\bsubmit|odevzd|formular|\bform\b',
+    'publish': r'publish|publik|zverejn|\bpost(s|ed|ing|nout|ni)?\b|launch|release|\bverejn|\bpublic|announce|'
+               r'oznam|tweet|reddit|hacker news|\bhn\b|app store|testflight|google play|\blisting|product hunt|'
+               r'\bshow hn|\bthread|\bvideo|youtube|tiktok|instagram|linkedin|\bsite\b|website|\bweb\b|\bwebu|\bstrank|'
+               r'\bstranc|homepage|landing|contact|kontakt|\bblog|\bclan[e]?k|article|\bseo\b',
+    'delete': r'delet|\bsmaz|\bmaz[ae]|odstran|\bremov|\bdrop\b|\bwipe|\bpurge|destroy|truncat|\berase|vymaz|\bzrus|'
+              r'\bcancel|\bunsubscri',
+    'live': r'\blive\b|naziv|production|\bprod\b|produkc|\bostr[ey]|deploy|nasad|\bmerge|mergn|go-live|\bdns\b|'
+            r'\bdomain|\bdomen|\brollout|\bship\b',
+    'people': r'client|klient|zakazn|customer|stranger|\busers?\b|uzivatel|\bhrac|player|\bkids?\b|\bdeti\b|\bdite\b|'
+              r'\bparent|rodic|stepsk|\bfirm[aeuy]\b|\bvendor|dodavatel|partner|\bteam\b|\btym\b|community|komunit|'
+              r'\bfans?\b|\bpeople\b|\blide\b|\blidi\b|\bmama\b|\btata\b|kamarad|friend',
+    'account': r'account|\bucet|\buctu|\bucty|password|\bhesl|\blogin|\bpravn|\blegal|\bterms\b|podmink|smlouv|'
+               r'contract|\bgdpr|licen[cs]|\btoken|secret|\bapi key|klic\b|2fa|\bsso\b|\bjmen[oa] ' + re.escape(settings.OWNER_NAME.lower()),
+}
+RISK_TEXT_RE = {k: re.compile(v) for k, v in RISK_TEXT.items()}
+# client names that, with accents off, read as an English word (settings `agent.client_words`): kept as people
+STEPS_RE = re.compile(settings.CONFIG['agent'].get('client_words') or r'(?!x)x', re.I)
+
+
+def risk_words(text):
+    """{category: the word that hit} for a question's text, judged without accents."""
+    t = fold(text)
+    out = {}
+    for cat, rx in RISK_TEXT_RE.items():
+        m = rx.search(t)
+        if m:
+            out[cat] = m.group(0).strip()
+    hit = 'people' not in out and STEPS_RE.search(str(text or ''))
+    if hit:
+        out['people'] = hit.group(0)
+    return out
+
+
+# A decision he can only make by looking or trying (2026-11-22: "I can't decide without seeing it"): the ask
+# must carry what to look at (`--see`: the preview link, a screenshot), or say why there is nothing (`--no-see`).
+# The hub uses the same words to mark a card that has nothing to look at.
+LOOK_KINDS = frozenset({'merge', 'design', 'visual', 'ui', 'ux', 'look', 'copy', 'launch', 'publish', 'release', 'layout',
+                        'branding', 'logo', 'video', 'thumbnail', 'playtest', 'taste', 'going-public'})
+LOOK_RE = re.compile(r'\b(merge|go(es|ing)? live|live on|put \w+ live|publish|launch|preview|look(s|ing)? (at|like|ok|good|right)|'
+                     r'look|look test|public link|design|redesign|screens?|screenshots?|landing|web ?page|website|site|layout|ui|logo|icons?|thumbnails?|'
+                     r'banner|mock-?ups?|trailer|video|clip|photo|picture|image|font|colou?rs?|theme|playtest|try it|test it|'
+                     r'vzhled|náhled|stránk\w*|webovk\w*|obrázek|fotk\w*|design\w*|vyzkoušej|otestuj|zveřejn\w*|nasadit|spustit)\b', re.I)
+
+
+KIND_SLUG = re.compile(r'[^a-z0-9]+')
+
+
+def needs_look(text, kind=None):
+    """The word that makes it a look-or-try decision, else None."""
+    if kind and (kind in LOOK_KINDS or kind.split('-')[-1] in LOOK_KINDS):  # internal-design, ui-copy...
+        return kind
+    m = LOOK_RE.search(str(text or ''))
+    return m.group(0) if m else None
+
+
+# A decision he carries out by hand (sign an agreement, top up credit, flip a setting, make a key): the card is a
+# checklist, not prose (2026-11-22: "a direct link and clear steps"). The ask must carry `--step`s, one with the
+# exact page's link; ids, error codes and script names go after a `---` line in -c (folded under "For the agent").
+HANDS_KINDS = frozenset({'setup', 'secrets', 'secret', 'money', 'account', 'billing', 'payment', 'signup', 'login', 'hands',
+                         'verify', 'verification', 'settings', 'agreement'})
+HANDS_RE = re.compile(r'\b(sign(s|ed|ing)? (it|the|up|in)|agreements?|top (it )?up|turn (it )?on|switch (it )?(on|off)|'
+                      r'send (it|the|this|them)|pošleš|pošli|odešleš|log ?in|verify|verification|ID check|pay|payment|invoice|bank account|tax forms?|(api |new )keys?|password|'
+                      r'settings?|toggle|podepi\w*|zaplat\w*|dobij\w*|zapni|vypni|přihlas\w*|ověř\w*|nastaven\w*|klíč\w*)\b', re.I)
+
+
+def needs_hands(text, kind=None):
+    """The word that makes it a do-it-by-hand ask, else None."""
+    if kind and (kind in HANDS_KINDS or kind.split('-')[-1] in HANDS_KINDS):
+        return kind
+    m = HANDS_RE.search(str(text or ''))
+    return m.group(0) if m else None
+
+
+def step_items(values):
+    """`--step` values: "Click Agreements" or "Open Agreements :: https://…" (the link opens that exact page)."""
+    out = []
+    for v in values or []:
+        text, _, url = v.rpartition('::') if re.search(r'::\s*(https?://|mailto:)', v) else (v, '', '')
+        out.append({'text': text.strip(), **({'url': url.strip()} if url.strip() else {})})
+    return out
+
+
+def see_items(values):
+    """`--see` values: a link stays a link, a local picture or sound (a voice sample) is uploaded with the ask."""
+    out = []
+    for v in values or []:
+        label, _, ref = v.rpartition('::') if '::' in v else ('', '', v)
+        ref, label = ref.strip(), label.strip()
+        if re.match(r'^https?://', ref):
+            out.append({'url': ref, **({'label': label} if label else {})})
+            continue
+        path = os.path.expanduser(ref)
+        if not os.path.isfile(path):
+            sys.exit(f'tasks: --see {ref!r}: not a link (http…) and no such file')
+        if path.rsplit('.', 1)[-1].lower() not in ('png', 'jpg', 'jpeg', 'webp', 'gif', 'mp3', 'm4a', 'wav', 'ogg'):
+            sys.exit(f'tasks: --see {ref!r}: a picture is png, jpg, webp or gif (screenshot the page or video); '
+                     'a sound is mp3, m4a, wav or ogg')
+        with open(path, 'rb') as f:
+            data = f.read()
+        if len(data) > 8 * 1024 * 1024:
+            sys.exit(f'tasks: --see {ref!r}: over 8 MB, take a smaller screenshot')
+        out.append({'name': os.path.basename(path), 'data': base64.b64encode(data).decode(), **({'label': label} if label else {})})
+    return out
+
+
+URL_IN_TEXT = re.compile(r'https?://[^\s<>()\[\]"\'`]+[^\s<>()\[\]"\'`.,;:!?]')
+
+
+def links_in(text):
+    """The links in a text, in order, once each: what a next-step box question points at."""
+    return list(dict.fromkeys(URL_IN_TEXT.findall(str(text or ''))))
+
+
+def question_blocks(kind, texts, asked_blocking=False, default=None):
+    """Layer 1: (blocking, why) for a question. Every question blocks unless its kind is on the
+    low-risk list AND no risk word shows; an agent may raise it, never lower it."""
+    if asked_blocking:
+        return True, 'the agent asked it as blocking'
+    if default in (None, ''):
+        return True, 'no default to go on with'
+    hits = risk_words('\n'.join(str(t or '') for t in texts))
+    if hits:
+        cat, word = next(iter(hits.items()))
+        return True, f'risk word "{word}" ({cat})'
+    if kind not in LOW_RISK_KINDS:
+        return True, f'kind "{kind}" is not on the low-risk list'
+    return False, f'low-risk kind "{kind}", no risk word'
+
+
+# Layer 2. A tool call is risky when one of these hits. Bash commands are matched lowercased, as one line.
+SAFE_RM = re.compile(r'^(/tmp/|/var/tmp/|/private/tmp/|/var/folders/|/mnt/|\$\{?tmp|\$\{?tmpdir|"\$\{?tmp|\$\{?scratch|'
+                     r'\$\{?work|\$\{?out|\$\{?build|\$\{?(d|t|td|dir|tmpd|w|wt|sp)\}?(/|$)|\./?$|'
+                     r'(/root|~|\$home)/agent-work/|(/root|~|\$home)/\.cache/)|(^|/)(node_modules|dist|build|\.next|\.nuxt|\.cache|'
+                     r'__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|coverage|target|out|\.turbo|\.parcel-cache|'
+                     r'deriveddata|\.expo|\.vercel|\.svelte-kit|tmp|temp|\.tmp|scratch|\.venv|venv|pods)(/|$)|'
+                     r'\.(log|tmp|pyc|o|zip|tar|tgz|gz|png|jpg|webp|mp4|mov|wav|mp3)$|^/tmp$')
+OWN = settings.OWNER['github']
+CLIENT_UNITS = tuple(settings.CONFIG['agent'].get('client_units') or ())
+# Repos his rules let agents ship straight to production (CLAUDE.md "His internal tools").
+INTERNAL_REPOS = tuple(settings.CONFIG['agent']['internal_repos'])
+
+BASH_RULES = [
+    # send: mail, chat or SMS to someone. Drafts (IMAP APPEND) and his own Telegram bot are not sends.
+    ('send', 'mail CLI', r'(^|\s)(sendmail|msmtp|mutt|mailx|swaks)\b|(^|\s)mail\s+-s\b'),
+    ('send', 'SMTP', r'smtplib|smtps?://|\.sendmail\(|\bsend_message\(|nodemailer|\bsmtp\.(gmail|mail|office365|seznam)'),
+    ('send', 'Mail/Messages app', r'osascript\b.*\b(mail|messages)\b.*\bsend\b|osascript\b.*\bsend\b.*\b(mail|messages)\b'),
+    ('send', 'mail API', r'api\.(resend\.com|sendgrid\.com|mailgun\.net|postmarkapp\.com|brevo\.com)|'
+                         r'api\.twilio\.com|graph\.facebook\.com/.*/messages|gmail\.googleapis\.com/.*/send|'
+                         r'\b(gog|gmail|himalaya)\b.*\b(send|reply|forward)\b'),
+    ('send', 'chat webhook', r'hooks\.slack\.com|discord(app)?\.com/api/(webhooks|channels/\d+/messages)|'
+                             r'slack\.com/api/chat\.postmessage'),
+    # pay
+    ('pay', 'Stripe', r'api\.stripe\.com/v1/(charges|payment_intents|payouts|refunds|transfers|subscriptions|invoices)|'
+                      r'\bstripe\s+(charges|payment_intents|payouts|refunds|transfers|subscriptions|invoices)\s+(create|pay|update|cancel)'),
+    # publish
+    ('publish', 'package publish', r'\b(npm|pnpm|yarn|bun)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|'
+                                   r'\bgem\s+push\b|\bpod\s+trunk\s+push\b|\bbutler\s+push\b'),
+    ('publish', 'GitHub release/public', r'\bgh\s+release\s+create\b|\bgh\s+repo\s+create\b.*--public\b|'
+                                         r'\bgh\s+repo\s+edit\b.*visibility\s+public|\bgh\s+gist\s+create\b.*(--public|\s-p\b)'),
+    ('publish', 'store submit', r'xcrun\s+altool\b.*--upload|\bfastlane\s+(deliver|pilot|upload_to_\w+|supply|release)\b|'
+                                r'\beas\s+submit\b|asc\.mjs\s+(post|patch)\s+\S*(reviewsubmission|appstoreversionsubmission|'
+                                r'appstoreversionreleaserequest|betaappreviewsubmission|phasedrelease|betagroups)'),
+    ('publish', 'social post', r'\breddit\s+(post|submit|comment|reply)\b|api\.(twitter|x)\.com/2/tweets|'
+                               r'oauth\.reddit\.com/api/(submit|comment)'),
+    ('publish', 'Roblox publish', r'apis\.roblox\.com/universes/v1/[^ ]*/places/[^ ]*/versions|'
+                                  r'\brbxcloud\b.*\bpublish\b|\b(place|experience)\s+publish\b'),
+    # delete
+    ('delete', 'force push / remote delete', r'\bgit\s+push\b[^|;&\n]*(\s--force(?![\w-])|\s-f\b|\s--force-with-lease\b|'
+                                             r'\s--delete(?![\w-])|\s-d\s|\s\+[\w/]|\s:[\w/])|\bgit\s+push\s+--mirror\b'),
+    # (a force push or branch delete counts only onto a shared branch: main, master, dev, prod; see _shared_branch)
+    ('delete', 'SQL delete', r'\bdrop\s+(table|database|schema|view|materialized|function|type|index|extension)\b|'
+                             r'\btruncate\s+(table\s+)?["\w]|\bdelete\s+from\s+["\w]'),
+    ('delete', 'delete a project', r'\bgh\s+repo\s+(delete|archive)\b|\bvercel\s+(remove|rm|project\s+rm|domains\s+rm)\b|'
+                                   r'\bsupabase\s+(projects\s+delete|db\s+reset\b(?!.*--local))|'
+                                   r'\bgh\s+api\b[^\n]*\s(-x|--method)\s*delete\b|\bcurl\b[^\n]*\s(-x|--request)\s*delete\b'),
+    # live: production for client and public projects (his internal tools are exempt, see INTERNAL_REPOS)
+    ('live', 'production deploy', r'\bvercel\b[^|;&]*\s--prod(uction)?\b|\bvercel\s+(promote|alias\s+set)\b|'
+                                  r'\bnetlify\s+deploy\b.*--prod|\bfly(ctl)?\s+deploy\b|\bwrangler\s+(deploy|publish)\b|'
+                                  r'\bfirebase\s+deploy\b|\bsupabase\s+(db\s+push|functions\s+deploy)\b|\beas\s+update\b|'
+                                  r'\bgit\s+push\s+heroku\b|\bheroku\s+releases'),
+    ('live', 'DNS', r'api\.cloudflare\.com/client/v4/zones/[^ ]*/dns_records|\bvercel\s+dns\s+(add|rm)\b'),
+    ('live', 'production env/domain', r'(\bvercel(@[\w.]+)?|(^|\s)v)\s+(-\S+\s+)*env\s+(add|rm|remove|update)\b[^|;&\n]*\bproduction\b|'
+                                      r'\bvercel\b[^|;&\n]*\bdomains\s+add\b|\bvercel\b[^|;&\n]*\bredeploy\b(?![^|;&\n]*--target[= ]preview)|'
+                                      r'\bvercel\b[^|;&\n]*\bgit\s+disconnect\b'),
+    ('live', 'Vercel settings', r'\bvercel(@[\w.]+)?\s+(-\S+\s+)*api\s[^|;&\n]*\s(-x|--method)\s*(patch|post|put|delete)\b|'
+                                r'api\.vercel\.com[^|;&\n]*\s(-x|--request)\s*(patch|post|put|delete)\b|'
+                                r'\s(-x|--request)\s*(patch|post|put|delete)\b[^|;&\n]*api\.vercel\.com'),
+    # (curl, or a shell function wrapping it: the method and the host are on the line)
+    # (an RPC is mostly a read: only admin_* RPCs and table writes count)
+    ('live', 'production DB write', r'\s(-x|--request)\s*(post|patch|put|delete)\b[^|;&\n]*\.supabase\.co/rest/v1/(rpc/admin_|(?!rpc/)\w)|'
+                                    r'\.supabase\.co/rest/v1/(rpc/admin_|(?!rpc/)\w)[^|;&\n]*\s(-x|--request)\s*(post|patch|put|delete)\b|'
+                                    r'\.supabase\.co/rest/v1/rpc/\w*(submit|insert|create|add|delete|remove|update|set|send)'),
+    *([('live', 'client service restart', r'\bsystemctl\s+(restart|stop|disable|kill)\b[^|;&\n]*\b(' + '|'.join(map(re.escape, CLIENT_UNITS)) + ')')]
+      if CLIENT_UNITS else []),  # services a client relies on (settings `agent.client_units`)
+    ('live', 'production DB migration', r'\.sh\s+\S*supabase/migrations/\S+\.sql\b'),
+    ('live', 'production DB write', r'api\.supabase\.com/v1/projects/[^\s/]+/database/query'),  # only with write SQL, see risky_call
+    # pay: paid runs and add-ons
+    ('pay', 'paid scrape run', r'\bcurl\b[^|;&\n]*(\s(-x|--request)\s*post|--data|\s-d\s|--json)[^|;&\n]*api\.apify\.com/v2/(acts|actor-tasks)/[^\s/]+/run|'
+                               r'\bcurl\b[^|;&\n]*api\.apify\.com/v2/(acts|actor-tasks)/[^\s/]+/run[^|;&\n]*(\s(-x|--request)\s*post|--data|\s-d\s|--json)|'
+                               r'\bapify\s+call\b'),
+    ('pay', 'paid add-on', r'\bvercel(@[\w.]+)?\b[^|;&\n]*\bintegration\s+add\b'),
+    # publish: public gists and GitHub Pages, shared notes
+    ('publish', 'gist/Pages', r'\bgh\s+gist\s+(edit|create)\b|\bgit\s+(-c\s+\S+\s+)*push\b[^|;&\n]*\bgh-pages\b|'
+                              r'\bgh\s+api\b[^|;&\n]*repos/[^\s/]+/[^\s/]+/pages\b'),
+    # send / people through an API or a site endpoint
+    ('send', 'mail endpoint', r'\bcurl\b[^|;&\n]*https?://(?!localhost|127\.)[^\s\'"]*/send[-_]?(test[-_])?e?mail'),
+    ('people', 'tailnet invite', r'api\.tailscale\.com/api/v2/[^\s]*user-invites'),
+    # delete: disks, external drives, releases, blobs, uncommitted work outside scratch
+    ('delete', 'disk wipe', r'(^|\s)(wipefs|mkfs(\.\w+)?|shred)\s|\bzpool\s+(destroy|detach|labelclear)\b|\bzfs\s+destroy\b|'
+                            r'\bdd\b[^|;&\n]*\bof=/dev/'),
+    ('delete', 'Windows folder delete', r'remove-item\b[^|;&\n]*-recurse[^|;&\n]*\bc:\\users\\(?![^|;&\n]*\\(temp|tmp)\\)|'
+                                        r'remove-item\b[^|;&\n]*\bc:\\users\\(?![^|;&\n]*\\(temp|tmp)\\)[^|;&\n]*-recurse'),
+    ('delete', 'external drive file', r'(^|\s)rm\s[^|;&\n]*["\']?/volumes/'),
+    ('delete', 'release/blob delete', r'\bgh\s+release\s+delete\b|\bvercel(@[\w.]+)?\b[^|;&\n]*\bblob\s+(del|rm|delete)\b'),
+    ('delete', 'discard uncommitted work', r'\bgit\s+(-c\s+\S+\s+)*(reset\s+(-q\s+)?--hard|clean\s+-\w*f|stash\s+(drop|clear)|'
+                                           r'checkout\s+(-q\s+)?(--\s|\.(\s|$)|-f\b))'),  # outside scratch, see risky_call
+    # people: GitHub comments, issues and PRs in someone else's repo
+    ('people', 'GitHub comment/issue/PR', r'\bgh\s+(issue\s+(create|comment|close|edit|reopen)|'
+                                          r'pr\s+(comment|review|create|close|edit|reopen))\b'),
+    ('people', 'GitHub API write', r'\bgh\s+api\b[^|;&]*repos/[^/\s]+/[^/\s]+/(issues|pulls|comments|discussions)\b'
+                                   r'[^|;&]*(-x\s*(post|patch|put)|--method\s*(post|patch|put)|\s-f\s|\s--field\s|\s--raw-field\s)'),
+]
+BASH_RULES = [(c, w, re.compile(rx)) for c, w, rx in BASH_RULES]
+RM_RE = re.compile(r'(?:^|\s)(?:sudo\s+)?rm\s+((?:-\S+\s+)*)(.+)$')
+FIND_DELETE = re.compile(r'\bfind\s+(\S+).*\s-delete\b')
+GH_REPO = re.compile(r'(?:-r|--repo)[\s=]+([\w.-]+)/')
+GH_API_REPO = re.compile(r'repos/([\w.-]+)/')
+CD_RE = re.compile(r'(?:^|&&|;)\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)')
+SCRIPT_RE = re.compile(r'(?:^|\s)(?:python3?|node|bun|deno run|bash|sh|zsh|tsx|ts-node|uv run|ruby|perl)\s+(?:-\S+\s+)*'
+                       r'([\w./~-]+\.(?:py|mjs|cjs|js|ts|sh|rb|pl))\b')
+# Inside code a command runs (a script file, a heredoc, -c): calls that send or pay, not mere words.
+SCRIPT_RULES = [(c, w, re.compile(rx)) for c, w, rx in (
+    ('send', 'SMTP', r'smtplib\.smtp(_ssl)?\(|\.sendmail\(|\.send_message\(|nodemailer\.createtransport|smtp\.sendmail'),
+    ('send', 'mail API', r'https://api\.(resend\.com|sendgrid\.com|mailgun\.net|postmarkapp\.com|brevo\.com)/|'
+                         r'https://api\.twilio\.com/|gmail\.googleapis\.com/[^\s\'"]*/send'),
+    ('send', 'chat webhook', r'https://hooks\.slack\.com/|https://discord(app)?\.com/api/webhooks/'),
+    ('send', 'Mail/Messages app', r'application "?(mail|messages)"?[\s\S]*\bsend\b'),
+    ('pay', 'Stripe', r'stripe\.(charge|paymentintent|payout|refund|transfer|subscription)s?\.create|'
+                      r'https://api\.stripe\.com/v1/(charges|payment_intents|payouts|refunds|transfers)'),
+    ('publish', 'social post', r'https://api\.(twitter|x)\.com/2/tweets|https://oauth\.reddit\.com/api/(submit|comment)'),
+    ('pay', 'paid scrape run', r'api\.apify\.com/v2/(acts|actor-tasks)/[^\s\'"]*/run'),
+    ('delete', 'his app data', r'application "?(reminders|calendar|notes|contacts|photos)"?[\s\S]{0,400}\bdelete\b'),
+    ('pay', 'purchase form', r'\.post\([^)\n]{0,120}(/nakup|/checkout|/payment|/platba|/zaplatit|/order|/objednav)'),
+    ('delete', 'blob delete', r"@vercel/blob['\"]\)[\s\S]{0,600}\bdel\("),
+    ('live', 'production DB write', r'api\.supabase\.com/v1/projects/[^\s\'"/]+/database/query[\s\S]{0,800}'
+                                    r'(migrations/|\b(insert|update|delete|alter|create|drop|grant|revoke|truncate)\s)'),
+)]
+MCP_RULES = [
+    ('send', 'send mail', re.compile(r'__(send_message|send_email|send_mail|reply|reply_all|forward|send_draft|send)$')),
+    ('send', 'chat message', re.compile(r'__(post_message|send_dm|chat_postmessage|create_message)$')),
+    # anything that reaches a person on any platform waits for his yes (2026-11-22: "cokoliv, co se posílá
+    # nějakému člověku ... Discord, mail na jakoukoliv platformu"): iMessage, SMS, WhatsApp, replies, DMs
+    ('send', 'message to a person', re.compile(r'__(send_(imessage|sms|text|whatsapp|\w*message\w*|\w*dm)|reply_\w+|'
+                                               r'add_reaction|(\w+_)?create_comment|comment_\w+)$')),
+    ('people', 'calendar answer', re.compile(r'calendar.*__(respond_to_event)$')),
+    ('delete', 'trash/delete', re.compile(r'__(trash_\w+|delete_\w+|delete|remove_\w+|drop_\w+|pause_project|reset_branch)$')),
+    ('live', 'deploy', re.compile(r'__(deploy_\w+|merge_branch|deploy|publish\w*|create_project|restore_project)$')),
+    ('publish', 'post', re.compile(r'__(create_post|submit_\w+|post_\w+|publish_\w+)$')),
+    ('pay', 'payment', re.compile(r'__(create_payment\w*|create_charge|create_refund|create_payout|purchase\w*|checkout\w*)$')),
+]
+# MCP servers that only reach his own things: agent sessions and routines, his brain, his docs.
+INTERNAL_MCP = frozenset({'claude-code-remote', 'gbrain', 'claude_ai_gbrain', 'claude_ai_claude_docs', 'tasks',
+                          'plugin_claude-code-remote', 'scheduled-tasks'})
+SQL_TOOLS = re.compile(r'__(execute_sql|apply_migration|run_sql|query)$')
+SQL_DELETE = next(r[2] for r in BASH_RULES if r[1] == 'SQL delete')
+SQL_WRITE = re.compile(r'\b(insert\s+into|update\s+[\w."]+\s+set|delete\s+from|alter\s+(table|function|policy)|create\s+(or\s+replace\s+)?'
+                       r'(table|function|policy|index|trigger|view)|drop\s|grant\s|revoke\s|truncate\s)|migrations/|\.sql\b')
+
+
+ASSIGN = re.compile(r'''(?:^|[\s;&|(])([A-Za-z_]\w*)=("[^"$`]*"|'[^']*'|[^\s;&|$`()'"]+)(?=[\s;&|)]|$)''')
+
+
+def _expand_vars(cmd):
+    """$VAR / ${VAR} replaced by a plain value assigned in the same command (B=https://site; curl "$B/api")."""
+    vals = {}
+    for m in ASSIGN.finditer(cmd):
+        vals.setdefault(m.group(1), m.group(2).strip('"\''))
+    if not vals:
+        return cmd
+    return re.sub(r'\$\{?([A-Za-z_]\w*)\}?', lambda m: vals.get(m.group(1), m.group(0)), cmd)
+
+
+def _scratch(path):
+    p = (path or '').lower().rstrip('/') + '/'
+    return bool(SAFE_RM.search(p + 'x')) or any(s in p for s in ('/agent-work/', '/.claude/worktrees/', '/scratchpad/',
+                                                                  '/.worktrees/', '-wt-', '-wt/'))
+
+
+def _repo_owner(cwd):
+    """The GitHub owner of the repo at cwd (from .git/config), or None."""
+    d = cwd or ''
+    for _ in range(8):
+        if not d:
+            return None
+        cfg = os.path.join(d, '.git')
+        if os.path.isfile(cfg):  # a worktree: "gitdir: /x/.git/worktrees/y"
+            try:
+                with open(cfg) as f:
+                    cfg = f.read().split('gitdir:', 1)[1].strip().split('/.git/')[0] + '/.git'
+            except (OSError, IndexError):
+                return None
+        if os.path.isdir(cfg):
+            try:
+                with open(os.path.join(cfg, 'config')) as f:
+                    m = re.search(r'url\s*=\s*\S*github\.com[:/]([\w.-]+)/', f.read())
+                return m.group(1).lower() if m else None
+            except OSError:
+                return None
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+    return None
+
+
+def _where(cmd, cwd):
+    """The folder a command acts in: the last `cd X` in it, else the session's cwd."""
+    m = None
+    for m in CD_RE.finditer(cmd):
+        pass
+    if not m:
+        return cwd or ''
+    d = os.path.expanduser(m.group(1).strip('"\''))
+    return d if os.path.isabs(d) else os.path.join(cwd or '', d)
+
+
+SHARED = re.compile(r'(^|[\s:/+])(main|master|dev|develop|production|prod|release|gh-pages)($|[\s:])')
+
+
+def _shared_branch(cmd, where):
+    """Does this force push / delete hit a shared branch? Named in the command, or (none named) the
+    branch checked out where it runs. Unknown counts as shared."""
+    m = re.search(r'\bgit\s+push\b([^|;&\n]*)', cmd)
+    args = [a for a in (m.group(1).split() if m else []) if not a.startswith('-') and not a.startswith('2>')]
+    if any(SHARED.search(' ' + a) for a in args[1:]) or '--mirror' in cmd:
+        return True
+    if len(args) >= 2:  # remote + branch(es), none shared
+        return False
+    d = where or ''
+    for _ in range(8):
+        head = os.path.join(d, '.git')
+        try:
+            if os.path.isfile(head):
+                with open(head) as f:
+                    head = f.read().split('gitdir:', 1)[1].strip()
+            with open(os.path.join(head, 'HEAD')) as f:
+                ref = f.read().strip()
+            return bool(SHARED.search(' ' + ref.rsplit('/', 1)[-1])) if ref.startswith('ref:') else True
+        except (OSError, IndexError):
+            parent = os.path.dirname(d)
+            if not d or parent == d:
+                return True
+            d = parent
+    return True
+
+
+def _here_of(cmd, rx, cwd):
+    """The folder the first command matching rx runs in: cwd moved by the cd's before it."""
+    here = cwd or ''
+    for part in cmd.split('\n'):
+        c = re.match(r'^cd\s+("[^"]+"|\'[^\']+\'|\S+)', part.strip())
+        if c:
+            d = os.path.expanduser(c.group(1).strip('"\''))
+            here = d if os.path.isabs(d) else os.path.join(here, d)
+        if rx.search(part):
+            return here
+    return here
+
+
+def _internal(path):
+    return any(f'/{r}' in path.lower() for r in INTERNAL_REPOS)
+
+
+def _rm_risky(args, where=''):
+    """rm -r of anything but scratch and build output (a relative path inside a scratch folder is scratch)."""
+    flags, rest = args
+    if not re.search(r'(^|\s)-\w*r|--recursive', flags):
+        return False
+    targets = [t.strip('"\'') for t in re.split(r'\s+', rest.strip()) if t and not t.startswith('-')]
+    targets = [t for t in targets if t not in ('2>/dev/null', '>/dev/null', '2>&1', '||', 'true', '&&')
+               and not t.startswith(('>', '2>')) and re.search(r'[\w~$*]', t) and not re.match(r'^[\d)(]+$', t)]
+    scratch = SAFE_RM.search((where or '').lower().rstrip('/') + '/x') or '/agent-work' in (where or '')
+
+    def safe(t):
+        t = t.lower()
+        return bool(SAFE_RM.search(t)) or (scratch and not t.startswith(('/', '~', '$home', '..')))
+    return any(not safe(t) for t in targets) if targets else False
+
+
+# (not a here-string <<< or a bit shift $((1<<4)): those carry no body)
+HEREDOC = re.compile(r"(?<![<\w)])<<(?!<)-?\s*(['\"]?)([A-Za-z_]\w*)\1[^\n]*\n(.*?)\n\s*\2\s*(?=\n|$)", re.S)
+# A segment starting with one of these only carries text (a note, a message, a search pattern).
+TEXT_CMDS = frozenset({'echo', 'printf', 'tasks', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'awk', 'sed', 'jq', 'cat', 'head',
+                       'tail', 'less', 'ls', 'wc', 'sort', 'uniq', 'cut', 'tr', 'tee', 'diff', 'test', '[', 'true', 'false',
+                       'read', 'export', 'local', 'declare', 'set', 'notify', 'say', 'man', 'which', 'type', 'command'})
+TEXT_GIT = frozenset({'commit', 'tag', 'log', 'show', 'diff', 'grep', 'notes', 'status', 'blame', 'stash'})
+SHELLS = frozenset({'bash', 'sh', 'zsh', 'ssh', 'su', 'eval', 'watch', 'docker', 'exec', 'systemd-run'})
+# Prefixes that run the command after them: strip them and look at that command.
+WRAPPER = re.compile(r'^(?:sudo(?:\s+-[ugCDhpRrTt]\s+(?!-)\S+|\s+-[a-zA-Z]+)*|timeout(?:\s+-\S+)*\s+\S+|nice(?:\s+-n)?\s*-?\d*|'
+                     r'ionice(?:\s+-c\s*\d)?(?:\s+-n\s*\d)?|nohup|time|env(?:\s+-\S+)*|xargs(?:\s+-\S+(?:\s+\d+)?)*|'
+                     r'setsid|stdbuf(?:\s+-\S+)*|command)\s+')
+AGENTS = re.compile(r'^(\S*/)?(claude|codex|gemini|opencode|aider|grok)$')  # their quoted prompt is text, not a command
+CODE_CMDS = re.compile(r'^(python3?|node|bun|deno|ruby|perl|php|uv|npx|tsx|ts-node|osascript)$')
+PREFIX = re.compile(r"^(?:\w+=(?:'[^']*'|\"[^\"]*\"|\S*)\s+)*")
+
+
+def _segments(cmd):
+    """Split a shell line on unquoted ; && || | & and newlines (good enough to find each command's first word)."""
+    out, cur, q, i = [], [], None, 0
+    while i < len(cmd):
+        c = cmd[i]
+        if q:
+            if c == q:
+                q = None
+            elif c == '\\' and q == '"' and i + 1 < len(cmd):
+                cur.append(c)
+                i += 1
+                c = cmd[i]
+            cur.append(c)
+        elif c in '\'"':
+            q = c
+            cur.append(c)
+        elif c in ';|&\n)' or (c == '(' and (i == 0 or cmd[i - 1] == '$')):  # $(…) opens and ) closes a command
+            out.append(''.join(cur))
+            cur = []
+        elif c == '#' and (not cur or cur[-1] in ' \t'):
+            while i < len(cmd) and cmd[i] != '\n':
+                i += 1
+            continue
+        else:
+            cur.append(c)
+        i += 1
+    out.append(''.join(cur))
+    return [x.strip() for x in out if x.strip()]
+
+
+def _unquote_payloads(seg):
+    """The quoted commands inside ssh host '...', bash -c "...", su -c '...'."""
+    return [m.group(2) for m in re.finditer(r"(['\"])(.*?)\1", seg, re.S)]
+
+
+def _executed(cmd, depth=0):
+    """(shell, code): the parts of a Bash command that run as shell commands, and the code that
+    interpreters run (python heredocs, -c strings). Text handed to echo, tasks, grep, a commit
+    message or a file-writing heredoc is dropped: words in it don't act."""
+    code = []
+    bodies = {}
+
+    def take(m):
+        key = f'__heredoc{len(bodies)}__'
+        bodies[key] = m.group(3)
+        return key
+    cmd = HEREDOC.sub(take, cmd)
+    shell = []
+    for seg in _segments(cmd):
+        seg = PREFIX.sub('', seg)
+        while True:
+            w = WRAPPER.match(seg)
+            if not w:
+                break
+            seg = PREFIX.sub('', seg[w.end():])
+        words = seg.split()
+        if not words:
+            continue
+        first = words[0].rsplit('/', 1)[-1]
+        keys = [k for k in bodies if k in seg]
+        stash_drop = first == 'git' and words[1:3] in (['stash', 'drop'], ['stash', 'clear'])
+        if first in TEXT_CMDS or (first == 'git' and len(words) > 1 and words[1] in TEXT_GIT and not stash_drop) \
+                or first.startswith('__heredoc'):
+            continue  # its text never acts (cat > file <<EOF drops the body with it)
+        if AGENTS.match(words[0]):
+            shell.append(re.sub(r"(['\"]).*?\1", ' ', seg, flags=re.S))
+            continue
+        if CODE_CMDS.match(first):
+            code += [bodies[k] for k in keys] + _unquote_payloads(seg)
+            shell.append(re.sub(r"(['\"]).*?\1", ' ', seg, flags=re.S))  # e.g. `npx vercel --prod` still counts
+            continue
+        if first in SHELLS and depth < 3:
+            for payload in _unquote_payloads(seg) + [bodies[k] for k in keys]:
+                s2, c2 = _executed(payload, depth + 1)
+                shell.append(s2)
+                code += c2
+            shell.append(re.sub(r"(['\"]).*?\1", ' ', seg, flags=re.S))
+            continue
+        if first in ('psql', 'sqlite3', 'mysql', 'supabase', 'turso', 'duckdb'):
+            shell.append(seg + ' ' + ' '.join(bodies[k] for k in keys))
+            continue
+        if first == 'gh':  # titles and bodies are text; the command and its repo are not
+            shell.append(re.sub(r"(['\"]).*?\1", ' ', seg, flags=re.S))
+            continue
+        if keys and any(CODE_CMDS.match(w.rsplit('/', 1)[-1]) for w in words[1:]):
+            code += [bodies[k] for k in keys]  # e.g. `PW=… python3 - <<EOF` the prefix hid: its code still runs
+        shell.append(seg)
+    return '\n'.join(shell), code
+
+
+def risky_call(tool, tool_input, cwd=''):
+    """Layer 2: (category, what) when a tool call sends, pays, publishes, deletes, goes live or
+    reaches other people; else None. Pure and fast: a file is read only for gh in an unnamed repo
+    and for a script the command runs."""
+    tool = str(tool or '')
+    ti = tool_input if isinstance(tool_input, dict) else {}
+    if tool == 'Bash':
+        raw = _expand_vars(str(ti.get('command') or ''))
+        where = _where(raw, cwd)
+        shell, code = _executed(re.sub(r'\\\n', ' ', raw))
+        cmd = shell.lower()
+        for cat, what, rx in BASH_RULES:
+            if not rx.search(cmd):
+                continue
+            if cat == 'live' and what == 'production deploy' and _internal(where):
+                continue
+            if cat == 'people' and what.startswith('GitHub'):  # only someone else's repo: named in the command, or the checkout it runs in
+                m = GH_REPO.search(cmd) or GH_API_REPO.search(cmd)
+                owner = m.group(1).lower() if m else _repo_owner(_here_of(cmd, rx, cwd))
+                if owner in (OWN, None):  # None: not a GitHub checkout, so gh has no repo to write to
+                    continue
+            if what == 'delete a project' and re.search(rf'api\.github\.com/repos/{OWN}/[^/\s]+/git/refs/heads/', cmd) \
+                    and not SHARED.search(cmd.split('/git/refs/heads/', 1)[1][:40].split()[0] if '/git/refs/heads/' in cmd else ''):
+                continue  # deleting his own merged feature branch through the API
+            if what == 'Vercel settings' and 'ssoprotection' in raw.lower():
+                continue  # his rule: preview protection off with exactly this PATCH (CLAUDE.md)
+            if what == 'production DB write' and 'database/query' in rx.pattern and not SQL_WRITE.search(raw.lower()):
+                continue  # a read through the Management API
+            if what == 'discard uncommitted work' and _scratch(_here_of(cmd, rx, cwd)):
+                continue  # scratch clones and agent worktrees hold only the agent's own work
+            if what == 'force push / remote delete' and not _shared_branch(cmd, where):
+                continue  # rewriting or deleting his own feature branch is housekeeping
+            return cat, what
+        body = '\n'.join(code).lower()
+        for cat, what, rx in SCRIPT_RULES:
+            if body and rx.search(body):
+                return cat, what + ' (inline code)'
+        if 'api.hackmd.io' in raw and re.search(r'readperm\w*["\'\s:=]+["\']?guest', raw.lower()):
+            return 'publish', 'note readable by anyone'
+        if 'database/query' in body and 'api.supabase.com' in body and SQL_WRITE.search(body):
+            return 'live', 'production DB write (inline code)'
+        here = cwd or ''
+        for part in cmd.split('\n'):
+            c = re.match(r'^cd\s+("[^"]+"|\'[^\']+\'|\S+)', part.strip())
+            if c:  # each command runs where the cd before it left off
+                d = os.path.expanduser(c.group(1).strip('"\''))
+                here = d if os.path.isabs(d) else os.path.join(here, d)
+            m = RM_RE.search(part)
+            if m and _rm_risky(m.groups(), here):
+                return 'delete', 'rm -r ' + m.group(2).strip()[:60]
+            if here.lower().startswith('/volumes/') and re.search(r'(^|\s)rm\s', part):
+                return 'delete', 'rm on an external drive'
+            m = FIND_DELETE.search(part)
+            if m and not SAFE_RM.search(m.group(1).strip('"\'')):
+                return 'delete', 'find -delete ' + m.group(1)[:60]
+        for m in SCRIPT_RE.finditer(raw):
+            path = os.path.join(where, os.path.expanduser(m.group(1)))
+            try:
+                if os.path.getsize(path) < 400_000:
+                    with open(path, errors='ignore') as f:
+                        body = f.read().lower()
+                    for cat, what, rx in SCRIPT_RULES:
+                        if rx.search(body):
+                            return cat, f'{what} in {os.path.basename(path)}'
+            except OSError:
+                pass
+        return None
+    if tool.startswith('mcp__'):
+        name = tool.lower()
+        if 'claude-in-chrome' in name or 'claude_browser' in name:
+            return None  # clicks carry no meaning here; see the gap in the README
+        if name.split('__')[1] in INTERNAL_MCP or 'draft' in name:
+            return None  # his own agent sessions, notes and drafts reach nobody
+        if 'calendar' in name and name.endswith(('__create_event', '__update_event')):
+            att = ti.get('attendees') or ti.get('attendee_emails') or []
+            return ('people', 'calendar invite') if att else None
+        if SQL_TOOLS.search(name):
+            q = fold(ti.get('query') or ti.get('sql') or '')
+            return ('delete', 'SQL delete') if SQL_DELETE.search(q) else None
+        for cat, what, rx in MCP_RULES:
+            if rx.search(name):
+                if cat == 'send' and 'draft' in name:
+                    return None
+                return cat, what
+    return None
+
+
+# His yes. A risky call passes when HE said it: his own words in this chat (a typed or dictated
+# turn: turnOrigin human; never a brief another agent wrote, a task notification or a summary), or
+# a question about it he answered on the page or a task (the hub checks that one).
+YES_WORDS = {
+    'send': r'\bposl|\bodesl|\bsend|\bmail (it|him|her|them)|\bnapis (mu|ji|jim)|\breply|odpovez|\bforward',
+    'pay': r'\bzaplat|\bkup|\bobjedn|\bpay\b|\bbuy\b|\border it|\bpurchase|\bsubscribe|\bpredplat',
+    'publish': r'\bpublik|\bzverejn|\bpostn|\bpost (it|that|this)|\bpublish|\blaunch|\breleas|\bpust (to )?ven|\bvydej|\bsubmit',
+    'delete': r'\bsmaz|\bvymaz|\bdelete|\bremove|\bodstran|\bdrop\b|\bwipe|\bzrus|\bclean (it|up)|\buklid',
+    'live': r'\bdeploy|\bnasad|\bprod\b|\bproduction|\bostr|\blive\b|\bmerge|\bmergn|\bpust (to )?ven|\bship',
+    'people': r'\bposl|\bnapis|\bkomentuj|\bcomment|\breply|\bodpovez|\boslov|\bpozvi|\binvite',
+}
+YES_RE = {k: re.compile(v) for k, v in YES_WORDS.items()}
+GENERIC_YES = re.compile(r'^\W*(ano|jo|jj|jasne|ok|okay|oki|yes|yep|yeah|sure|go|go ahead|do it|udelej( to)?|jed|'
+                         r'souhlas(im)?|schval(uji|eno)?|approved?|potvrzuji|klidne|v poradku|muzes|dobre|sounds good|'
+                         r'perfektni|super|parada|zapni)\b')
+NOT_YES = re.compile(r'\b(ne\b|nee|nikdy|never|don\'?t|do not|neposil|nepos|nemaz|nesmaz|nedelej|nenasaz|nepublik|'
+                     r'pockej|cekej|wait|stop|zatim ne|not yet|jen draft|only (a )?draft|koncept|nejdriv mi ukaz|show me first|'
+                     r'neodesil|bez odeslani)')
+MARKUP = ('<', '[request interrupted', 'caveat:', 'this session is being continued')
+
+
+def his_words(transcript, limit=3, tail=600_000):
+    """His last `limit` messages in a transcript, newest first: (text, timestamp)."""
+    try:
+        with open(transcript, 'rb') as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - tail))
+            lines = f.read().decode('utf-8', 'replace').splitlines()
+    except (OSError, TypeError):
+        return []
+    return his_words_in(lines, limit)
+
+
+def his_words_in(lines, limit=3):
+    """The same from transcript lines (oldest first). Only turns he typed or dictated count; tool
+    results, hook text, summaries and prompts written by another agent never do."""
+    out = []
+    for line in reversed(lines):
+        if '"user"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if d.get('type') != 'user' or d.get('isMeta') or d.get('isSidechain') or d.get('isCompactSummary'):
+            continue
+        origin, src = d.get('turnOrigin') or (d.get('origin') or {}).get('kind'), d.get('promptSource')
+        if origin is not None and origin != 'human':
+            continue
+        if origin is None and (src in ('sdk', 'system') or d.get('entrypoint') == 'sdk-cli'):
+            continue  # an old headless or app record: no proof he typed it
+        c = (d.get('message') or {}).get('content')
+        if isinstance(c, list):
+            if any(isinstance(x, dict) and x.get('type') == 'tool_result' for x in c):
+                continue
+            c = '\n'.join(x.get('text', '') for x in c if isinstance(x, dict) and x.get('type') == 'text')
+        c = str(c or '').strip()
+        if not c or c.lower().startswith(MARKUP):
+            continue
+        out.append((c, d.get('timestamp')))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def chat_yes(transcript, category, words=None):
+    """The words of his that OK this category of action, or None. His latest message may be a bare
+    yes ("ano", "pošli to"); an older one must name the action. A no or a wait in it wins.
+    `words` (his_words_in) instead of a transcript path: the replay eval."""
+    rx = YES_RE.get(category)
+    for i, (text, _) in enumerate(his_words(transcript) if words is None else words):
+        t = fold(text)
+        t = '\n'.join(l for l in t.splitlines() if not l.lstrip().startswith('>')).strip()  # not a quoted agent reply
+        if not t:
+            continue
+        if NOT_YES.search(t):
+            return None
+        if rx and rx.search(t):
+            return text[:160]
+        if i == 0 and GENERIC_YES.search(t) and len(t) < 160 and '?' not in t:  # "ok ... is it ready??" asks, not OKs
+            return text[:160]
+    return None
+
+
+def gate_mode():
+    """shadow (log only, the default) or enforce. The env can raise it for one run (the live test),
+    never lower it: a nested agent can't switch the gate off for itself."""
+    mode = 'shadow'
+    for p in (os.path.expanduser('~/.claude/gate-mode'), os.path.expanduser('~/.claude-config/gate-mode')):
+        try:
+            with open(p) as f:
+                mode = f.read().strip().lower() or 'shadow'
+            break
+        except OSError:
+            continue
+    if os.environ.get('GATE_MODE') == 'enforce':
+        mode = 'enforce'
+    return mode if mode in ('shadow', 'enforce', 'off') else 'shadow'
+
+
+IRREVERSIBLE = ('send', 'pay', 'publish', 'delete', 'people')
+
+
+def gate_log(rec):
+    """One line per flagged call: local (~/.claude/state/gate.jsonl) and on the hub (best effort)."""
+    line = json.dumps(rec, ensure_ascii=False)
+    try:
+        p = os.path.expanduser('~/.claude/state')
+        os.makedirs(p, exist_ok=True)
+        with open(os.path.join(p, 'gate.jsonl'), 'a', encoding='utf-8') as f:
+            f.write(line + '\n')
+    except OSError:
+        pass
+    try:
+        import urllib.request
+        req = urllib.request.Request(URL + '/api/gate/log', data=line.encode(), method='POST',
+                                     headers={'Content-Type': 'application/json', **_auth_header()})
+        urllib.request.urlopen(req, timeout=1.5).close()
+    except Exception:  # noqa: BLE001 - the log never decides anything
+        pass
+
+
+def _auth_header():
+    t = os.environ.get('TASKS_TOKEN')
+    return {'Authorization': 'Bearer ' + t} if t else {}
+
+
+def hub_yes(session, category, cwd=''):
+    """A question about this category he answered on the page or a task, for this session or its
+    task, in the last day: (question id, his answer) or None. Raises when the hub can't be asked."""
+    import urllib.parse
+    import urllib.request
+    q = urllib.parse.urlencode({'session': session or '', 'category': category})
+    with urllib.request.urlopen(URL + '/api/gate/approval?' + q, timeout=2) as r:
+        hit = json.load(r)
+    return (hit['id'], hit['answer']) if hit.get('id') else None
+
+
+DENY = ('🛑 Brána schválení: tahle akce {cz} ({what}) a čeká na jeho ano. Neobcházej ji jiným příkazem. '
+        'Zeptej se ho: `tasks ask "<přesně co a komu>" -o "Ano, {verb}" -o "Ne" -k {cat} --blocking --task <ID>` '
+        'a ukonči tah (až odpoví, dispatcher tuhle session vzbudí), nebo ať to napíše sám v chatu ("ano, {verb}"). '
+        'Mezitím dělej zbytek; koncept/draft pro něj projde bez schválení.')
+VERB = {'send': 'pošli to', 'pay': 'zaplať', 'publish': 'zveřejni to', 'delete': 'smaž to', 'live': 'nasaď to',
+        'people': 'pošli to', 'account': 'udělej to'}
+
+
+def gate(ev, now=None, hub=None):
+    """Decide one PreToolUse event: (decision, record). decision is None (let it be) or 'deny'."""
+    tool, ti, cwd = ev.get('tool_name'), ev.get('tool_input') or {}, ev.get('cwd') or ''
+    hit = risky_call(tool, ti, cwd)
+    if not hit:
+        return None, None
+    cat, what = hit
+    mode = gate_mode()
+    sid = ev.get('session_id')
+    rec = {'ts': now or time.time(), 'machine': socket_host(), 'session': sid, 'tool': tool, 'category': cat,
+           'what': what, 'input': (ti.get('command') if tool == 'Bash' else json.dumps(ti, ensure_ascii=False))[:500],
+           'cwd': cwd, 'mode': mode, 'permission_mode': ev.get('permission_mode')}
+    yes = chat_yes(ev.get('transcript_path'), cat)
+    if yes:
+        rec['approved'] = 'chat: ' + yes
+        return None, rec
+    try:
+        h = (hub or hub_yes)(f'Claude Code:{sid}' if sid and ':' not in sid else sid, cat, cwd)
+    except Exception as e:  # noqa: BLE001 - the hub down: irreversible waits, the rest goes on (logged)
+        rec['hub_error'] = type(e).__name__
+        h = None
+        if cat not in IRREVERSIBLE:
+            rec['approved'] = 'hub unreachable, reversible: let through'
+            return None, rec
+    if h:
+        rec['approved'] = f'question #{h[0]}: {h[1]}'[:200]
+        return None, rec
+    rec['approved'] = None
+    return ('deny' if mode == 'enforce' else None), rec
+
+
+def socket_host():
+    import socket
+    return socket.gethostname().split('.')[0].lower()
+
+
+def manual_here():
+    """This machine is outside Beacon's loop (`manual` on its entry in the settings' machines): sessions there
+    are where he explores by hand, so no cards, no decisions and no replies held for tasks (2026-11-23)."""
+    return bool((settings.MACHINES.get(socket_host()) or {}).get('manual'))
+
+
+MANUAL_NOTE = ("This session runs on a machine that is outside Beacon: he explores here by hand. Talk with him in "
+               "this chat. Ask your questions here, not with `tasks ask`, and leave tasks alone unless he asks "
+               "(no `tasks add`/`note`/`done`). The global rules about tasks, http://beacon/decisions and "
+               "the next-step card do not apply in this session.")
+
+
+def hook_gate(stdin):
+    """The PreToolUse hook. Prints nothing (the call goes on, normal permissions apply) or a deny.
+    Never an allow: that would raise permissions everywhere. On its own crash: a call the cheap
+    check already found irreversible is denied in enforce mode, anything else goes on, logged."""
+    ev, hit = {}, None
+    try:
+        ev = json.load(stdin)
+        if gate_mode() == 'off':
+            return 0
+        decision, rec = gate(ev)
+        if rec:
+            gate_log(rec)
+        if decision == 'deny':
+            reason = DENY.format(cz=CZ[rec['category']], what=rec['what'], verb=VERB[rec['category']], cat=rec['category'])
+            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
+                                                     'permissionDecisionReason': reason}}, ensure_ascii=False))
+        return 0
+    except Exception as e:  # noqa: BLE001
+        try:
+            hit = risky_call(ev.get('tool_name'), ev.get('tool_input') or {}, ev.get('cwd') or '')
+        except Exception:  # noqa: BLE001
+            hit = None
+        gate_log({'ts': time.time(), 'session': ev.get('session_id'), 'tool': ev.get('tool_name'),
+                  'error': f'{type(e).__name__}: {e}'[:300], 'category': hit and hit[0]})
+        if hit and hit[0] in IRREVERSIBLE and gate_mode() == 'enforce':
+            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
+                                                     'permissionDecisionReason': '🛑 Brána schválení spadla na riskantní '
+                                                     'akci: čeká na jeho ano (`tasks ask --blocking`).'}}, ensure_ascii=False))
+        return 0
+
+
+if __name__ == '__main__' and sys.argv[1:2] == ['hook-gate']:
+    sys.exit(hook_gate(sys.stdin))
+
+import argparse  # noqa: E402 - below the gate's fast path on purpose
+import datetime  # noqa: E402
+import http.client  # noqa: E402
+import socket  # noqa: E402
+import subprocess  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.parse  # noqa: E402
+import urllib.request  # noqa: E402
+PRIORITY = {1: 'urgent', 2: 'high', 3: 'normal', 4: 'low'}
+# A hub restart or a tailnet blip is seconds, not a dead hub: try again before giving up
+# (2026-10-30: one timed-out read killed the task agent's whole run).
+RETRY_WAITS = (1, 3, 8)
+GATEWAY = (502, 503, 504)  # tailscale serve while the hub (re)starts: the hub never saw the request
+_vault = None
+
+
+def token():
+    global _vault
+    t = os.environ.get('TASKS_TOKEN')
+    if t:
+        return t
+    if _vault is None:  # one vault lookup per process, not one per request
+        try:
+            _vault = subprocess.run(['secrets', 'get', 'TASKS_TOKEN'], capture_output=True, text=True, timeout=20).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            _vault = ''
+    return _vault
+
+
+def unsent(e):
+    """The request never reached the hub, so even a write is safe to send again."""
+    reason = getattr(e, 'reason', e)
+    return isinstance(reason, (ConnectionRefusedError, socket.gaierror))
+
+
+def call(path, body=None, auth=True):
+    headers = {'Accept': 'application/json'}
+    data = None
+    if body is not None:
+        headers['Content-Type'] = 'application/json'
+        data = json.dumps(body).encode()
+    if auth:
+        t = token()
+        if t:
+            headers['Authorization'] = 'Bearer ' + t
+    req = urllib.request.Request(URL + path, data=data, headers=headers, method='POST' if data is not None else 'GET')
+    for wait in (*RETRY_WAITS, None):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code in GATEWAY and wait is not None:
+                time.sleep(wait)
+                continue
+            try:
+                msg = json.load(e).get('error')
+            except ValueError:
+                msg = None
+            if e.code == 401:
+                sys.exit('tasks: not allowed to write (no or wrong TASKS_TOKEN; `secrets get TASKS_TOKEN`)')
+            if e.code == 404:
+                sys.exit('tasks: no such question' if path.startswith('/api/questions') else 'tasks: no such task')
+            if e.code >= 500:
+                sys.exit(f'tasks: hub server error {e.code} ({msg or e.reason})')
+            sys.exit(f'tasks: {msg or e}')
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            # Unreachable, timed out, cut off mid-answer. A write that may have landed is not sent
+            # twice (a second note, a second task); a read always is.
+            if wait is not None and (data is None or unsent(e)):
+                time.sleep(wait)
+                continue
+            sys.exit(f'tasks: hub unreachable at {URL} ({getattr(e, "reason", None) or e or type(e).__name__})')
+
+
+def session_id():
+    sid = os.environ.get('CLAUDE_CODE_SESSION_ID')
+    return f'Claude Code:{sid}' if sid else None
+
+
+def author():
+    sid = os.environ.get('CLAUDE_CODE_SESSION_ID')
+    return f'Claude Code {sid[:8]}' if sid else None
+
+
+def current_project():
+    """The repo you are in (its main checkout's folder name, also from a worktree), else personal."""
+    try:
+        common = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        common = ''
+    if common:
+        name = os.path.basename(os.path.dirname(common.rstrip('/\\')))
+        if name and name not in ('Projects', 'projects'):
+            return name
+    return folder_project(os.getcwd()) or 'personal'
+
+
+def folder_project(cwd):
+    """A project outside git (an Unreal game is never in git): the folder right under a *projects folder
+    (`~/Projects/X`, `Documents/Unreal Projects/X`), named the way the usage collector names it. Else None.
+    2026-11-23: the Unreal game's sessions filed every task and card under "personal"."""
+    parts = [x for x in re.split(r'[\\/]', cwd or '') if x]
+    under = [i for i, x in enumerate(parts) if x.lower().endswith('projects')]
+    if not under or under[-1] + 1 >= len(parts):
+        return None
+    i = under[-1] + 1
+    if parts[i].lower() in ('parked', 'archive') and i + 1 < len(parts):
+        i += 1
+    return parts[i] if not parts[i].startswith('.') else None
+
+
+def line(t):
+    bits = [f"#{t['id']}", t['title'], f"[{t['project']}]"]
+    if t['status'] != 'todo':
+        bits.append(t['status'])
+    if t.get('priority') and t['priority'] <= 2:
+        bits.append(PRIORITY[t['priority']])
+    if t.get('due'):
+        bits.append('due ' + t['due'].replace('T', ' '))
+    if t.get('tags'):
+        bits.append(' '.join('#' + x for x in t['tags']))
+    return '  '.join(bits)
+
+
+def plan_lines(t):
+    """The task's own plan as its agent works it: the Team card shows the step marked here (task 1901)."""
+    plan = t.get('plan') or []
+    if not plan:
+        return (f"⚠️ #{t['id']} has no ## Steps. Write the plan first, then work it: `tasks set {t['id']} body=-` with "
+                f"the body plus a numbered ## Steps (🤖 agent / 👤 him); the Team card shows the step you are on.")
+    at = t.get('step') or 1
+    rows = [f"  {'▶' if i == at else '✓' if i < at or s['done'] else ' '} {i}. {'👤 ' if s['owner'] else ''}{s['label']}"
+            for i, s in enumerate(plan, 1)]
+    return ('Plan (## Steps):\n' + '\n'.join(rows) +
+            f"\nWork the steps in order; starting each one, mark it: `tasks step {t['id']} N` (the Team card shows it).")
+
+
+def show(t):
+    print(line(t))
+    print(f"{SITE}/#/task/{t['id']}")
+    if t.get('source'):
+        print('from ' + t['source'])
+    if t.get('body'):
+        print()
+        print(t['body'])
+    for c in t.get('comments') or []:
+        print(f"\n· {c['author']}: {c['text']}")
+    for s in t.get('sessions') or []:
+        print(f"\nsession {s['session_id']}" + (f" ({s['state']} on {s['machine']})" if s.get('state') else ''))
+
+
+# Progress written into a title or body instead of the status makes the list lie: the task reads
+# finished to an eye and open to every filter (2026-09-14). Narrow on purpose: headings and
+# standalone claims, not the word "done" inside a sentence. EN + CZ.
+MARKERS = (r'✅|DONE|COMPLETE|COMPLETED|FINISHED|SHIPPED|HOTOVO|DOKONČENO'
+           r'|⏳|🛑|⚠️|👉|IN PROGRESS|PARTIAL|BLOCKED|NEEDS YOU|STILL OPEN|WIP')
+# A heading that names the done-test ("## Done-test", "## Done when") is the body's job, not a claim.
+PROGRESS = re.compile(rf'^\s*#{{1,6}}\s*.*({MARKERS})(?![- ]?(test|when)\b)'
+                      rf'|^\s*(✅|⏳|🛑|⚠️|👉|\*\*)?\s*({MARKERS})(?![- ]?(test|when)\b)\s*(\*\*)?\s*(:|—|-|$)'
+                      r'|^\s*[-*]\s*\[x\]', re.I | re.M)
+
+
+def guard_progress(fields):
+    if 'status' in fields:
+        return
+    text = '\n'.join(fields.get(k) or '' for k in ('title', 'body'))
+    if PROGRESS.search(text):
+        sys.exit('tasks: refused: that title/body records progress, which belongs in the status.\n'
+                 '  Status is where it stands (tasks doing/done/drop, or status= in the same set).\n'
+                 '  The body is what REMAINS plus the done-test. What happened goes in a note:\n'
+                 '  tasks done ID -m "✅ Done — …"  /  tasks note ID "⚠️ Partial — …"')
+
+
+def read_text(v):
+    return sys.stdin.read() if v == '-' else v
+
+
+def parse_set(pairs):
+    out = {}
+    for p in pairs:
+        k, sep, v = p.partition('=')
+        if not sep:
+            sys.exit(f'tasks: expected key=value, got {p!r}')
+        if k == 'priority':
+            out[k] = int(v) if v else None
+        elif k == 'tags':
+            out[k] = [x.strip() for x in v.split(',') if x.strip()]
+        elif k in ('due',):
+            out[k] = v or None
+        elif k in ('title', 'body', 'project', 'status'):
+            out[k] = read_text(v)
+        else:
+            sys.exit(f'tasks: unknown field {k} (title, body, project, status, priority, due, tags)')
+    return out
+
+
+# ------------------------------------------------------------------ questions
+
+def bad_lately(qid, days=14, top=3):
+    """The cards he 👎'd lately, with his words, shown to every asker right after its own card: if it reads like
+    them, fix it now (`tasks see`). How the agents learn from his flags without a model in the loop."""
+    try:
+        rows = call(f'/api/questions/bad?since={time.time() - days * 86400:.0f}', auth=False)['questions']
+    except (SystemExit, KeyError, TypeError):
+        return
+    rows = [r for r in rows if r.get('flagged_at') and r['id'] != qid][:top]
+    if rows:
+        print('He flagged these cards as bad lately; if yours reads like them, fix it now (`tasks see`):')
+        for r in rows:
+            print(f"  👎 ?{r['id']} „{r['question'][:100]}“" + (f" ({r['flag']})" if r.get('flag') else ''))
+
+
+def card_rules():
+    """His rules about cards (the file plus what his 👎s taught, hub/cardrules.py), shown with every ask and every
+    refusal: how an agent learns from his flags with no model in the way."""
+    try:
+        rules = call('/api/questions/rules', auth=False).get('rules') or []
+    except (SystemExit, AttributeError):
+        return
+    if rules:
+        print('His rules about cards (from his own 👎 and complaints); if yours breaks one, fix it now (`tasks see`, '
+              '`tasks withdraw`):')
+        for r in rules:
+            print(f"  - {r['text']}")
+
+
+def qline(q):
+    bits = [f"?{q['id']}", q['question'], f"[{q['project']}]", q['kind']]
+    if q['status'] == 'open':
+        bits.append('blocking' if q['blocking'] else f"going on with: {q['default_answer']}")
+    else:
+        bits.append(f"{q['status']}: {q['answer']}" if q['answer'] else q['status'])
+    return '  '.join(bits)
+
+
+def option(v):
+    label, _, detail = v.partition('::')
+    return {'label': label.strip(), 'detail': detail.strip()} if detail.strip() else label.strip()
+
+
+# Where an answer is carried out (research 2026-11-22, ai-brain knowledge/reference/claude-code-session-size.md):
+# vendors agree same work continues in the session that has its context ("Continue: same task, context is still
+# relevant", Anthropic), new work gets a new session ("when you start a new task, you should also start a new
+# session"), and a big session left idle is resumed from a summary anyway ("a session past about 200K tokens that
+# sits idle is compacted shortly before the cache expires ... a fresh session still costs less", Claude Code docs).
+# A fresh session gets the task, its notes and the card: that is the brief.
+BIG_CONTEXT = 200_000
+DISPATCHER_NAME = 'answer-dispatcher'  # the hub's taken_by for its runs (hub/questions.py DISPATCHER)
+WAIT_MAX = 600.0  # `tasks wait` is for a live chat only; longer, the session ends its turn and the dispatcher resumes it (task 1884)
+COLD_AFTER = 50 * 60  # Claude Code's cache lasts an hour on his plan; it compacts a big idle session before that
+NO_PROJECT = ('', 'personal', None)
+
+
+def went_on(q):
+    """He picked what a non-blocking asker already went on with (`tasks ask` told it to): nothing new to carry out
+    anywhere. An asker that holds the work until he answers says so with --blocking."""
+    return bool(q.get('matched_default')) and not q.get('blocking')
+
+
+def other_work(q, task):
+    """Why his answer is other work than its task's session ('' when it is the same work): a card filed on a
+    task of one project whose yes means work in another the asker named with -p (2026-11-22: 14 repos' cards on
+    one cleanup task). Never a next-step box (the chat's own next step) or a default it already went on with."""
+    q = q or {}
+    if not task or not q.get('project_asked') or q.get('kind') == 'next-step' or went_on(q):
+        return ''
+    qp, tp = q.get('project'), task.get('project')
+    if qp not in NO_PROJECT and tp not in NO_PROJECT and qp != tp:
+        return f"it is work in {qp}, not this task's {tp}"
+    return ''
+
+
+def too_big_idle(q, size, idle):
+    """Why this session should not carry the answer itself for its size ('' when it should)."""
+    q = q or {}
+    if q.get('kind') != 'next-step' and not went_on(q) and size and size >= BIG_CONTEXT and idle is not None \
+            and idle >= COLD_AFTER:
+        return (f"this session holds {size // 1000}k tokens and sat idle {int(idle // 60)} min, so it would resume "
+                f"from a summary; a fresh one starts clean and costs less")
+    return ''
+
+
+def switch_line(q):
+    """When the asker already went on with its default and he picked otherwise: who changes course."""
+    if q.get('default_answer') and not q.get('matched_default') and not q.get('blocking'):
+        return (f"The asking session already went on with {q['default_answer']!r}; he picked {q['answer']!r}, so the "
+                f"fresh session switches it.")
+    return ''
+
+
+def session_size(sid=None):
+    """(context tokens of the last main-thread model call, seconds since it) of this Claude Code session, from its
+    transcript; (None, None) when unknown (not in Claude Code, transcript not found)."""
+    sid = sid or os.environ.get('CLAUDE_CODE_SESSION_ID')
+    if not sid:
+        return None, None
+    base = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.join(os.path.expanduser('~'), '.claude')
+    root = os.path.join(base, 'projects')
+    try:
+        path = next((os.path.join(root, d, sid + '.jsonl') for d in os.listdir(root)
+                     if os.path.isfile(os.path.join(root, d, sid + '.jsonl'))), None)
+    except OSError:
+        path = None
+    if not path:
+        return None, None
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 4 * 1024 * 1024))  # the tail holds the last call; transcripts reach many MB
+            lines = f.read().decode('utf-8', 'replace').splitlines()
+    except OSError:
+        return None, None
+    for raw in reversed(lines):
+        if '"usage"' not in raw:
+            continue
+        try:
+            ev = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get('type') != 'assistant' or ev.get('isSidechain'):
+            continue
+        u = (ev.get('message') or {}).get('usage') or {}
+        if not isinstance(u, dict):
+            continue
+        size = sum(u.get(k) or 0 for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
+        if not size:
+            continue
+        try:
+            at = datetime.datetime.fromisoformat(ev['timestamp'].replace('Z', '+00:00')).timestamp()
+        except (KeyError, ValueError, AttributeError):
+            at = os.path.getmtime(path)
+        return size, max(0.0, time.time() - at)
+    return None, None
+
+
+def hand_off_why(q, task, size=None, idle=None):
+    """Why a fresh session should carry out this answer instead of the asking one ('' = the asking one does)."""
+    return other_work(q, task) or too_big_idle(q, size, idle)
+
+
+def handed(q, why):
+    """What `tasks wait` prints when it lets the answer go to a fresh session."""
+    t = q.get('task_id')
+    out = [f"?{q['id']} answered: {q['answer']}"]
+    if q.get('answer_note'):
+        out.append(f"note: {q['answer_note']}")
+    out.append(f"Handed to a fresh session, because {why}. Do not carry it out here.")
+    switch = switch_line(q)
+    if switch:
+        out.append(switch + ' Stop work that depends on your default; leave the switch to it.')
+    if t:
+        out.append(f"It starts shortly with task #{t}, its notes and the card. If it needs something only "
+                   f"you know (branch or worktree, files, what you ruled out, how to check), add it now: tasks note {t} \"…\"")
+    return '\n'.join(out)
+
+
+def said(q):
+    """What `tasks wait` prints once he has answered: the answer first, then how it relates to
+    what the agent assumed."""
+    out = [f"?{q['id']} answered: {q['answer']}"]
+    if q.get('answer_note'):
+        out.append(f"note: {q['answer_note']}")
+    if q.get('default_answer'):
+        out.append('(your default)' if q.get('matched_default') else f"(not your default: you went on with {q['default_answer']!r}; change course)")
+    if q.get('standing'):
+        out.append('He marked it a standing rule: answer this kind the same way from now on, without asking.')
+    # the desktop app keeps the last next-step box until a new one replaces it (2026-11-22: he saw his answered
+    # question asked again after this session acted on the page answer)
+    out.append('In the desktop app, end the turn that acts on this with the next-step box (wrap_up) so the old '
+               'question disappears.')
+    return '\n'.join(out)
+
+
+def project_of(cwd):
+    """The project of a hook event's folder (its repo), else personal."""
+    if not cwd or not os.path.isdir(cwd):
+        return 'personal'
+    here = os.getcwd()
+    try:
+        os.chdir(cwd)
+        return current_project()
+    finally:
+        os.chdir(here)
+
+
+# The app's next-step box (Claude Code desktop): a question and 1-2 buttons as plain fields, so it is copied to
+# http://beacon/decisions as it is, buttons = options, the first = the default (2026-11-22: "když mi zobrazíš
+# tohle, tak to musí jít poznat"). A button click comes back as his next prompt with the label as its text.
+BOX_TOOL = 'mcp__ccd_turn__wrap_up'
+ASK_CMD = re.compile(r'(^|[;&|\n(]|\$\()\s*(\S*/)?tasks\s+ask\b')
+LEFT_CMD = re.compile(r'(^|[;&|\n(]|\$\()\s*(\S*/)?tasks\s+(note|handoff|add|ask|done)\b')  # what is left, written down
+
+
+APP_ACTIONS = {'commit': 'Commit', 'create_pr': 'Open a pull request', 'merge': 'Merge', 'fix_ci': 'Fix the CI',
+               'address_comments': 'Address the comments', 'resolve_conflicts': 'Resolve conflicts',
+               'verify': 'Verify it', 'archive': 'Archive the session', 'new_session': 'New session'}
+
+
+def quick(path, body=None, timeout=3):
+    """One try with a short timeout, for hooks: a hub that is down must never hold a session (call() retries
+    for over a minute). Raises on any failure; the hook swallows it."""
+    headers = {'Accept': 'application/json'}
+    data = None
+    if body is not None:
+        headers['Content-Type'] = 'application/json'
+        data = json.dumps(body).encode()
+        t = token()
+        if t:
+            headers['Authorization'] = 'Bearer ' + t
+    req = urllib.request.Request(URL + path, data=data, headers=headers, method='POST' if data is not None else 'GET')
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+ASK_MAX = 120  # a decision card's title: the question only, the details go in the context as bullets
+
+
+def box_file(sid):
+    return os.path.join(os.path.expanduser('~/.cache/tasks-hook'), f'{sid}.box')
+
+
+def read_box(sid):
+    try:
+        with open(box_file(sid)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def hook_box(ev):
+    """PostToolUse on the next-step box: a question the box showed is filed at http://beacon/decisions, unless a
+    `tasks ask` already ran this turn (it is there already). Not tied to the task: an answer on a task
+    goes to the task agent, while this session is still working it (the task is named in the context)."""
+    inp = ev.get('tool_input') or {}
+    ask, sid = str(inp.get('ask') or '').strip(), ev.get('session_id')
+    if not ask or not sid or hooks_off():
+        return
+    res = ev.get('tool_response')
+    res = json.dumps(res) if res is not None and not isinstance(res, str) else (res or '')
+    if res and 'shown in the next-step box' not in res.lower():
+        return  # the app dropped the question (an app action no longer available): he never saw it
+    actions = inp.get('actions') or []
+    if isinstance(actions, str):
+        try:
+            actions = json.loads(actions)
+        except ValueError:
+            actions = []
+    labels = []
+    for a in actions if isinstance(actions, list) else []:
+        if isinstance(a, dict):
+            label = a.get('label') if not a.get('action') else APP_ACTIONS.get(a['action'], a['action'].replace('_', ' ').capitalize())
+        else:
+            label = a
+        label = str(label or '').strip()[:200]
+        if label and label.lower() not in (x.lower() for x in labels):
+            labels.append(label)
+    asked_now = task_touched_this_turn(ev.get('transcript_path'), ASK_CMD, unknown=False)
+    same = open_question_for_box(sid, ask, labels, asked_now)
+    if not same and asked_now:
+        return  # `tasks ask` ran this turn: it is on the page already
+    if same:  # the box shows a question already on the page: a button answers that one, nothing is filed twice
+        os.makedirs(os.path.dirname(box_file(sid)), exist_ok=True)
+        with open(box_file(sid), 'w') as f:
+            json.dump({'id': same['id'], 'labels': labels}, f)
+        return
+    linked = quick('/api/tasks?' + urllib.parse.urlencode({'session': f'Claude Code:{sid}', 'limit': 50}))['tasks']
+    # the card heads with this task's title (the page drops the id); a hub-filed "Decide: …" holder names nothing
+    # (2026-11-23, ?333 read "Decide: Click Yes on the Windows admin prompt…": "which project is this?")
+    doing = [f"#{t['id']} {t['title']}" for t in linked if t['status'] == 'doing' and not t['title'].startswith('Decide:')]
+    recap = str(inp.get('recap') or '').strip()
+    context = '\n\n'.join(x for x in (recap, ('Task: ' + '; '.join(doing)) if doing else '',
+                                       "_Asked in the session's next-step box._") if x)
+    q = quick('/api/questions', {
+        'question': ask[:400], 'options': labels[:8], 'kind': 'next-step', 'project': project_of(ev.get('cwd')),
+        'context': context, 'see': [{'url': u} for u in links_in(ask + '\n' + recap)[:4]],
+        'session_id': f'Claude Code:{sid}', 'asked_by': f'Claude Code {sid[:8]}',
+        'source': f"box:{sid}:{ev.get('tool_use_id') or ask[:80]}"})
+    old = read_box(sid)
+    if old and old.get('id') != q['id']:  # asked again before he answered: the newer box replaces it
+        try:
+            quick(f"/api/questions/{old['id']}/withdraw", {'note': 'asked again in a newer next-step box'})
+        except Exception:
+            pass  # already answered or the hub is away: leave it
+    os.makedirs(os.path.dirname(box_file(sid)), exist_ok=True)
+    with open(box_file(sid), 'w') as f:
+        json.dump({'id': q['id'], 'labels': labels}, f)
+
+
+def norm(text):
+    return re.sub(r'\s+', ' ', str(text or '')).strip().rstrip('?').strip().casefold()
+
+
+GENERIC = {'yes', 'no', 'ano', 'ne', 'ok', 'go ahead', 'do it', 'udělej to', 'not now', 'later', 'skip', 'done',
+           'hotovo', 'cancel', 'approve', 'keep', 'stop', 'try again', 'not needed'}
+
+
+def same_question(q, ask, labels):
+    """The box shows question q: the same buttons, when they say what they do ("Finish it" / "Stop at what is
+    done", in any language of the question). Buttons any question has (Yes / No) also need the question's words:
+    "Merge PR #12?" and "Deploy to prod?" both offer Yes / No, and a tap on one must never answer the other."""
+    want = sorted(norm(x) for x in labels)
+    if not want or sorted(norm(x) for x in option_labels(q)) != want:
+        return False
+    if not all(x in GENERIC for x in want):
+        return True
+    wa, wb = (set(re.findall(r'\w{3,}', norm(x))) for x in (q['question'], ask))
+    return bool(wa and wb) and len(wa & wb) / min(len(wa), len(wb)) >= 0.6
+
+
+def option_labels(q):
+    return [str(o.get('label') if isinstance(o, dict) else o).strip() for o in q.get('options') or []]
+
+
+def open_question_for_box(sid, ask, labels, asked_now=False):
+    """The open question of this session the box shows, if it is one already on http://beacon/decisions: same text, or
+    the same buttons; or, after a `tasks ask` this turn, the newest one. None means a new question."""
+    rows = [q for q in quick('/api/questions?' + urllib.parse.urlencode({'status': 'open', 'limit': 500}),
+                             timeout=2)['questions'] if q.get('session_id') == f'Claude Code:{sid}']
+    for q in rows:
+        if norm(q['question']) == norm(ask):
+            return q
+    for q in rows:
+        if same_question(q, ask, labels):
+            return q
+    if asked_now and rows:
+        return max(rows, key=lambda q: q.get('created_at') or 0)
+    return None
+
+
+def box_answer(sid, prompt):
+    """His next prompt after a box question. A button's label answers it on the page (via chat). An answer
+    he gave on the page meanwhile, or a typed reply, is handed to the session to settle. One prompt
+    settles the box either way."""
+    box = read_box(sid)
+    if not box:
+        return None
+    try:
+        os.remove(box_file(sid))
+    except OSError:
+        pass
+    q = quick(f"/api/questions/{box['id']}", timeout=2)
+    if q['status'] == 'answered' and q.get('answered_via') != 'chat':
+        won = ((not q.get('applied_at') and quick(f"/api/questions/{box['id']}/claim", {'by': chat_claimer(sid)}, timeout=2).get('won'))
+               or q.get('taken_by') == chat_claimer(sid))
+        if not won:  # answer-dispatcher took it meanwhile (task 1776): a fork of this session or a fresh run did it
+            return (f"He answered the next-step box question ?{q['id']} on the decisions page ({q['answer']}) and "
+                    f"answer-dispatcher already carried it out in another run" + (f" (see task #{q['task_id']})" if q.get('task_id') else '')
+                    + ": check its result there, do not repeat it.")
+        note = f" (note: {q['answer_note']})" if q.get('answer_note') else ''
+        return f"He answered the next-step box question ?{q['id']} on the decisions page: {q['answer']}{note}. Act on that."
+    if q['status'] != 'open':
+        return None
+    pick = next((x for x in box.get('labels') or [] if x.casefold() == prompt.strip().casefold()), None)
+    if pick:
+        quick(f"/api/questions/{box['id']}/answer", {'answer': pick, 'via': 'chat'}, timeout=2)
+        return None
+    return (f"Your next-step box question ?{q['id']} ({q['question']}) is still open on the decisions page. If this "
+            f"prompt answers it, log it: `tasks answer {q['id']} \"<his words>\" --chat`; if it makes it moot: "
+            f"`tasks withdraw {q['id']} -m \"<why>\"`; otherwise leave it.")
+
+
+def chat_claimer(sid):
+    """Who the prompt hook claims as: its own mark, so an answer it won but never handed in is found again."""
+    return f'Claude Code:{sid} (chat)'
+
+
+def own_answers(sid):
+    """What this open chat must know when he next types here (task 1884): an answer to one of its own questions
+    that nobody took yet is claimed and handed to it; one answer-dispatcher already carried out in another run
+    (a fork of this session or a fresh run) is named once, so it is never redone or undone."""
+    rows = quick('/api/questions?' + urllib.parse.urlencode({'status': 'answered', 'limit': 300}), timeout=2)['questions']
+    mine = [q for q in rows if q.get('session_id') == f'Claude Code:{sid}' and q.get('kind') != 'ending'
+            and q.get('answered_via') != 'chat' and not q.get('handoff_at') and time.time() - (q.get('answered_at') or 0) < 3 * 86400]
+    told_file = os.path.join(os.path.expanduser('~/.cache/tasks-hook'), f'{sid}.told')
+    try:
+        with open(told_file) as f:
+            told = set(json.load(f))
+    except (OSError, ValueError):
+        told = set()
+    lines = []
+    for q in mine:
+        if q['id'] in told:
+            continue
+        if not q.get('applied_at'):
+            if q.get('project_asked') and q.get('task_id'):  # other work the asker named: the dispatcher's fresh run
+                try:
+                    if other_work(q, quick(f"/api/tasks/{q['task_id']}", timeout=2)):
+                        continue
+                except Exception:  # noqa: BLE001 - unsure: leave it to the dispatcher, which routes it
+                    continue
+            try:
+                won = quick(f"/api/questions/{q['id']}/claim", {'by': chat_claimer(sid)}, timeout=2).get('won')
+            except Exception:  # noqa: BLE001 - hub slow: what was won so far is still handed in; the rest next prompt
+                break
+            if not won:
+                continue  # the dispatcher took it this second: named on the next prompt
+            lines.append(said(q))
+        elif q.get('taken_by') == chat_claimer(sid):  # won here, but the hook died before it was handed in
+            lines.append(said(q))
+        elif q.get('taken_by') == DISPATCHER_NAME:
+            lines.append(f"?{q['id']} ({q['question'][:80]}): he answered {q['answer']!r} and answer-dispatcher already "
+                         f"carried it out in another run" + (f" (its result is a note on task #{q['task_id']})" if q.get('task_id') else '')
+                         + ": check it, do not repeat or undo it.")
+        else:
+            continue
+        told.add(q['id'])
+    if lines:
+        os.makedirs(os.path.dirname(told_file), exist_ok=True)
+        with open(told_file, 'w') as f:
+            json.dump(sorted(told), f)
+    return '\n\n'.join(lines)
+
+
+def hook_ask(stdin):
+    """PostToolUse on AskUserQuestion: log what he answered in the chat. On the next-step box: file its
+    question (hook_box). Never fails the tool."""
+    try:
+        ev = json.load(stdin)
+        if manual_here():
+            return  # outside Beacon: what he answers in the chat stays in the chat
+        if ev.get('tool_name') == BOX_TOOL:
+            hook_box(ev)
+            return
+        res = ev.get('tool_response') or {}
+        if isinstance(res, str):
+            res = {'answers': dict(re.findall(r'"([^"]+)"="([^"]*)"', res))}
+        answers = res.get('answers') or {}
+        notes = res.get('annotations') or {}
+        questions = (ev.get('tool_input') or {}).get('questions') or res.get('questions') or []
+        project = project_of(ev.get('cwd'))
+        sid = ev.get('session_id')
+        for i, q in enumerate(questions):
+            text = q.get('question')
+            if not text or not answers.get(text):
+                continue
+            note = notes.get(text) if isinstance(notes, dict) else None
+            call('/api/questions', {
+                'question': text[:400], 'kind': q.get('header') or 'chat',
+                'options': [{'label': o.get('label', '')[:200], 'detail': (o.get('description') or '')[:1000]}
+                            for o in q.get('options') or [] if o.get('label')][:8],
+                'answer': answers[text], 'note': (note or {}).get('notes') if isinstance(note, dict) else None,
+                'via': 'chat', 'project': project,
+                'session_id': f'Claude Code:{sid}' if sid else None,
+                'asked_by': f'Claude Code {sid[:8]}' if sid else 'chat',
+                'source': f"chat:{sid}:{ev.get('tool_use_id') or ''}:{i}" if sid else None,
+            })
+    except SystemExit:
+        pass
+    except Exception as e:  # a broken log must never break the session
+        print(f'tasks hook-ask: {e}', file=sys.stderr)
+
+
+def last_reply(path):
+    """The text of the session's last assistant message, from its transcript (JSON lines)."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            lines = f.readlines()[-200:]
+    except (OSError, TypeError):
+        return ''
+    for raw in reversed(lines):
+        try:
+            m = json.loads(raw)
+        except ValueError:
+            continue
+        if m.get('type') != 'assistant':
+            continue
+        content = (m.get('message') or {}).get('content')
+        text = content if isinstance(content, str) else '\n'.join(
+            c.get('text', '') for c in content or [] if isinstance(c, dict) and c.get('type') == 'text')
+        if text.strip():
+            return text
+    return ''
+
+
+def hooks_off():
+    """The task hooks are for sessions he talks to (the app, the web, a terminal), never for a one-shot
+    `claude -p` an automation runs (answer-dispatcher, Hermes jobs): there a block rewrites the output
+    that goes to his phone. Those sessions look like `claude -p "…"`; his app and Remote Control
+    sessions also run --print, but with --input-format stream-json. TASKS_HOOKS=0/1 forces it."""
+    force = os.environ.get('TASKS_HOOKS')
+    if force in ('0', '1'):
+        return force == '0'
+    pid = os.getppid()
+    for _ in range(5):
+        try:
+            out = subprocess.run(['ps', '-o', 'ppid=', '-o', 'args=', '-p', str(pid)],
+                                 capture_output=True, text=True, timeout=2).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if not out:
+            return False
+        ppid, _, args = out.partition(' ')
+        argv = args.split()
+        if argv and 'claude' in argv[0]:
+            return ('-p' in argv or '--print' in argv) and 'stream-json' not in argv
+        try:
+            pid = int(ppid)
+        except ValueError:
+            return False
+        if pid <= 1:
+            return False
+    return False
+
+
+# A reply that ends by offering more work ("Mám to předělat?", "Shall I fix it?"). 2026-11-21: an offer
+# went out with no task behind it, against "every later step is a task filed before the reply".
+OFFER = re.compile(r'(^|[\s*_>"„(])(m[aá]m\b|chce[sš],? abych|nem[aá]m\b|shall i\b|should i\b|want me to\b|'
+                   r'do you want me\b|let me know if you want me)', re.I)
+TASK_CMD = re.compile(r'(^|[;&|\n(]|\$\()\s*(\S*/)?tasks\s+(add|note|doing|set|ask|done|handoff|answer|withdraw)\b')
+
+
+# A first-person promise anywhere in the reply ("once it's online, I'll point the logger at it", "až to bude, pustím
+# to"): task #1652, missed 5x in 24 h (2026-11-17) and again 2026-11-21 (Shelly plug). Matched without diacritics.
+PROMISE = re.compile(r"\b(i'll|i will|i'm going to|i am going to|we'll|budu|udelam|dodelam|predelam|opravim|"
+                     r"zkontroluj[iu]|overim|otestuj[iu]|pustim|spustim|nasadim|pripravim|nastavim|pridam|poslu|"
+                     r"napisu|ozvu se|podivam se|mrknu|zarid[im]|dam (ti )?vedet|pohlidam|hlidam)\b", re.I)
+QUOTED = re.compile(r'`[^`]*`|„[^“”]*[“”]|"[^"\n]*"|```.*?```', re.S)
+
+
+def offers_work(reply):
+    """The reply's last paragraph asks to do something, or the reply promises something for later."""
+    import unicodedata
+    text = QUOTED.sub(' ', reply or '')  # quoted examples and commands are not promises
+    paras = [p.strip() for p in text.strip().split('\n\n') if p.strip()]
+    tail = paras[-1] if paras else ''
+    if any(OFFER.search(s) for s in re.findall(r'[^.!?\n]*\?', tail)):
+        return True
+    plain = ''.join(c for c in unicodedata.normalize('NFKD', text) if not unicodedata.combining(c))
+    return bool(PROMISE.search(plain))
+
+
+# A plan he carries out himself, left only in a chat (task 1891): "I want to make an anonymous Pinterest account"
+# got a 5-step how-to and a ✅, and the idea died with the session (2026-11-23: "my ideas always get stuck in the
+# first phase"). A list item that starts with an order (EN, or a Czech imperative stem), after its emoji and bold.
+STEP_ITEM = re.compile(r'^\s*(?:\d{1,2}[.)]|[-*•])\s+(.+)$')
+DO_EN = frozenset((
+    'reset wipe turn make create sign pick choose open go tap click press install download buy order pay post upload set '
+    'switch use add write send call ask find get log register enter type copy paste connect plug unplug restart reboot '
+    'delete remove skip start try put take leave keep save check verify record film follow join book print wait visit '
+    'read watch fill submit publish share reply email text message schedule move rename compare test draft prepare '
+    'apply upgrade update enable disable allow accept confirm grab bring charge never don\'t do avoid stop give tell '
+    'cancel claim link unlink scan photograph shoot export import back sync name label tag drop hold insert'
+).split())
+DO_CS = re.compile(r'^(otev[řr]|klikn|kliknu|vytvo[řr]|nastav|zapn|vypn|po[šs]l|st[áa]hn|nainstaluj|p[řr]ihla[sš]|'
+                   r'zaregistruj|ud[ěe]lej|vyber|zkus|napi[šs]|zavolej|kup|zapla[ťt]|nahraj|zkop[íi]ruj|vlo[žz]|'
+                   r'restartuj|odpoj|p[řr]ipoj|jdi|dej|vezmi|ulo[žz]|sma[žz]|zkontroluj|ov[ěe][řr]|po[čc]kej|spus[ťt]|'
+                   r'vypl[ňn]|ode[šs]li|potvr[ďd]|zvol|pou[žz]ij|nikdy|nepou[žz][íi]vej|neklikej|resetuj|vyma[žz]|'
+                   r'p[řr]epni|zadej|naskenuj|vyfo[ťt]|natoč|sd[íi]lej|zve[řr]ejni|po[žz][áa]dej)', re.I)
+
+
+def hands_plan(reply):
+    """How many list items of the reply are orders for him to carry out ("1. 📱 **Reset the spare phone**")."""
+    import unicodedata
+    n = 0
+    for line in QUOTED.sub(' ', reply or '').splitlines():
+        m = STEP_ITEM.match(line)
+        if not m:
+            continue
+        t = plain(m.group(1))
+        t = ''.join(c for c in t if not unicodedata.category(c).startswith('S') and c != '️').strip(' :-–')
+        word = (re.match(r"[^\W\d_][\w']*", t) or [''])[0]
+        if word.lower() in DO_EN or DO_CS.match(word):
+            n += 1
+    return n
+
+
+PLAN_MIN = 3  # orders in one reply that make it a plan for him, not advice
+
+
+def plan_reason(steps):
+    """The Stop hook's send-back for a plan he carries out that lives only in this chat."""
+    return (f'Your reply hands him a plan to carry out ({steps} steps), but only this chat holds it: he loses the chat '
+            'and the idea never gets done (2026-11-23: "my ideas always get stuck in the first phase"). Run, in order:\n'
+            '1. `tasks add "<the outcome he gets>" --doing -b -` with ## Goal, ## Done-test, ## Steps: the whole plan, '
+            f'each step 🤖 agent or 👤 {settings.OWNER_NAME}\n'
+            '2. every 🤖 step you can do now (look it up, draft it, set it up)\n'
+            '3. `tasks ask "<his next step, one plain line>" --task ID -o "Done" --step "<what he taps> :: <exact link>" '
+            '--step "…"`: only his next 1-3 👤 steps; open each link first\n'
+            'Then end with one line in the language of your reply: "❓ <his next step>" (he already read the rest). '
+            'Not steps for him after all (what you did, options to pick from, an example)? End with no text.')
+
+
+def his_message(m, content):
+    """A transcript line that is his own message (the start of the turn), not a tool result, a meta line or a
+    background notification (task, Monitor, agent completion), which arrive as user text too."""
+    if m.get('isMeta'):
+        return False
+    if isinstance(content, str):
+        text = content
+    elif any(isinstance(c, dict) and c.get('type') == 'text' for c in content or []):
+        if 'tool_result' in json.dumps(content)[:200]:
+            return False
+        text = ' '.join(c.get('text', '') for c in content if isinstance(c, dict) and c.get('type') == 'text')
+    else:
+        return False
+    head = text.lstrip()[:300]
+    return not (head.startswith('<task-notification') or '[SYSTEM NOTIFICATION' in head
+                or head.startswith('<system-reminder>') or head.startswith('Stop hook feedback'))
+
+
+def task_touched_this_turn(path, pattern=TASK_CMD, unknown=True):
+    """A `tasks add/note/doing/set/ask/done` command (or `pattern`) ran since his last message (transcript,
+    JSON lines). `unknown`: the answer when the transcript can't be read."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            lines = f.readlines()[-3000:]
+    except (OSError, TypeError):
+        return unknown  # by default: can't tell, never block on a guess
+    for raw in reversed(lines):
+        try:
+            m = json.loads(raw)
+        except ValueError:
+            continue
+        content = (m.get('message') or {}).get('content')
+        if m.get('type') == 'user':
+            if his_message(m, content):
+                return False  # reached his message without a task command after it
+            continue
+        if m.get('type') == 'assistant':
+            for c in content or []:
+                cmd = (c.get('input') or {}).get('command') if isinstance(c, dict) and c.get('type') == 'tool_use' else None
+                if isinstance(cmd, str) and pattern.search(cmd):  # a shell command, not text that mentions one
+                    return True
+    return False
+
+
+def box_filed(sid):
+    """A next-step box question is on http://beacon/decisions and he has not written since (hook-ask wrote the .box
+    file after filing it; his next prompt removes it). A box the app dropped, or a hub that was down, leaves none."""
+    return bool(sid) and os.path.exists(box_file(sid))
+
+
+def last_box(path):
+    """(time, ask) of the last next-step box this session showed, from its transcript; None if none."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            lines = f.readlines()[-3000:]
+    except (OSError, TypeError):
+        return None
+    for raw in reversed(lines):
+        try:
+            m = json.loads(raw)
+        except ValueError:
+            continue
+        if m.get('type') != 'assistant':
+            continue
+        for c in reversed((m.get('message') or {}).get('content') or []):
+            if isinstance(c, dict) and c.get('type') == 'tool_use' and c.get('name') == BOX_TOOL:
+                try:
+                    ts = datetime.datetime.fromisoformat(str(m.get('timestamp')).replace('Z', '+00:00')).timestamp()
+                except ValueError:
+                    return None
+                inp = c.get('input') or {}
+                acts = inp.get('actions') or []
+                if isinstance(acts, str):
+                    try:
+                        acts = json.loads(acts)
+                    except ValueError:
+                        acts = []
+                labels = [str(a.get('label') or '') if isinstance(a, dict) else str(a) for a in acts
+                          if not (isinstance(a, dict) and a.get('action'))] if isinstance(acts, list) else []
+                return ts, str(inp.get('ask') or '').strip(), labels
+    return None
+
+
+def unshown_question(path, sid):
+    """An open question of this session that the next-step box does not show (2026-11-22: "shouldn't
+    this be a question right here and on the web too?"): he must be able to answer it in the chat as well.
+    The oldest one, else None."""
+    rows = [q for q in quick('/api/questions?' + urllib.parse.urlencode({'status': 'open', 'limit': 500}),
+                             timeout=2)['questions'] if q.get('session_id') == f'Claude Code:{sid}']
+    box = last_box(path)
+    if not rows or not box:  # no box in this session (a terminal, `claude -p`): the page is the only place
+        return None
+    if box[1]:
+        want = sorted(norm(x) for x in box[2])  # loose on purpose: a wrong match here costs one reminder, never an answer
+        if any(norm(q['question']) == norm(box[1]) or (want and sorted(norm(x) for x in option_labels(q)) == want)
+               for q in rows):
+            return None
+    return min(rows, key=lambda q: q.get('created_at') or 0)
+
+
+def stale_box(path, sid):
+    """The app still shows a next-step box question he has since answered on the page (2026-11-22: "once
+    I answer, it must never show again"). The box stays until the next box replaces it. Returns the answered
+    question, else None."""
+    box = last_box(path)
+    if not box or not box[1]:
+        return None
+    rows = quick('/api/questions?' + urllib.parse.urlencode({'status': 'answered', 'limit': 300}), timeout=2)['questions']
+    hits = [q for q in rows if q.get('session_id') == f'Claude Code:{sid}' and (q.get('answered_at') or 0) > box[0]
+            and q.get('answered_via') != 'chat' and q.get('kind') != 'ending']
+    return hits[0] if hits else None
+
+
+def left_open_reason(reply, linked, path, sid=None):
+    """Land the plane (2026-11-22: sessions are disposable, he does not read them): a reply that starts
+    with ⚠️ (work is left) or ❓ (he must decide) ends only once that is in a task or on http://beacon/decisions.
+    None when it already is."""
+    head = reply.lstrip()
+    linked = [t for t in linked if 'decision' not in (t.get('tags') or [])]  # the hub filed it to hold a question only
+    if head.startswith('❓'):  # with or without a task: a question left only in a chat became a bare card (2026-11-22)
+        if task_touched_this_turn(path, ASK_CMD) or box_filed(sid):
+            return None
+        return ('Your reply starts with ❓, but the question is not on http://beacon/decisions, and he decides there, not '
+                'in sessions he may never open. File it: `tasks ask "<the question>" -o "<your pick> :: why" -o '
+                '"<other>" [--task ID]` (add --blocking only when there is no safe default). Run the command only, '
+                'then end with no text: he already read your reply.')
+    if not linked or not head.startswith('⚠'):  # a chat, not work: no task to land in ("not checked")
+        return None
+    if task_touched_this_turn(path, LEFT_CMD):
+        return None
+    mine = [t for t in linked if t['status'] in ('doing', 'todo') and not handed_off(t)]
+    out = ["Your reply starts with ⚠️, so work is left, but nothing was written to a task this turn. Sessions are "
+           "disposable and he does not read them: what is left must live in a task, or nobody does it. Run ONE:",
+           '- agent work that nobody is running now: `tasks handoff ID "<the next step, concrete>"` (the task '
+           'agent continues it; a task tagged auto still waits for his OK)',
+           '- already running somewhere (a queued build, another session) or waiting on his hands: '
+           '`tasks note ID "<what is left, who does it, when>"`',
+           '- his decision: `tasks ask "<question>" -o "<your pick> :: why" -o "<other>" --task ID`',
+           '- no task fits: `tasks add "<outcome>" -b -` with ## Goal, ## Done-test, ## Steps (the template); '
+           'add `-t auto` when it is your idea, not his ask']
+    if mine:
+        out.append("This session's open tasks:")
+        out += [f"  #{t['id']} ({t['status']}) {t['title']}" for t in mine]
+    out.append('Run the command only, then end with no text: he already read your reply. If nothing is in fact '
+               'left for anyone, end with one line that starts with ✅ instead.')
+    return '\n'.join(out)
+
+
+def handed_off(t):
+    """Queued for the task agent (his go-ahead on a todo task): no longer this session's to close or note."""
+    return t['status'] == 'todo' and 'claude' in (t.get('tags') or [])
+
+
+# ------------------------------------------------------------ endings (task 1857)
+# Every reply's first line (✅ done / ⚠️ stuck / ❓ needs you) and its suggested next step become one card per
+# session in the feed on http://beacon/decisions, so he never opens a session to learn what it did.
+NEXT_LEAD = re.compile(r'^(?:[-*>#\s]|👉|➡️?|→|\*\*)*(?:(?:the\s+)?next(?:\s+step)?|další\s+krok|teď|now)\s*[:：-]\s*', re.I)
+GO_LABEL = 'Go ahead'  # a done/stuck card's button when the agent gave a next step but no buttons of its own
+
+
+def plain(line):
+    """A markdown line as he reads it: no bold, code ticks, link syntax or list marks."""
+    t = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', line or '')
+    t = re.sub(r'[*_`]{1,3}', '', t)
+    return ' '.join(t.lstrip('-•>#').split())
+
+
+def ending_of(reply, box=None):
+    """(first line, next step, button labels) of a final reply; None for an empty one."""
+    lines = [x.strip() for x in (reply or '').splitlines() if x.strip() and not x.strip().startswith('```')]
+    if not lines:
+        return None
+    first = plain(lines[0])
+    nxt = None
+    if len(lines) > 1:
+        last = plain(lines[-1])
+        if last and last != first and not last.startswith('|'):
+            nxt = NEXT_LEAD.sub('', last).strip() or None
+    labels = [x for x in (box or [])[:2] if x]
+    if not labels and nxt:
+        labels = [GO_LABEL]
+    return first, nxt, labels
+
+
+def post_ending(ev, reply):
+    """The Stop hook's first step, before anything may return early: this reply, as its session's card.
+    One short try; a hub that is down loses one card (the nightly backstop finds it), never the session."""
+    sid = ev.get('session_id')
+    if not sid or os.environ.get('TASKS_HOOKS') == '0':  # a hook's own helper run (naming, the backstop)
+        return
+    if ev.get('stop_hook_active') and not (reply or '').lstrip().lstrip('*_ ').startswith(('✅', '⚠', '❓')):
+        return  # the answer to a block ("Filed."): the card keeps the reply he read
+    if hooks_off() and os.environ.get('BEACON_ENDINGS') != '1':
+        return  # an automation's `claude -p` reports its own way; answer-dispatcher's runs set BEACON_ENDINGS=1
+    path = ev.get('transcript_path')
+    box = last_box(path)
+    fresh_box = box[2] if box and time.time() - box[0] < 900 and not box[1] else None
+    got = ending_of(reply, fresh_box)
+    if not got:
+        return  # "end with no text" after a block: the card keeps the reply he already has
+    first, nxt, labels = got
+    cwd = ev.get('cwd') or os.getcwd()
+    try:
+        names = log_titles(path, 64 * 1024) if path else []
+    except Exception:  # noqa: BLE001
+        names = []
+    quick('/api/endings', {
+        'session_id': f'Claude Code:{sid}', 'line': first, 'next': nxt, 'actions': labels,
+        'reply': (reply or '')[:6000], 'project': project_of(cwd), 'cwd': cwd, 'machine': socket_host(),
+        'title': names[-1] if names else None, 'agent': 'Claude Code',
+    }, timeout=2)
+
+
+def hook_stop(stdin):
+    """Stop hook: a reply that says ✅ (nothing left in this session) while a task this session
+    took is still open goes back once: close it, or say what is left. A task it filed and has
+    not been reminded of yet is named too. A reply that offers more work with no task command this
+    turn goes back once too. Never blocks twice in a row, never fails the session."""
+    try:
+        ev = json.load(stdin)
+        if manual_here():
+            return  # outside Beacon: no card, never a reply sent back
+        sid = ev.get('session_id')
+        reply = ev.get('last_assistant_message') or last_reply(ev.get('transcript_path'))
+        try:
+            post_ending(ev, reply)
+        except Exception as e:  # noqa: BLE001 - the card is a nicety, the session goes on
+            print(f'tasks hook-stop: ending not posted: {e}', file=sys.stderr)
+        if ev.get('stop_hook_active') or not sid or hooks_off():
+            return
+        def linked_tasks():
+            q = urllib.parse.urlencode({'session': f'Claude Code:{sid}', 'limit': 50})
+            with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
+                return json.load(r)['tasks']
+        try:
+            stale = stale_box(ev.get('transcript_path'), sid)
+        except Exception:
+            stale = None
+        if stale:
+            print(json.dumps({'decision': 'block', 'reason': (
+                f"He already answered ?{stale['id']} on the decisions page ({stale['answer']}), but the app still shows "
+                f"your old next-step box with that question, and he can answer it again. Call the next-step box tool "
+                f"(wrap_up) now with a recap of what is true now and NO ask (or the next real question), then end "
+                f"with no text.")}))
+            return
+        try:
+            unshown = unshown_question(ev.get('transcript_path'), sid)
+        except Exception:
+            unshown = None
+        # No waiter reminder any more (task 1884): a session with an open question just ends its turn, and
+        # answer-dispatcher resumes it when he answers. A background `tasks wait` re-woke the model at every
+        # shell timeout (30 min, 2 h) only to say "still waiting", which burns the usage limit at scale.
+        wait_note = ''
+        if unshown:  # rides along with any other block, like the waiter reminder
+            labels = option_labels(unshown)
+            labels.sort(key=lambda x: x != unshown.get('default_answer'))
+            wait_note = (
+                f"His decision ?{unshown['id']} is open on http://beacon/decisions, but your next-step box does not show "
+                f"it, so he can't answer it here in the chat. Call the next-step box tool (wrap_up) now: ask = "
+                f"\"{unshown['question'][:100]}\" (that exact wording), buttons with exactly these labels, in this "
+                f"order: {json.dumps(labels, ensure_ascii=False)}, and a recap. It is the same question: nothing is "
+                f"filed twice." + ('\n\n' + wait_note if wait_note else ''))
+        def emit(text):  # every block also carries the waiter reminder (one block per turn: never lose it)
+            nonlocal wait_note
+            if wait_note:
+                d = json.loads(text)
+                d['reason'] = wait_note + '\n\n' + d['reason']
+                text, wait_note = json.dumps(d), ''
+            print(text)
+
+        def done():
+            if wait_note:
+                emit(json.dumps({'decision': 'block', 'reason': 'Run the command only, then end with no text: he '
+                                                                 'already read your reply.'}))
+        if reply.lstrip().startswith(('⚠', '❓')):
+            why = left_open_reason(reply, linked_tasks(), ev.get('transcript_path'), sid)
+            if why:
+                emit(json.dumps({'decision': 'block', 'reason': why}))
+            return done()  # ⚠️/❓ is stricter than the offer check below
+        steps = hands_plan(reply)
+        if (steps >= PLAN_MIN and not task_touched_this_turn(ev.get('transcript_path'))
+                and not any(t['status'] == 'doing' for t in linked_tasks())):
+            emit(json.dumps({'decision': 'block', 'reason': plan_reason(steps)}))
+            return
+        # a session working its own task ("doing") may say what it does next in this session ("once the agents
+        # finish, I'll merge it"); only a session with no task in hand, and no task command this turn, goes back
+        if (offers_work(reply) and not task_touched_this_turn(ev.get('transcript_path'))
+                and not any(t['status'] == 'doing' for t in linked_tasks())):
+            emit(json.dumps({'decision': 'block', 'reason': (
+                'Your reply offers or promises more work, but no task was filed or noted this turn. Every later step '
+                'is a task before the reply: `tasks add "<outcome>" -b "<what only this session knows + done-test>"`, '
+                'or `tasks note ID "<the step>"` on the task it belongs to. Run the command only: he already read '
+                'your reply, do not repeat or rewrite it, no task talk, end with no text.')}))
+            return
+        if not reply.lstrip().startswith('✅'):
+            return done()
+        q = urllib.parse.urlencode({'session': f'Claude Code:{sid}', 'limit': 50})
+        with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
+            linked = json.load(r)['tasks']
+        seen_file = os.path.join(os.path.expanduser('~/.cache/tasks-hook'), sid)
+        try:
+            with open(seen_file) as f:
+                seen = set(f.read().split())
+        except OSError:
+            seen = set()
+        # the hub's "Decide:" holder of an open question is not this session's to close: dropping it withdraws his question
+        linked = [t for t in linked if 'decision' not in (t.get('tags') or [])]
+        doing = [t for t in linked if t['status'] == 'doing' and str(t['id']) not in seen]
+        filed = [t for t in linked if t['status'] == 'todo' and str(t['id']) not in seen and not handed_off(t)]
+        if not doing and not filed:
+            return done()
+        os.makedirs(os.path.dirname(seen_file), exist_ok=True)
+        with open(seen_file, 'a') as f:
+            f.write(''.join(f"{t['id']}\n" for t in doing + filed))
+        out = ['Your reply says ✅, but tasks linked to this session are still open.']
+        if doing:
+            out.append('Taken by this session (close it: `tasks done ID -m "<result>"`; not finished: '
+                       '`tasks note ID "<what is left>"` and reply ⚠️ or ❓ instead of ✅):')
+            out += [f"  #{t['id']} {t['title']}" for t in doing]
+        if filed:
+            out.append('Filed by this session for later: close or drop any this session already did, keep the rest:')
+            out += [f"  #{t['id']} {t['title']}" for t in filed]
+        out.append('Fix the task with the command only; never close a task whose PR is still open or whose result '
+                   'is not there. He already read your reply: do not repeat or rewrite it, and no task talk. If your ✅ '
+                   'was right, end with no text. If work is in fact left, one line in the language of your reply: '
+                   '"⚠️ <what is left>".')
+        emit(json.dumps({'decision': 'block', 'reason': '\n'.join(out)}))
+    except Exception as e:  # a broken hub or hook must never hold a session
+        print(f'tasks hook-stop: {e}', file=sys.stderr)
+
+
+# ------------------------------------------------------------ session names (task 1789)
+# Every Claude Code session gets a short human name in `claude --resume`, the live page and the usage
+# page, instead of its cut-off first prompt. The name is the same `custom-title` line `/rename` and
+# `--name` write into the session's log: the title of the task it took (`tasks doing` writes it), else
+# 2-5 words Haiku writes once from its first prompts (the Stop hook, in the background). A name he gave
+# (`/rename`, `--name`) is never replaced by the hook. Scheduled `claude -p` jobs are named by the
+# script that starts them (`--name`); a one-off headless run with no name gets Haiku's, from a smaller
+# daily allowance, so an eval batch never uses up the names for the sessions he talks to.
+NAMES_DIR = os.path.expanduser('~/.cache/tasks-hook/names')
+NAMES_DAILY = int(os.environ.get('TASKS_NAMES_DAILY', '60'))  # Haiku calls a day on this machine, at most
+NAMES_DAILY_HEADLESS = int(os.environ.get('TASKS_NAMES_DAILY_HEADLESS', '20'))  # of those, for `claude -p` runs
+NAME_TAIL = 48 * 1024  # Claude Code reads a session's name near the end of its log (a re-write costs one short line)
+NAME_PROMPT = '''Name this AI coding-agent session for a list of sessions. Below is the project and the
+first messages the agent got. Write a title of 2 to 5 words that says what the work is about, in plain
+English, sentence case, like a to-do item: "Fix login redirect", "Review gate PR", "Grade code reviews".
+No task numbers, file paths, quotes, emoji or trailing period. If the messages are in Czech, still
+answer in English. Reply with the title only.
+
+Project: {project}
+{prompts}'''
+
+
+def session_log(sid):
+    """The log of session `sid` on this machine (~/.claude/projects/<folder>/<sid>.jsonl), else None."""
+    import glob
+    base = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude')
+    hits = glob.glob(os.path.join(glob.escape(base), 'projects', '*', glob.escape(sid) + '.jsonl'))
+    return max(hits, key=os.path.getmtime) if hits else None
+
+
+def log_titles(path, tail=None):
+    """The custom-title names in a session's log (its last `tail` bytes only, when given), oldest first."""
+    out = []
+    try:
+        with open(path, 'rb') as f:
+            if tail:
+                f.seek(max(0, os.path.getsize(path) - tail))
+            for raw in f:
+                if b'"custom-title"' not in raw:
+                    continue
+                try:
+                    o = json.loads(raw)
+                except ValueError:
+                    continue
+                if o.get('type') == 'custom-title' and o.get('customTitle'):
+                    out.append(o['customTitle'])
+    except OSError:
+        pass
+    return out
+
+
+def write_name(path, sid, title):
+    """Append the line `/rename` writes; Claude Code takes the last one as the session's name."""
+    line = json.dumps({'type': 'custom-title', 'customTitle': title, 'sessionId': sid}, ensure_ascii=False,
+                      separators=(',', ':'))  # byte for byte the line Claude Code writes
+    with open(path, 'rb+') as f:
+        f.seek(0, 2)
+        if f.tell():
+            f.seek(-1, 2)
+            lead = b'' if f.read(1) == b'\n' else b'\n'
+        else:
+            lead = b''
+    with open(path, 'ab') as f:
+        f.write(lead + line.encode() + b'\n')
+    os.makedirs(NAMES_DIR, exist_ok=True)
+    with open(os.path.join(NAMES_DIR, sid), 'w', encoding='utf-8') as f:
+        f.write(title)
+
+
+def tidy_name(title):
+    t = re.sub(r'\s+', ' ', str(title or '')).strip().strip('"\'.').strip()
+    t = re.sub(r'^(?:task\s*)?#?\d+[:\s-]+', '', t, flags=re.I)  # never a bare task number
+    return (t if len(t) <= 80 else t[:79].rsplit(' ', 1)[0] + '…') if len(t) >= 2 else None  # whole task titles (up to 70)
+
+
+def first_prompts(path, n=2):
+    """The first `n` things a person typed in the session (system reminders and notices left out)."""
+    out, project = [], None
+    try:
+        with open(path, encoding='utf-8') as f:
+            for i, raw in enumerate(f):
+                if i > 400 or len(out) >= n:
+                    break
+                try:
+                    o = json.loads(raw)
+                except ValueError:
+                    continue
+                project = project or o.get('cwd')
+                if o.get('type') != 'user' or o.get('isMeta') or o.get('isSidechain') or o.get('promptSource') == 'system':
+                    continue
+                content = (o.get('message') or {}).get('content')
+                if isinstance(content, list):
+                    if any(isinstance(b, dict) and b.get('type') == 'tool_result' for b in content):
+                        continue
+                    content = '\n'.join(b.get('text', '') for b in content if isinstance(b, dict) and b.get('type') == 'text')
+                if not isinstance(content, str):
+                    continue
+                text = re.sub(r'^(?:\s*<system-reminder>.*?</system-reminder>)+\s*', '', content, flags=re.S).strip()
+                cmd = re.search(r'<command-name>(.*?)</command-name>', text, re.S)
+                if cmd:  # /clear, /model: says nothing about the work
+                    continue
+                if text and not text.startswith('<'):
+                    out.append(re.sub(r'\s+', ' ', text)[:500])
+    except OSError:
+        pass
+    return out, os.path.basename((project or '').rstrip('/\\')) or '?'
+
+
+def ask_haiku_name(project, prompts):
+    import shutil
+    claude = shutil.which('claude') or os.path.expanduser('~/.local/bin/claude')
+    prompt = NAME_PROMPT.format(project=project, prompts='\n'.join(f'- {p}' for p in prompts))
+    try:
+        r = subprocess.run([claude, '-p', prompt, '--model', 'claude-haiku-4-5', '--setting-sources', '', '--tools', '',
+                            '--strict-mcp-config', '--no-chrome', '--no-session-persistence', '--output-format', 'json'],
+                           capture_output=True, text=True, timeout=90, cwd=os.path.expanduser('~'),
+                           env={**os.environ, 'TASKS_HOOKS': '0'}, stdin=subprocess.DEVNULL,
+                           creationflags=0x08000000 if os.name == 'nt' else 0)  # CREATE_NO_WINDOW
+        out = json.loads(r.stdout)
+        result = out.get('result') or ''
+        # Not logged in, a usage limit, an API error: the text is a message, not a name.
+        if r.returncode or out.get('is_error') or not out.get('usage', {}).get('output_tokens') or '/login' in result:
+            return None
+        return tidy_name(result)
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        return None
+
+
+def task_name(sid):
+    """The title of the task this session took (doing or done), the latest first."""
+    q = urllib.parse.urlencode({'session': f'Claude Code:{sid}', 'limit': 50, 'status': 'all'})
+    with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=3) as r:
+        tasks = json.load(r)['tasks']
+    took = [t for t in tasks if t['status'] in ('doing', 'done')]
+    took.sort(key=lambda t: t.get('updated_at') or 0)
+    return tidy_name(took[-1]['title']) if took else None
+
+
+def name_budget(headless=False):
+    """One more Haiku name today on this machine? Counts it if so. Headless runs draw on their own
+    smaller allowance (h), and every call counts toward the machine's total."""
+    os.makedirs(NAMES_DIR, exist_ok=True)
+    day = os.path.join(NAMES_DIR, '.calls-' + datetime.date.today().isoformat())
+    try:
+        with open(day) as f:
+            used = f.read().split()
+    except OSError:
+        used = []
+    if len(used) >= NAMES_DAILY or (headless and used.count('h') >= NAMES_DAILY_HEADLESS):
+        return False
+    with open(day, 'a') as f:
+        f.write('h\n' if headless else 'i\n')
+    return True
+
+
+def name_session(sid, path, headless=False):
+    """Background half of hook-name: the task's title, else Haiku's. Never replaces a name set meanwhile."""
+    try:
+        title = task_name(sid)
+    except Exception:
+        title = None
+    if not title:
+        prompts, project = first_prompts(path)
+        if not prompts or not name_budget(headless):
+            return
+        title = ask_haiku_name(project, prompts)
+    if title and not log_titles(path):
+        write_name(path, sid, title)
+
+
+def rename_for_task(title):
+    """`tasks doing`: the session working a task is called by the task's title."""
+    sid = os.environ.get('CLAUDE_CODE_SESSION_ID')
+    title = tidy_name(title)
+    path = sid and title and session_log(sid)
+    if path and (log_titles(path) or [None])[-1] != title:
+        try:
+            write_name(path, sid, title)
+        except OSError:
+            pass
+
+
+def hook_name(stdin):
+    """Stop hook: a session with no name gets one, once, in the background (the hook returns at once).
+    A named session whose name has scrolled far up its log gets the line again near the end, where
+    `claude --resume` reads it. Silent, never blocks, never fails the session."""
+    try:
+        ev = json.load(stdin)
+        sid, path = ev.get('session_id'), ev.get('transcript_path')
+        if not sid or not path or not os.path.exists(path) or os.environ.get('TASKS_NAMES') == '0':
+            return
+        if log_titles(path, NAME_TAIL):
+            return
+        marker = os.path.join(NAMES_DIR, sid)
+        known = log_titles(path)
+        if known:  # named, but long ago: say it again near the end
+            write_name(path, sid, known[-1])
+            return
+        if os.path.exists(marker):  # asked already
+            return
+        os.makedirs(NAMES_DIR, exist_ok=True)
+        open(marker, 'a').close()
+        kw = {'creationflags': 0x08000000 | 0x00000200} if os.name == 'nt' else {'start_new_session': True}
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), 'hook-name', '--bg', sid, path]
+                         + (['--headless'] if hooks_off() else []),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
+    except Exception as e:  # a broken log or hub must never hold a session
+        print(f'tasks hook-name: {e}', file=sys.stderr)
+
+
+STOP = set('this that with from have what when will your into then than them they also just only about there '
+           'which would could should make need want udělej oprav jako když nebo jsem není bude máme tady tohle '
+           'protože prostě vlastně takže'.split())
+
+
+def words(text):
+    import unicodedata
+    text = unicodedata.normalize('NFKD', (text or '').lower())
+    text = ''.join(c for c in text if not unicodedata.combining(c))
+    return {w for w in re.findall(r'[a-z0-9]{4,}', text) if w not in STOP}
+
+
+def hook_prompt(stdin):
+    """UserPromptSubmit hook: a session opened anywhere (the app, the web, a terminal) that has not
+    taken a task is shown the open tasks its prompt may be about, so it takes one (`tasks doing`),
+    marks a duplicate, or files its own. Its first 3 prompts at most; silent once it has a task."""
+    try:
+        ev = json.load(stdin)
+        sid, prompt = ev.get('session_id'), ev.get('prompt') or ''
+        if not sid or prompt.lstrip().startswith('/') or hooks_off():
+            return
+        if manual_here():  # outside Beacon: told once, on its first prompt
+            mark = os.path.join(os.path.expanduser('~/.cache/tasks-hook'), f'{sid}.manual')
+            if not os.path.exists(mark):
+                os.makedirs(os.path.dirname(mark), exist_ok=True)
+                open(mark, 'w').close()
+                print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': MANUAL_NOTE}}))
+            return
+        try:
+            seen = box_answer(sid, prompt)
+        except Exception:  # the hub away: the box question stays open on the page
+            seen = None
+        try:
+            own = own_answers(sid)
+        except Exception:  # the hub away: the dispatcher still carries the answers out
+            own = ''
+        seen = '\n\n'.join(x for x in (seen, own) if x)
+        if seen:
+            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': seen}}))
+            return
+        mark = os.path.join(os.path.expanduser('~/.cache/tasks-hook'), f'{sid}.prompts')
+        try:
+            with open(mark) as f:
+                n = int(f.read() or 0)
+        except (OSError, ValueError):
+            n = 0
+        if n >= 3:
+            return
+        os.makedirs(os.path.dirname(mark), exist_ok=True)
+        with open(mark, 'w') as f:
+            f.write(str(n + 1))
+        q = urllib.parse.urlencode({'session': f'Claude Code:{sid}', 'status': 'all', 'limit': 50})
+        with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
+            if any(t['status'] in ('doing', 'done') for t in json.load(r)['tasks']):
+                return
+        project = project_of(ev.get('cwd'))
+        here = project != 'personal'  # in a repo: its tasks only; elsewhere every project, stricter
+        q = urllib.parse.urlencode({'status': 'todo', 'limit': 2000, **({'project': project} if here else {})})
+        with urllib.request.urlopen(f'{URL}/api/tasks?{q}', timeout=2) as r:
+            open_ = [t for t in json.load(r)['tasks'] if 'parked' not in t['tags']]
+        want = words(prompt)
+        scored = sorted(((len(want & words(t['title'] + ' ' + (t.get('body') or '')[:400])), t) for t in open_),
+                        key=lambda x: (-x[0], -x[1]['updated_at']))
+        hits = [t for score, t in scored[:5] if score >= (2 if here else 3)]
+        out = ['No task at http://beacon is taken by this session yet. If this prompt starts work that outlives this '
+               'reply, take its task first: `tasks doing ID` only for a task that is clearly the same outcome; none '
+               'is → `tasks add "<outcome>" --doing -b "<why + Done-test>"`. A question, chat or quick fix needs no '
+               'task, but an idea of his to make, start, try or set up something is one, even asked as "how do I…": '
+               'file it with the whole plan as 🤖/👤 steps, do the 🤖 ones, and end ❓ with his next 👤 steps as a '
+               '`tasks ask --task ID --step …` card. Word matches below are guesses; ignore any that is not the same work.']
+        if hits:
+            out.append(f"Open tasks that share words with the prompt ({project if here else 'all projects'}):")
+            out += [f"  #{t['id']} [{t['project']}] {t['status']}: {t['title'][:120]}" for t in hits]
+        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit',
+                                                 'additionalContext': '\n'.join(out)}}))
+    except Exception as e:  # a broken hub or hook must never hold a prompt
+        print(f'tasks hook-prompt: {e}', file=sys.stderr)
+
+
+def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):  # a Windows console is cp1252: titles carry → and emoji
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
+    ap = argparse.ArgumentParser(prog='tasks', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest='cmd')
+    ls = sub.add_parser('ls', help='list open tasks')
+    ls.add_argument('-p', '--project')
+    ls.add_argument('--claude', action='store_true', help='only tasks tagged claude (his go-ahead)')
+    ls.add_argument('--due', choices=['today'])
+    ls.add_argument('--stale', action='store_true')
+    ls.add_argument('-q', '--query')
+    ls.add_argument('--all', action='store_true', help='closed and parked ones too')
+    ls.add_argument('--parked', action='store_true', help="include tasks tagged parked (hidden by default)")
+    ls.add_argument('--json', action='store_true')
+    add = sub.add_parser('add', help='file a task')
+    add.add_argument('title')
+    add.add_argument('-b', '--body', help='markdown body; - reads stdin')
+    add.add_argument('-p', '--project', help='default: the repo you are in, else personal')
+    add.add_argument('--priority', type=int, choices=[1, 2, 3, 4])
+    add.add_argument('--due')
+    add.add_argument('-t', '--tag', action='append', default=[])
+    add.add_argument('--no-link', action='store_true', help="don't link it to this Claude Code session")
+    add.add_argument('--doing', action='store_true',
+                     help="this session is doing it: filed as doing, so it is never routed to the task agent")
+    add.add_argument('--json', action='store_true')
+    stp = sub.add_parser('step', help='mark the step of the task\'s ## Steps you are on now (shown on the Team card)')
+    stp.add_argument('id', type=int)
+    stp.add_argument('n', type=int)
+    for name in ('show', 'doing', 'todo'):
+        p = sub.add_parser(name)
+        p.add_argument('id', type=int)
+        p.add_argument('--json', action='store_true')
+    for name in ('done', 'drop'):
+        p = sub.add_parser(name)
+        p.add_argument('id', type=int)
+        p.add_argument('-m', '--note', help='what happened (kept as a note)')
+    st = sub.add_parser('set')
+    st.add_argument('id', type=int)
+    st.add_argument('pairs', nargs='+')
+    ho = sub.add_parser('handoff', help='what is left goes to the task agent (todo + claude, unless auto)')
+    ho.add_argument('id', type=int)
+    ho.add_argument('text', help='the next step, concrete; - reads stdin')
+    nt = sub.add_parser('note')
+    nt.add_argument('id', type=int)
+    nt.add_argument('text')
+    lk = sub.add_parser('link')
+    lk.add_argument('id', type=int)
+    lk.add_argument('session', nargs='?')
+    sub.add_parser('auth')
+    ak = sub.add_parser('ask', aliases=['decide'], help='ask him to decide something at http://beacon/decisions and keep working')
+    ak.add_argument('question', help=f'only the question, under {ASK_MAX} chars; details go in -c. The card shows the '
+                    'project on top: don\'t start with its name')
+    ak.add_argument('-o', '--option', action='append', default=[], help='an answer he can pick ("Label :: detail"); your pick first')
+    ak.add_argument('-d', '--default', help='what you go on with meanwhile (default: the first option)')
+    ak.add_argument('-c', '--context', help='markdown, 2-4 bullets each starting with an emoji: why it matters, what it costs or blocks; - reads stdin')
+    ak.add_argument('-k', '--kind', default='other', help='a short slug grouping like questions: merge, scope, design, naming, approach, copy...')
+    ak.add_argument('--blocking', action='store_true', help='no safe default: you stop the work that depends on it. '
+                    'The hub may make it blocking anyway (its kind or a risk word): read what it prints')
+    ak.add_argument('-p', '--project', help='default: the repo you are in, else personal')
+    ak.add_argument('--task', type=int, help='the task it is about')
+    ak.add_argument('--see', action='append', default=[], metavar='LINK|PICTURE',
+                    help='what he looks at or tries to decide: the preview link (tailnet name or public, opens without '
+                         'login) or a screenshot file (png/jpg, uploaded); "Label :: ref" names it. Repeat it: every state he '
+                         'judges (before/after, each screen) is its own picture, shown as a slideshow; up to 12. A PR '
+                         'or GitHub image link brings its screenshots by itself. Required '
+                         'when the question is about how something looks, reads or plays (merge, live, design, page...)')
+    ak.add_argument('--step', action='append', default=[], metavar='"TEXT [:: LINK]"',
+                    help='one thing he does by hand, in order, shown as a checklist he ticks; "Open Agreements :: <url>" '
+                         'gives the step a button to that exact page (a deep link you opened and checked, not a home page). '
+                         '2-6 short steps in plain words, his clicks and fields; a command he types goes in `backticks` (shown as a '
+                         'tap-to-copy chip). Required when he must do something himself '
+                         '(sign, pay, top up, turn on a setting, make a key, send a mail: then one "Firm :: mailto:…?subject=…&body=…" '
+                         'step per recipient, and the mail text itself in -c): then ids, error codes and script names go '
+                         'after a "---" line in -c, never in the question or the options')
+    ak.add_argument('--no-see', metavar='WHY', help='a look-sounding question with truly nothing to see, and why')
+    ak.add_argument('--json', action='store_true')
+    bl = sub.add_parser('block', help='a question already asked turns blocking: you hold the work until he answers '
+                        '(the same card; never withdraw and ask it again, he sees it twice)')
+    bl.add_argument('id', type=lambda v: int(v.lstrip('?#')))
+    se = sub.add_parser('see', help='add a link or screenshot to a question already asked')
+    se.add_argument('id', type=lambda v: int(v.lstrip('?#')))
+    se.add_argument('refs', nargs='+', metavar='LINK|PICTURE')
+    sp = sub.add_parser('steps', help='set the by-hand checklist on a question already asked (replaces its steps)')
+    sp.add_argument('id', type=lambda v: int(v.lstrip('?#')))
+    sp.add_argument('steps', nargs='+', metavar='"TEXT [:: LINK]"')
+    wt = sub.add_parser('wait', help='wait a few minutes while he is chatting live; otherwise end your turn')
+    wt.add_argument('ids', nargs='+', type=lambda v: int(v.lstrip('?#')))
+    wt.add_argument('--timeout', type=float, default=WAIT_MAX, help=f'seconds, at most {WAIT_MAX:.0f}')
+    wt.add_argument('--every', type=float, default=5, help=argparse.SUPPRESS)
+    qs = sub.add_parser('questions', help='open questions, or the decision log')
+    qs.add_argument('--answered', action='store_true', help='the decision log')
+    qs.add_argument('--all', action='store_true')
+    qs.add_argument('-k', '--kind')
+    qs.add_argument('-p', '--project')
+    qs.add_argument('--since', type=float, help='days back')
+    qs.add_argument('--kinds', action='store_true', help='per kind: answered, took the default, standing')
+    qs.add_argument('--json', action='store_true')
+    an = sub.add_parser('answer', help='answer a question (him, or Hermes passing his words on)')
+    an.add_argument('id', type=lambda v: int(v.lstrip('?#')))
+    an.add_argument('text')
+    an.add_argument('-m', '--note')
+    an.add_argument('--always', action='store_true',
+                    help='only when HE said in his own words to always answer it so: saves that rule (the page has no checkbox; '
+                         'rules otherwise come from his repeated answers, proposed to him)')
+    an.add_argument('--chat', action='store_true',
+                    help='he answered in the asking session\'s chat: log it, nobody else carries it out')
+    wd = sub.add_parser('withdraw', help='the question is moot')
+    wd.add_argument('id', type=lambda v: int(v.lstrip('?#')))
+    wd.add_argument('-m', '--note', help='why')
+    sub.add_parser('hook-ask', help=argparse.SUPPRESS)
+    sub.add_parser('hook-stop', help=argparse.SUPPRESS)
+    sub.add_parser('hook-prompt', help=argparse.SUPPRESS)
+    sub.add_parser('hook-gate', help=argparse.SUPPRESS)
+    hn = sub.add_parser('hook-name', help=argparse.SUPPRESS)
+    hn.add_argument('--bg', nargs=2, metavar=('SESSION', 'LOG'))
+    hn.add_argument('--headless', action='store_true')
+    a = ap.parse_args(argv)
+
+    if a.cmd in (None, 'ls'):
+        q = {'status': 'all' if getattr(a, 'all', False) else 'open'}
+        for k, v in (('project', getattr(a, 'project', None)), ('due', getattr(a, 'due', None)),
+                     ('q', getattr(a, 'query', None))):
+            if v:
+                q[k] = v
+        if getattr(a, 'stale', False):
+            q['stale'] = '1'
+        tasks = call('/api/tasks?' + urllib.parse.urlencode(q), auth=False)['tasks']
+        if getattr(a, 'claude', False):
+            tasks = [t for t in tasks if 'claude' in t['tags']]
+        if not (getattr(a, 'stale', False) or getattr(a, 'all', False) or getattr(a, 'parked', False)):
+            tasks = [t for t in tasks if 'parked' not in t['tags']]  # set aside, like the Now view
+        # Overdue by more than a week is a decision, not today's work (same rule as Lighthouse /today):
+        # live tasks first, then priority, then the soonest due.
+        week_ago = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+        tasks.sort(key=lambda t: ((t.get('due') or '9')[:10] < week_ago, t.get('priority') or 5,
+                                  t.get('due') or '9', -t['updated_at']))
+        if getattr(a, 'json', False):
+            print(json.dumps(tasks, ensure_ascii=False, indent=1))
+        else:
+            for t in tasks:
+                print(line(t))
+            if not tasks:
+                print('nothing open')
+        return
+    if a.cmd == 'auth':
+        print(call('/api/tasks/auth').get('writer'))
+        return
+    if a.cmd == 'hook-ask':
+        hook_ask(sys.stdin)
+        return
+    if a.cmd == 'hook-stop':
+        hook_stop(sys.stdin)
+        return
+    if a.cmd == 'hook-prompt':
+        hook_prompt(sys.stdin)
+        return
+    if a.cmd == 'hook-name':
+        name_session(*a.bg, headless=a.headless) if a.bg else hook_name(sys.stdin)
+        return
+    if a.cmd == 'hook-gate':
+        sys.exit(hook_gate(sys.stdin))
+    if a.cmd in ('ask', 'decide'):
+        if manual_here() and session_id():
+            sys.exit('tasks: refused: this session runs on a machine outside Beacon (he explores here by hand). '
+                     'Ask him in this chat instead.')
+        if len(a.question.strip()) > ASK_MAX:  # the card's title (2026-11-22: a wall of bold text is unreadable)
+            sys.exit(f'tasks: refused: the question is {len(a.question.strip())} chars, keep it under {ASK_MAX}: only the '
+                     'question itself. Put the rest in -c as 2-4 short markdown bullets, each starting with an emoji '
+                     '("- 💰 costs 0 Kč", "- ⏱️ 10 min of your time"), and option details in -o "Label :: detail".')
+        opts = [option(o) for o in a.option]
+        look = needs_look('\n'.join([a.question, *[o if isinstance(o, str) else o['label'] + ' ' + (o.get('detail') or '')
+                                                    for o in opts]]),
+                          KIND_SLUG.sub('-', (a.kind or '').lower()).strip('-'))
+        if look and not a.see and not a.no_see:
+            sys.exit(f'tasks: refused: "{look}" means he has to look at or try something to decide, and he decides on '
+                     'his phone without opening Claude. Add what he looks at: --see <preview link> (http://<project> on '
+                     'the tailnet, or a public Vercel preview that opens logged out) and/or --see <screenshot.png> '
+                     '(390 px wide, cropped to the part he decides on; a frame for a video). Several --see are fine. Nothing to see at all? '
+                     '--no-see "why".')
+        hands = needs_hands('\n'.join([a.question, *[o if isinstance(o, str) else o['label'] + ' ' + (o.get('detail') or '')
+                                                      for o in opts]]),
+                            KIND_SLUG.sub('-', (a.kind or '').lower()).strip('-'))
+        steps = step_items(a.step)
+        if hands and not any(x.get('url') for x in steps):
+            sys.exit(f'tasks: refused: "{hands}" means he has to do something by hand, on his phone, without opening '
+                     'Claude. Give him a checklist: --step "Open Agreements :: <exact page link>" --step "Tap Accept on Paid '
+                     'Apps" … (2-6 short steps in plain words; open the link first and check it lands on that page). Keep the '
+                     'question one plain line ("Sign Apple\'s Paid Apps agreement?"), one short option ("Done"; never "Not now": his Later button puts it off without waking an agent), and '
+                     'put ids, error codes and script names after a "---" line in -c. Not by hand after all? Add a --step anyway.')
+        body = {'question': a.question, 'options': opts, 'kind': a.kind, 'project_asked': bool(a.project),
+                'blocking': a.blocking, 'project': a.project or current_project(), 'strict': True}
+        if a.see:
+            body['see'] = see_items(a.see)
+        if a.no_see:
+            body['see_none'] = a.no_see
+        if steps:
+            body['steps'] = steps
+        for k, v in (('default', a.default), ('context', read_text(a.context) if a.context else None), ('task_id', a.task)):
+            if v:
+                body[k] = v
+        sid = session_id()
+        if sid:
+            body['session_id'], body['author'] = sid, author()
+        try:
+            q = call('/api/questions', body)
+        except SystemExit:
+            card_rules()  # refused: the rules it must keep come with the reason
+            raise
+        if a.json:
+            print(json.dumps(q, ensure_ascii=False, indent=1))
+            return
+        print(f"{qline(q)}\n{PAGE}#/q/{q['id']}")
+        bad_lately(q['id'])
+        card_rules()
+        if q.get('task_id') and not a.task:
+            print(f"On task #{q['task_id']} (your session's task, or one filed for it): his answer resumes it.")
+        if q.get('task_id'):
+            try:
+                why = other_work(q, call(f"/api/tasks/{q['task_id']}", auth=False))
+            except SystemExit:
+                why = ''
+            if why:
+                print(f"His answer runs in a fresh session ({why}): it gets task #{q['task_id']}, its last notes and this "
+                      f"card only. Make the card's context say what each answer means there (repo, PR, checks).")
+        if q['blocking']:
+            print("Blocking: hold the work that depends on it, do everything else, then end your turn. Don't run "
+                  "`tasks wait`: when he answers, answer-dispatcher resumes this session with his answer."
+                  ' If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.')
+        else:
+            print(f"Go on with {q['default_answer']!r} now. Don't run `tasks wait`: if he picks otherwise, "
+                  "answer-dispatcher resumes this session with his answer."
+                  ' If this session cannot be resumed (it runs on another machine than the home server, or it is past 200k tokens), a fresh run gets the task instead: so before ending, push your work and `tasks note` where it is.')
+            if q.get('gate_blocking'):  # shadow gate: it would hold this; an asker that holds it anyway must say so
+                print(f"The approval gate would hold this one (it only records for now). If you hold the work until he "
+                      f"answers, run `tasks block {q['id']}` (the same card turns blocking, never ask it twice), so his "
+                      f"answer is carried out, not dropped.")
+        return
+    if a.cmd == 'wait':
+        start, left = time.time(), list(dict.fromkeys(a.ids))
+        parent, beat, misses, hmisses = os.getppid(), 0, 0, 0
+        while True:
+            if os.name != 'nt' and os.getppid() != parent:  # its session is gone: never swallow his answer
+                sys.exit(4)
+            if time.time() - beat >= 15:  # a live asker: the answer dispatcher leaves the answer to this chat
+                beat = time.time()
+                for qid in left:
+                    try:
+                        call(f'/api/questions/{qid}/waiting', {})
+                    except SystemExit:
+                        pass
+            for qid in left:
+                try:
+                    q = call(f'/api/questions/{qid}', auth=False)
+                except SystemExit as e:  # the hub restarting or the network gone a while: keep waiting
+                    if 'unreachable' not in str(e) and 'server error' not in str(e):
+                        raise
+                    break
+                if q['status'] == 'answered' and q.get('applied_at') and str(qid) in os.environ.get('BEACON_QID', '').split(','):
+                    print(said(q) + '\nThis run was started to carry it out: do it now.', flush=True)
+                    return
+                if q['status'] == 'answered' and q.get('applied_at'):
+                    # carried out already: in this chat (a button), or by the answer dispatcher while this
+                    # machine slept. Say so, so the session never does it a second time.
+                    print(f"?{qid} answered: {q['answer']}\nAlready carried out "
+                          + ('in this chat' if q.get('answered_via') == 'chat' else 'elsewhere (answer-dispatcher; he got a Telegram and a note on the task)')
+                          + ': check its result, do not repeat it.', flush=True)
+                    rest = [x for x in left if x != qid]
+                    if rest:
+                        print(f"still open: {' '.join('?%d' % x for x in rest)} (end your turn; the dispatcher brings those answers back)")
+                    return
+                if q['status'] == 'answered' and not q.get('handoff_at') and hmisses < 6:
+                    try:
+                        task = call(f"/api/tasks/{q['task_id']}", auth=False) if q.get('task_id') else None
+                    except SystemExit:
+                        task = None
+                    size, idle = session_size()
+                    # quiet only when nothing here must change course (else it would build on its old default)
+                    why = hand_off_why(q, task, size, idle)
+                    quiet = bool(too_big_idle(q, size, idle)) and not switch_line(q)
+                    if why:
+                        try:
+                            call(f'/api/questions/{qid}/handoff', {'reason': why})
+                        except SystemExit:  # a hub blip, or a hub without handoffs yet: after a few, carry it out here
+                            hmisses += 1
+                            break
+                        left = [x for x in left if x != qid]
+                        if quiet:
+                            continue  # waking a big idle session only to say "handed" costs what the handoff saves
+                        print(handed(q, why), flush=True)
+                        if left:
+                            print(f"still open: {' '.join('?%d' % x for x in left)} (end your turn; the dispatcher brings those answers back)")
+                        return
+                if q['status'] == 'answered' and q.get('handoff_at'):
+                    print(handed(q, q.get('handoff_reason') or 'it was handed off'), flush=True)
+                    rest = [x for x in left if x != qid]
+                    if rest:
+                        print(f"still open: {' '.join('?%d' % x for x in rest)} (end your turn; the dispatcher brings those answers back)")
+                    return
+                if q['status'] == 'answered':
+                    try:  # claimed, so the dispatcher never starts a second run on it
+                        won = call(f'/api/questions/{qid}/claim', {'by': session_id() or 'tasks wait'}).get('won', True)
+                    except SystemExit:  # a hub blip: try again; only a hub gone for good still hands it over
+                        misses += 1
+                        won = misses >= 6
+                        if not won:
+                            break
+                    if not won:
+                        continue  # the dispatcher took it this second: the next poll says so
+                    print(said(q), flush=True)
+                    rest = [x for x in left if x != qid]
+                    if rest:
+                        print(f"still open: {' '.join('?%d' % x for x in rest)} (end your turn; the dispatcher brings those answers back)")
+                    return
+                if q['status'] == 'withdrawn':
+                    print(f"?{qid} withdrawn" + (f": {q['answer_note']}" if q.get('answer_note') else ''))
+                    sys.exit(3)
+            if time.time() - start >= min(a.timeout or WAIT_MAX, WAIT_MAX):
+                if left:  # nothing left = all quietly handed off: the session is not woken to hear it
+                    print(f"no answer yet: {' '.join('?%d' % x for x in left)}. Stop waiting: don't run `tasks wait` "
+                          f"again, end your turn now with no text. When he answers, answer-dispatcher resumes this "
+                          f"session with his answer.")
+                sys.exit(2)
+            time.sleep(a.every)
+    if a.cmd == 'questions':
+        if a.kinds:
+            q = {'since': time.time() - a.since * 86400} if a.since else {}
+            kinds = call('/api/questions/kinds?' + urllib.parse.urlencode(q), auth=False)['kinds']
+            if a.json:
+                print(json.dumps(kinds, ensure_ascii=False, indent=1))
+            for k in [] if a.json else kinds:
+                print(f"{k['kind']:<16} answered {k['answered']:>3}  took the agent's default {k['took_default']:>3}  standing {k['standing']}")
+            return
+        q = {'status': 'all' if a.all else 'answered' if a.answered else 'open', 'limit': 2000}
+        for k, v in (('kind', a.kind), ('project', a.project)):
+            if v:
+                q[k] = v
+        if a.since:
+            q['since'] = time.time() - a.since * 86400
+        rows = call('/api/questions?' + urllib.parse.urlencode(q), auth=False)['questions']
+        if a.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=1))
+        else:
+            for x in rows:
+                print(qline(x))
+            if not rows:
+                print('nothing open' if q['status'] == 'open' else 'nothing logged')
+        return
+    if a.cmd == 'answer':
+        body = {'answer': a.text, 'standing': a.always}
+        if a.chat:
+            body['via'] = 'chat'
+        if a.note:
+            body['note'] = a.note
+        print(qline(call(f'/api/questions/{a.id}/answer', body)))
+        return
+    if a.cmd == 'withdraw':
+        print(qline(call(f'/api/questions/{a.id}/withdraw', {'note': a.note})))
+        return
+    if a.cmd == 'see':
+        q = call(f'/api/questions/{a.id}/see', {'see': see_items(a.refs)})
+        print(f"{qline(q)}\n  👀 {len(q['see'])} to look at on the card")
+        return
+    if a.cmd == 'block':
+        q = call(f'/api/questions/{a.id}/see', {'blocking': True})
+        print(f"{qline(q)}\n  ⏸️ blocking: hold the work that depends on it and end your turn; his answer resumes you")
+        return
+    if a.cmd == 'steps':
+        q = call(f'/api/questions/{a.id}/see', {'steps': step_items(a.steps)})
+        print(f"{qline(q)}\n  ☑️ {len(q['steps'])} steps on the card")
+        return
+    if a.cmd == 'add':
+        body = {'title': a.title, 'project': a.project or current_project(), 'tags': a.tag}
+        if a.body is not None:
+            body['body'] = read_text(a.body)
+        if a.priority:
+            body['priority'] = a.priority
+        if a.due:
+            body['due'] = a.due
+        guard_progress(body)
+        if a.doing:  # in the same request: a todo task, even for a second, is the router's to hand out
+            body['status'] = 'doing'
+        sid = None if a.no_link else session_id()
+        if sid:  # the session link is the provenance (source is unique, a session files many)
+            body['author'] = author()
+        t = call('/api/tasks', body)
+        if sid:
+            t = call(f"/api/tasks/{t['id']}/sessions", {'session_id': sid})
+        print(json.dumps(t, ensure_ascii=False, indent=1) if a.json else f"{line(t)}\n{SITE}/#/task/{t['id']}")
+        return
+    if a.cmd == 'show':
+        t = call(f'/api/tasks/{a.id}', auth=False)
+        print(json.dumps(t, ensure_ascii=False, indent=1)) if a.json else show(t)
+        return
+    if a.cmd in ('done', 'drop', 'doing', 'todo'):
+        status = {'done': 'done', 'drop': 'dropped', 'doing': 'doing', 'todo': 'todo'}[a.cmd]
+        if getattr(a, 'note', None):
+            call(f'/api/tasks/{a.id}/comments', {'text': a.note, 'author': author()})
+        t = call(f'/api/tasks/{a.id}', {'status': status})
+        if a.cmd == 'doing' and 'parked' in t.get('tags', []):  # taken again: back in the list
+            t = call(f'/api/tasks/{a.id}', {'tags': [g for g in t['tags'] if g != 'parked']})
+        sid = session_id() if a.cmd == 'doing' else None
+        if sid:  # taking a task links the session working it, not only the one that filed it
+            call(f'/api/tasks/{a.id}/sessions', {'session_id': sid})
+        if a.cmd == 'doing':
+            rename_for_task(t['title'])
+            if t.get('plan') and not t.get('step'):
+                t = call(f'/api/tasks/{a.id}', {'step': 1})
+        print(line(t))
+        if a.cmd == 'doing':
+            print(plan_lines(t))
+        return
+    if a.cmd == 'step':
+        t = call(f'/api/tasks/{a.id}', auth=False)
+        if not 1 <= a.n <= len(t.get('plan') or []):
+            sys.exit(f"tasks: #{a.id} has {len(t.get('plan') or [])} steps in ## Steps; write the plan there first")
+        t = call(f'/api/tasks/{a.id}', {'step': a.n})
+        print(plan_lines(t))
+        return
+    if a.cmd == 'set':
+        fields = parse_set(a.pairs)
+        guard_progress(fields)
+        print(line(call(f'/api/tasks/{a.id}', fields)))
+        return
+    if a.cmd == 'handoff':
+        t = call(f'/api/tasks/{a.id}', auth=False)
+        if t['status'] in ('done', 'dropped'):
+            sys.exit(f"tasks: #{a.id} is {t['status']}; file the rest as a new task")
+        if t['status'] == 'doing' and 'claude' in t['tags']:
+            sys.exit(f"tasks: the task agent is running #{a.id} now; `tasks note {a.id} \"…\"` instead")
+        wait = [g for g in ('auto', 'parked', 'needs-spec') if g in t['tags']]  # no go-ahead to inherit
+        tags = list(t['tags']) if wait else list(dict.fromkeys([*t['tags'], 'claude']))
+        call(f'/api/tasks/{a.id}/comments', {'text': '↪ Left for the task agent: ' + read_text(a.text), 'author': author()})
+        t = call(f'/api/tasks/{a.id}', {'status': 'todo', 'tags': tags})
+        print(line(t))
+        print({'auto': 'auto: waits for his OK (he adds claude)', 'parked': 'parked: stays parked until he takes it back',
+               'needs-spec': 'needs-spec: waits for his answers on http://beacon/decisions'}[wait[0]] if wait
+              else 'the task agent picks it up (claude)')
+        return
+    if a.cmd == 'note':
+        call(f'/api/tasks/{a.id}/comments', {'text': read_text(a.text), 'author': author()})
+        print(f'noted on #{a.id}')
+        return
+    if a.cmd == 'link':
+        sid = a.session or session_id()
+        if not sid:
+            sys.exit('tasks: no session id given and not inside a Claude Code session')
+        call(f'/api/tasks/{a.id}/sessions', {'session_id': sid if ':' in sid else f'Claude Code:{sid}'})
+        print(f'#{a.id} linked to {sid}')
+
+
+if __name__ == '__main__':
+    main()

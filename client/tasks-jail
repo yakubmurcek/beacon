@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""tasks, inside a jailed task-agent run: the same command line for the few things the run's brief does with its own
+task, sent to the proxy task-agent runs for it (client/task-agent `TaskProxy`). The run holds no hub token; the proxy
+answers for that one task only and refuses anything else, whatever this script is made to send.
+
+  tasks show ID [--json]      tasks note ID "text" (or - for stdin)      tasks done ID [-m NOTE]
+
+Standard library only."""
+import json
+import os
+import socket
+import sys
+
+SOCK = os.environ.get('TASKS_JAIL_SOCK', '/run/cts-tasks.sock')
+MINE = os.environ.get('CTS_AGENT_TASK', '?')
+USAGE = (f'tasks (agent run): only `tasks show {MINE}`, `tasks note {MINE} "text"` (or - for stdin) and '
+         f'`tasks done {MINE} -m "note"`; nothing else on the hub.')
+
+
+def refuse(why=USAGE):
+    sys.exit(why)
+
+
+def task_id(v):
+    v = str(v).lstrip('#')
+    if not v.isdigit():
+        refuse(f'tasks: not a task number: {v!r}. ' + USAGE)
+    return int(v)
+
+
+def parse(argv):
+    if not argv or argv[0] in ('-h', '--help', 'help'):
+        print(__doc__.split('\n\n')[1].strip() if argv else USAGE)
+        sys.exit(0 if argv else 2)
+    cmd, rest = argv[0], argv[1:]
+    if cmd not in ('show', 'note', 'done') or not rest:
+        refuse()
+    req = {'cmd': cmd, 'id': task_id(rest[0])}
+    rest = rest[1:]
+    if cmd == 'show':
+        if any(a != '--json' for a in rest):
+            refuse()
+        req['json'] = bool(rest)
+    elif cmd == 'note':
+        if len(rest) != 1:
+            refuse('tasks: a note is one argument: `tasks note ID "text"` or `tasks note ID - < file`')
+        req['text'] = sys.stdin.read() if rest[0] == '-' else rest[0]
+    else:
+        if rest and (len(rest) != 2 or rest[0] not in ('-m', '--note')):
+            refuse('tasks: `tasks done ID -m "what happened"`')
+        if rest:
+            req['text'] = rest[1]
+    return req
+
+
+def main(argv):
+    req = parse(argv)
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(SOCK)
+        s.sendall((json.dumps(req, ensure_ascii=False) + '\n').encode())
+        s.shutdown(socket.SHUT_WR)
+        data = b''
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    except OSError as e:
+        sys.exit(f'tasks: the hub proxy is not reachable ({e})')
+    finally:
+        s.close()
+    try:
+        res = json.loads(data)
+    except ValueError:
+        sys.exit('tasks: no answer from the hub proxy')
+    if 'error' in res:
+        sys.exit(f"tasks: refused: {res['error']}")
+    print(res.get('out', ''))
+
+
+if __name__ == '__main__':
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
+    main(sys.argv[1:])

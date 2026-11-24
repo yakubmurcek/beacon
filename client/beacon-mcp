@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Beacon for the Claude desktop app: a local MCP server (stdio) that passes every message to Beacon's
+/mcp over the tailnet. No key: `tailscale serve` tells Beacon it's his login. Nothing leaves the private network.
+
+Claude Desktop config (claude_desktop_config.json):
+  "beacon": {"command": "/usr/bin/python3", "args": ["<path to your checkout>/client/beacon-mcp"]}
+BEACON_MCP_URL overrides the address (default http://beacon/mcp); TASKS_TOKEN, if set, is sent as the key.
+"""
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+URL = os.environ.get('BEACON_MCP_URL', 'http://beacon/mcp')
+TOKEN = os.environ.get('TASKS_TOKEN', '')
+
+
+def post(msg):
+    req = urllib.request.Request(URL, data=json.dumps(msg).encode(), method='POST',
+                                 headers={'Content-Type': 'application/json', 'Accept': 'application/json'})
+    if TOKEN:
+        req.add_header('Authorization', 'Bearer ' + TOKEN)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            body = r.read()
+            return json.loads(body) if body else None
+    except urllib.error.HTTPError as e:
+        why = 'Beacon refused this computer (not his login)' if e.code == 401 else f'Beacon answered {e.code}'
+    except (OSError, ValueError) as e:
+        why = f'Beacon is not reachable ({e})'
+    if isinstance(msg, dict) and msg.get('id') is not None:
+        return {'jsonrpc': '2.0', 'id': msg['id'], 'error': {'code': -32000, 'message': why}}
+    return None
+
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    out = post(msg)
+    if out:
+        sys.stdout.write(json.dumps(out) + '\n')
+        sys.stdout.flush()

@@ -1,0 +1,629 @@
+#!/usr/bin/env python3
+"""answer-dispatcher: every answer he gives on http://beacon/decisions resumes its task (task 1776).
+
+A question is a state of its task (the hub files a small task for one asked outside any), so an
+answer is an event on that task. A systemd timer runs this every minute
+(linux-setup apps/claude-remote-control); for each answer nobody has taken yet:
+
+  - the asker is mid-turn in an open chat: left alone until that turn ends (never two agents on one folder); an
+    open, idle chat gets a few minutes, then a fork carries it on and his next prompt there is told so
+    (`tasks hook-prompt`). Other work (another project) or a big, cold session goes to a fresh run
+    (ai-brain claude-code-session-size, 2026-11-22). A short live `tasks wait` (10 min at most) still claims it;
+  - the task is the scoped task agent's (TASK_AGENT_ONLY): `task-agent reply` applies it (merge,
+    drop, mine, or noted and handed back), as his Telegram reply would;
+  - he picked what a non-blocking asker already went on with: taken, nothing to run;
+  - a button he tapped on a session's card in the feed (kind `ending`, task 1857): that session itself carries
+    it on (`claude -p --resume`, or `--fork-session` while it is still open) when its log is on this box and it
+    is not too big to resume well; else a fresh run with its last reply as context;
+  - his answer to a session's own question, same work: that session carries it on the same way (task 1884:
+    sessions end their turn after asking, never hold a background `tasks wait` that re-wakes them on every
+    shell timeout and burns the usage limit);
+  - else one fresh headless Claude Code run with the task's body, its notes and his answer, in a
+    transient unit of its own (one at a time, RUNS_PER_HOUR, never under the paid usage brake); its
+    result becomes a note on the task and one Telegram line.
+
+Every take is the hub's atomic claim, so a waiting asker and this never both carry it out. The
+watchdog: an answer still untaken WATCHDOG seconds after he gave it sends one Telegram alarm.
+
+  answer-dispatcher            one tick (the timer)
+  answer-dispatcher --dry-run  what a tick would do
+  answer-dispatcher run QID    the run itself (started by a tick inside its own unit)
+
+Replaces questions-applier (linux-setup) and task-agent's page answers (2026-11-22: ?139 fell
+between the two). Uses the `tasks` command's client (next to this file). Standard library only.
+"""
+import importlib.machinery
+import importlib.util
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'hub'))
+import settings  # noqa: E402  (hub/settings.py: the deployment's names)
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+_spec = importlib.util.spec_from_loader('tasks_cli', importlib.machinery.SourceFileLoader('tasks_cli', os.path.join(HERE, 'tasks')))
+cli = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cli)
+
+ME = 'answer-dispatcher'
+PROJECTS = os.environ.get('DISPATCH_PROJECTS', settings.p('projects'))
+CLAUDE = os.environ.get('DISPATCH_CLAUDE') or shutil.which('claude') or os.path.expanduser('~/.local/bin/claude')
+TASK_AGENT = os.environ.get('DISPATCH_TASK_AGENT') or os.path.join(HERE, 'task-agent')
+TELL = os.environ.get('DISPATCH_TELL', 'telegram-alarm')  # tests swap in a stub
+STATE = os.environ.get('DISPATCH_STATE', '/var/lib/answer-dispatcher')
+BRAKE = os.environ.get('DISPATCH_BRAKE', '/var/lib/claude-usage/brake.json')
+SETTLE = float(os.environ.get('DISPATCH_SETTLE', 60))  # his 5 s undo, and a live asker's next poll
+BEAT = 45  # `tasks wait` beats every 15 s: a beat this fresh means the asker is alive
+LIVE_GRACE = 4 * 60  # an open, idle asking chat: his next prompt there takes the answer (`tasks hook-prompt`), this long
+WATCHDOG = float(os.environ.get('DISPATCH_WATCHDOG', 15 * 60))
+RUN_TIMEOUT = 45 * 60
+NOTES = 15  # the task's latest notes in the run's prompt
+# Never a flood (2026-11-22: "agents must not spawn uncontrolled"): at most RUNS_PER_HOUR runs, one at a time,
+# none while claude-usage-brake holds the paid brake (the soft one never holds his answers); the rest wait for the next tick (and the watchdog tells him).
+RUNS_PER_HOUR = int(os.environ.get('APPLIER_RUNS_PER_HOUR', 8))  # each answer is a run now that nobody waits live (task 1884)
+AT_ONCE = int(os.environ.get('DISPATCH_AT_ONCE', 2))
+QUEUED_ALARM = 2 * 3600  # answers wait and no run started this long (not the brake): he hears once, for the queue
+COLD_BIG = 100_000  # a session this big, idle past the cache life, resumes at full price: a fresh run is cheaper
+MAX_TURNS = 80
+UNIT = 'answer-run-'
+ENDING = 'ending'  # a tap on a session's card in the feed (hub/endings.py)
+CLAUDE_HOME = os.environ.get('DISPATCH_CLAUDE_HOME', os.path.expanduser('~/.claude'))
+
+
+def session_log(sid):
+    """(transcript path, its cwd) of a Claude Code session whose log is on this box, else (None, None)."""
+    uuid_ = (sid or '').split(':', 1)[-1]
+    if not uuid_ or '/' in uuid_:
+        return None, None
+    base = os.path.join(CLAUDE_HOME, 'projects')
+    try:
+        folders = os.listdir(base)
+    except OSError:
+        return None, None
+    for d in folders:
+        path = os.path.join(base, d, uuid_ + '.jsonl')
+        if os.path.exists(path):
+            cwd = None
+            try:
+                with open(path, encoding='utf-8') as f:
+                    for _, raw in zip(range(200), f):
+                        try:
+                            cwd = json.loads(raw).get('cwd')
+                        except ValueError:
+                            continue
+                        if cwd:
+                            break
+            except OSError:
+                pass
+            return path, cwd
+    return None, None
+
+
+def session_open(sid):
+    """The session's process still runs on this box (its registry file names it and the pid is alive)."""
+    uuid_ = (sid or '').split(':', 1)[-1]
+    reg = os.path.join(CLAUDE_HOME, 'sessions')
+    try:
+        names = [n for n in os.listdir(reg) if n.endswith('.json')]
+    except OSError:
+        return False
+    for n in names:
+        try:
+            with open(os.path.join(reg, n)) as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if st.get('sessionId') == uuid_:
+            try:
+                os.kill(int(st.get('pid')), 0)
+                return True
+            except (OSError, ValueError, TypeError):
+                return False
+    return False
+
+
+# A task he carries out step by step (task 1891): each "Done" brings his next steps, until its Done-test.
+STEPS_LEFT = ("A task with 👤 steps still left for him: ask his next 1-3 as a card "
+              "(`tasks ask --task ID -o Done --step …`) and end ❓.")
+
+
+def ending_prompt(q):
+    """What the resumed session reads: his tap, in plain words."""
+    ctx = q.get('context') or ''
+    return (f"{settings.OWNER_NAME} tapped „{q['answer']}“ on this session's card on http://beacon (the card showed your last reply). "
+            f"Carry that out now, end to end, under the global rules. Nobody is watching this run and nobody can "
+            f"answer a question here: a decision only he can make goes to `tasks ask`. {STEPS_LEFT} "
+            f"Your final reply becomes this session's new card on his phone: first line the result (✅/⚠️/❓), "
+            f"at most 3 short lines more, the last one the next step.\n\n{ctx}")
+
+
+def answer_prompt(q):
+    """What the asking session reads when it is resumed with his answer to its own question (task 1884)."""
+    parts = [f"{settings.OWNER_NAME} answered your question ?{q['id']} on http://beacon/decisions: „{q['question']}“ "
+             f"-> „{q['answer']}“."]
+    if q.get('answer_note'):
+        parts.append(f"His note: {q['answer_note']}")
+    if cli.switch_line(q):
+        parts.append(f"You already went on with {q['default_answer']!r}; he picked {q['answer']!r}: switch it now, "
+                     f"yourself (nobody else will).")
+    if q.get('standing'):
+        parts.append('He marked it as a standing rule: also write it as a one-line rule where it belongs.')
+    parts.append("Carry it out now, end to end, under the global rules; first check what is already done. Nobody is "
+                 "watching this run and nobody can answer a question here: a decision only he can make goes to "
+                 "`tasks ask` and then you end your turn (never `tasks wait`). " + STEPS_LEFT +
+                 " Your final reply goes to his phone: first line the result (✅/⚠️/❓), at most 3 short lines more, the last one the next step.")
+    return '\n\n'.join(parts)
+
+
+def tell(text, key=None, every=None):
+    """Plain words on his phone: no question or task numbers (they say nothing to him, 2026-11-22; a
+    "(#N)" would also route a reply to the task agent, and he answers these on Decisions). Only trouble buzzes."""
+    cmd = [TELL, '--from', '❓ Decisions']
+    if key:
+        cmd += ['--key', key, '--every', str(every or 3600)]
+    subprocess.run(cmd + [text[:3500]], check=False)
+
+
+def runs_file():
+    return os.path.join(STATE, 'runs.json')
+
+
+def recent_runs():
+    try:
+        with open(runs_file()) as f:
+            return [t for t in json.load(f) if time.time() - t < 3600]
+    except (OSError, ValueError):
+        return []
+
+
+def count_run():
+    os.makedirs(STATE, exist_ok=True)
+    with open(runs_file(), 'w') as f:
+        json.dump(recent_runs() + [time.time()], f)
+
+
+def running():
+    """Run units still going (AT_ONCE at most)."""
+    r = subprocess.run(['systemctl', 'list-units', '--plain', '--no-legend', '--state=active,activating', UNIT + '*'],
+                       capture_output=True, text=True)
+    return [x.split()[0] for x in r.stdout.splitlines() if x.strip()]
+
+
+def held_back():
+    """Why no run may start now, else None."""
+    try:
+        with open(BRAKE) as f:
+            st = json.load(f) or {}
+        # Only the paid brake holds an answer. The soft one (the week's pace) pauses background jobs so his own
+        # work keeps the limit, and an answer he tapped is his own work: 30 answers waited 16 h behind it (2026-11-23).
+        if st.get('hard') or st.get('braked'):
+            return 'the usage brake is on'
+    except (OSError, ValueError):
+        pass
+    if len(recent_runs()) >= RUNS_PER_HOUR:
+        return f'{RUNS_PER_HOUR} runs in the last hour (the cap)'
+    busy = running()
+    if len(busy) >= AT_ONCE:
+        return f'{len(busy)} answers are being carried out ({busy[0]})'
+    return None
+
+
+def task_agent_scope():
+    """The scoped task agent's project:tag pairs ([] when it is off or unscoped: then this takes every answer)."""
+    if subprocess.run(['systemctl', 'is-active', '--quiet', 'task-agent.timer']).returncode != 0:
+        return []
+    env = subprocess.run(['systemctl', 'show', 'task-agent.service', '-p', 'Environment', '--value'],
+                         capture_output=True, text=True).stdout
+    only = next((w.split('=', 1)[1] for w in env.split() if w.startswith('TASK_AGENT_ONLY=')), '')
+    return [tuple((x.strip().split(':', 1) + [''])[:2]) for x in only.split(',') if x.strip()]
+
+
+def agents(task, scope):
+    return bool(task) and any(task['project'] == p and (not tag or tag in task['tags']) for p, tag in scope)
+
+
+def claim(q):
+    return cli.call(f"/api/questions/{q['id']}/claim", {'by': ME}).get('won')
+
+
+def note(tid, text):
+    cli.call(f'/api/tasks/{tid}/comments', {'text': text, 'author': ME})
+
+
+def asked(q, task):
+    """What a decision's answer adds to the run's prompt: the question, his answer, and who asked it."""
+    parts = [f"The question: {q['question']}"]
+    if q.get('context'):
+        parts.append(f"Its context:\n{q['context']}")
+    if q.get('default_answer'):
+        parts.append(f"The asking agent's own pick was: {q['default_answer']}")
+    parts.append(f"His answer: {q['answer']}")
+    if q.get('answer_note'):
+        parts.append(f"His note: {q['answer_note']}")
+    if q.get('standing'):
+        parts.append('He marked it as a standing rule: also write it as a one-line rule where it belongs '
+                     '(project CLAUDE.md, or the global one for cross-project).')
+    why = q.get('handoff_reason') or cli.other_work(q, task)
+    if why:
+        parts.append(f"You get this instead of the session that asked, because {why}. That session may still be open: "
+                     f"don't redo or undo its other work. Get your bearings first: the repo's git state and open PR, "
+                     f"what the card's context says the answer means (the asker's work may sit on a branch or worktree: "
+                     f"`git branch -a`, `git worktree list`), then check the outcome yourself.")
+        switch = cli.switch_line(q)
+        if switch:
+            parts.append(switch + ' Find what it did with its default and change it to his pick.')
+    if q.get('session_id'):
+        parts.append(f"It was asked from session {q['session_id']}; its transcript is in ai-corpus if you need it.")
+    return parts
+
+
+FEEDBACK = 'feedback'  # his marked-up screenshot from a page's feedback button (hub/feedback.py)
+
+
+def prompt(q, task):
+    if q.get('kind') == FEEDBACK:
+        pics = [x['picture'] for x in q.get('see') or [] if x.get('picture')]
+        parts = [f"{settings.OWNER_NAME} pressed the feedback button on a page, marked up a screenshot of it and said what to "
+                 f"change: the task below holds his words, the page, the elements under his marks and his last taps. You "
+                 f"start on it now. Nobody is watching this run and nobody can answer a question here."]
+        if pics:
+            parts.append('Look at his marked-up screenshot first: ' + '; '.join(
+                f"`curl -s -H \"Authorization: Bearer $TASKS_TOKEN\" {cli.URL}{p} -o <your scratchpad>/feedback.{p.rsplit('.', 1)[-1]}`"
+                for p in pics) + ' (TASKS_TOKEN: the env, else `secrets get TASKS_TOKEN`), then Read the file. '
+                'His strokes on it are the part he means.')
+    else:
+        parts = [f"{settings.OWNER_NAME} answered a decision on http://beacon/decisions (?{q['id']}), so the work on its task "
+                 f"continues now, with you. Nobody is watching this run and nobody can answer a question here."]
+    if task:
+        notes = task.get('comments') or []
+        parts.append(f"Task #{task['id']} ({task['project']}, {task['status']}): {task['title']}\n\n{task['body']}".strip())
+        if notes:
+            parts.append('Its latest notes, oldest first:\n' + '\n'.join(
+                f"- {time.strftime('%Y-%m-%d %H:%M', time.localtime(c['at']))} {c['author']}: {c['text'][:1500]}"
+                for c in notes[-NOTES:]))
+    if q.get('kind') == FEEDBACK:
+        parts.append(f"His words: {q['answer']}")
+    else:
+        parts += asked(q, task)
+    parts.append('Before acting, check what is already done (git log and open PRs, the live state): an earlier session '
+                 'may have done part of it, so do only what is still missing.')
+    parts.append('Code changes go in a git worktree of your own off fresh origin (`git worktree add ../<repo>-<topic>`), '
+                 'never in this shared checkout: his open sessions and a live app may use it.')
+    if task:
+        t = task['id']
+        parts.append(f"First run `tasks doing {t}`. Carry out his answer and the task's next steps, end to end, under the "
+                     f"global rules. When the outcome happened, `tasks done {t} -m \"<result>\"`; another decision only "
+                     f"he can make: `tasks ask \"…\" -o \"<your pick> :: why\" -o \"<other>\" --task {t}` and stop. "
+                     f"Don't write a closing note yourself: your final reply becomes the task's note.")
+    else:
+        parts.append('Carry out his answer now, end to end, under the global rules.')
+    parts.append('Your final reply goes to his phone as is: first line the result, at most 3 short lines more, '
+                 'in his language (Czech if he answered in Czech).')
+    return '\n\n'.join(parts)
+
+
+def session_tag(q):
+    """A short mark of the asking session in its run's unit name: one run per session at a time."""
+    return 's' + hashlib.sha1((q.get('session_id') or f"q{q['id']}").encode()).hexdigest()[:8]
+
+
+def project_tag(q):
+    """A short mark of the run's project folder: one run per folder at a time (two unattended runs in one
+    checkout trample each other's files, 2026-11-23 review)."""
+    return 'p' + hashlib.sha1((q.get('project') or f"q{q['id']}").encode()).hexdigest()[:6]
+
+
+def busy_with(q, units):
+    """A run already going for this answer's session or its project folder."""
+    marks = (f'-{session_tag(q)}-', f'-{project_tag(q)}-')
+    return any(m in u for u in units for m in marks)
+
+
+def start_run(q):
+    """The run in a transient unit of its own: a tick stays short, so the watchdog keeps watching."""
+    unit = f"{UNIT}{q['id']}-{session_tag(q)}-{project_tag(q)}-{int(time.time())}"
+    # a resume that fails falls back to a fresh run: room for both, or systemd kills the second half-way
+    cmd = ['systemd-run', '--no-block', '--collect', '--unit', unit, '-p', f'RuntimeMaxSec={2 * RUN_TIMEOUT + 300}',
+           '--setenv=HOME=/root', f"--setenv=PATH={os.environ.get('PATH', '/usr/bin:/bin')}",
+           os.path.realpath(__file__), 'run', str(q['id'])]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return unit
+
+
+def live_sessions():
+    """Sessions alive right now on any machine (the hub's live view), with their state: working (mid-turn) or
+    waiting (open, his next prompt due)."""
+    try:
+        live = cli.call('/api/live', auth=False)
+    except SystemExit:
+        return {}
+    return {s['id']: s['state'] for m in live.get('machines') or [] if m.get('online')
+            for s in m.get('sessions') or [] if s.get('state') in ('working', 'waiting') and (s.get('idle_s') or 0) < 900}
+
+
+def run(qid):
+    """One answer carried out: claimed here, first (a lost claim means its asker took it), then a fresh
+    Claude Code run on the task. A crash after the claim tells him, so a taken answer is never lost quietly."""
+    q = cli.call(f'/api/questions/{qid}', auth=False)
+    if not claim(q):
+        print(f'?{qid}: taken meanwhile, nothing to run')
+        return 0
+    mark = taken_file(qid)  # a kill (reboot, OOM, the unit's time limit) skips the except below: reap() tells him
+    os.makedirs(os.path.dirname(mark), exist_ok=True)
+    with open(mark, 'w') as f:
+        json.dump({'pid': os.getpid(), 'answer': q.get('answer') or '', 'at': time.time()}, f)
+    try:
+        return carry_out(q)
+    except BaseException as e:  # noqa: BLE001
+        tell(f"⚠️ Your answer „{q['answer'][:60]}“ didn't go through\nthe answer dispatcher needs a look\n"
+             f"{str(e)[:200] or type(e).__name__}")
+        raise
+    finally:
+        try:
+            os.remove(mark)
+        except OSError:
+            pass
+
+
+def taken_file(qid):
+    return os.path.join(STATE, 'taken', f'{qid}.json')
+
+
+def reap():
+    """A run that took an answer and died without a word (killed, rebooted): the answer counts as taken, so
+    nothing else will pick it up. One alarm each, so a taken answer is never lost quietly."""
+    folder = os.path.join(STATE, 'taken')
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    for n in names:
+        path, st = os.path.join(folder, n), {}
+        try:
+            with open(path) as f:
+                st = json.load(f)
+            os.kill(int(st['pid']), 0)
+            continue  # still running
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        qid = n.removesuffix('.json')
+        retried = os.path.join(STATE, 'retried', n)
+        if not os.path.exists(retried):  # the first death: given back once, the next tick runs it again
+            try:
+                if cli.call(f'/api/questions/{qid}/release', {'by': ME}).get('released'):
+                    os.makedirs(os.path.dirname(retried), exist_ok=True)
+                    open(retried, 'w').close()
+                    print(f'?{qid}: its run died, given back for one more try')
+                    continue
+            except SystemExit:
+                pass
+        tell(f"⚠️ Your answer „{str(st.get('answer') or '')[:60] if isinstance(st, dict) else ''}“ was taken, but "
+             f"its run stopped twice before it finished\nthe answer dispatcher needs a look")
+
+
+def resume(q):
+    """His answer carried on by the session that asked (a tap on its card, or its own question): '' when it ran
+    here, else why not, and the fresh run that takes it instead is told that reason (task 1884 review).
+    Sessions end their turn after asking instead of holding a `tasks wait` (task 1884), so this is the normal way back."""
+    path, cwd = session_log(q.get('session_id'))
+    if not path:
+        return "the session that asked runs on another machine, so it can't be resumed here"
+    sid = q['session_id'].split(':', 1)[-1]
+    size, idle = cli.session_size(sid)
+    if size and size >= cli.BIG_CONTEXT:
+        return f"the session that asked holds {size // 1000}k tokens, too big to resume well"
+    if size and size >= COLD_BIG and idle is not None and idle >= cli.COLD_AFTER:
+        return (f"the session that asked holds {size // 1000}k tokens and sat idle {int(idle // 60)} min: resuming it "
+                f"cold would cost more than a fresh start")
+    if not cwd or not os.path.isdir(cwd):  # its worktree went (merged and removed): --resume can't find it there
+        return "the session that asked worked in a folder that is gone (merged and removed)"
+    text = ending_prompt(q) if q.get('kind') == ENDING else answer_prompt(q)
+    cmd = [CLAUDE, '-p', text, '--resume', sid, '--permission-mode', 'bypassPermissions', '--max-turns', str(MAX_TURNS)]
+    run_sid = sid
+    if session_open(q['session_id']):
+        run_sid = str(uuid.uuid4())  # named up front, so the task page can follow the copy while it works
+        cmd += ['--fork-session', '--session-id', run_sid]  # still open in the app: a copy, never two writers on one log
+    link_run(q.get('task_id'), run_sid)
+    # BEACON_QID: an old habit of `tasks wait N` in its history sees the answer as its own to carry out, not "done elsewhere"
+    env = dict(os.environ, IS_SANDBOX='1', BEACON_ENDINGS='1', BEACON_QID=str(q['id']))
+    try:
+        r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=RUN_TIMEOUT)
+        if r.returncode and not (r.stdout or '').strip():
+            return f"resuming it failed (exit {r.returncode}: {(r.stderr or '').strip()[:200]})"
+        out = (r.stdout or '').strip() or '(it ended with no reply text)'  # exit 0, no text: it was told it may
+    except subprocess.TimeoutExpired:
+        out = f'⚠️ still not done after {RUN_TIMEOUT // 60} min, stopped'
+    if q.get('task_id'):
+        try:
+            what = 'tap' if q.get('kind') == ENDING else f"answer ?{q['id']}"
+            note(q['task_id'], f"🤖 The session carried on after his {what} „{q['answer'][:80]}“:\n{out[:3000]}")
+        except SystemExit:
+            pass
+    if q.get('task_id') and not out.startswith('⚠️'):
+        close_holder(q['task_id'])
+    if out.startswith('⚠️'):  # a success is already the session's card on Beacon: no echo (2026-11-22, "spam")
+        tell(out)
+    print(out)
+    return ''
+
+
+def link_run(tid, sid):
+    """The run shows on its task page as the agent on it, with its latest steps while it works (task 1944)."""
+    if not tid:
+        return
+    try:
+        cli.call(f'/api/tasks/{tid}/sessions', {'session_id': f'Claude Code:{sid}'})
+    except SystemExit:
+        pass
+
+
+def close_holder(tid):
+    """The small "Decide: …" task the hub filed only to hold a question (tag `decision`): once the session carried
+    the answer on, nothing is left in it (2026-11-23: they stayed open for good and blocked its later ✅ replies)."""
+    try:
+        t = cli.call(f'/api/tasks/{tid}', auth=False)
+        still = cli.call(f'/api/questions?status=open&task={tid}', auth=False).get('questions') or []
+        if 'decision' in (t.get('tags') or []) and t['status'] in ('todo', 'doing') and not still:
+            cli.call(f'/api/tasks/{tid}', {'status': 'done'})  # never one holding another open question: closing withdraws it
+    except SystemExit:
+        pass
+
+
+def carry_out(q):
+    qid = q['id']
+    task = cli.call(f"/api/tasks/{q['task_id']}", auth=False) if q.get('task_id') else None
+    # Same work goes back to the session that asked; other work (another project, or the asker let it go) runs fresh.
+    own = q.get('kind') == ENDING or not (q.get('handoff_at') or cli.other_work(q, task))
+    if own and q.get('session_id'):
+        why = resume(q)
+        if not why:
+            return 0
+        print(f"?{qid}: {why}: a fresh run instead")
+        q = {**q, 'handoff_reason': q.get('handoff_reason') or why}  # the fresh run is told it replaces the asker
+    cwd = os.path.join(PROJECTS, q['project'])
+    if not os.path.isdir(cwd):
+        cwd = PROJECTS
+    sid = str(uuid.uuid4())
+    link_run((task or {}).get('id'), sid)
+    env = dict(os.environ, IS_SANDBOX='1', BEACON_ENDINGS='1')  # its result is a card in the feed too
+    try:
+        name = (task or {}).get('title') or f"Answer: {q.get('question') or ''}"
+        r = subprocess.run([CLAUDE, '-p', prompt(q, task), '--session-id', sid, '--permission-mode', 'bypassPermissions',
+                            '--name', name[:60]],
+                           cwd=cwd, env=env, capture_output=True, text=True, timeout=RUN_TIMEOUT)
+        out = (r.stdout or '').strip() or f'⚠️ no reply (exit {r.returncode}): {(r.stderr or "").strip()[:300]}'
+    except subprocess.TimeoutExpired:
+        out = f'⚠️ still not done after {RUN_TIMEOUT // 60} min, stopped'
+    if task:
+        try:
+            note(task['id'], f"🤖 Resumed after his answer ?{qid} („{q['answer'][:80]}“):\n{out[:3000]}")
+        except SystemExit as e:
+            out += f'\n(the note on #{task["id"]} failed: {e})'
+    # He knows what he answered and the result is on his Beacon card: only a failed run reaches the phone.
+    if out.startswith('⚠️'):
+        tell(out)
+    print(out)
+    return 0
+
+
+def stamp(path):
+    try:
+        with open(path) as f:
+            return float(f.read())
+    except (OSError, ValueError):
+        return 0
+
+
+def watchdog(q, now):
+    """An answer ready to run that no run reached: one alarm for the queue, never one per answer (2026-11-23: a
+    backlog of 20 sent him 10 "stuck" alarms in 10 minutes while the queue was draining as it should). The clock
+    starts at the latest of his answer, the last run started and a usage brake lifting; it allows WATCHDOG while a
+    slot is free, QUEUED_ALARM while runs or the cap hold the queue. The brake itself is the point: never his phone.
+    Only answers that reached the run stage come here: one waiting on its own open chat is not stuck."""
+    held_file = os.path.join(STATE, 'held_at')
+    held = held_back()
+    if held == 'the usage brake is on':  # waiting out the brake is the point: the clock starts when it lifts
+        os.makedirs(STATE, exist_ok=True)
+        with open(held_file, 'w') as f:
+            f.write(str(now))
+        return False
+    since = max(q.get('answered_at') or now, stamp(held_file), stamp(os.path.join(STATE, 'last_start')))
+    if now - since < (QUEUED_ALARM if held else WATCHDOG):
+        return False
+    # no ref: a reply to it would route to the task agent; he answers on Decisions
+    tell(f"⚠️ Your answers on Decisions wait and no run has started for {int((now - since) // 60)} min\n"
+         f"the answer dispatcher needs a look", key='dispatch-stuck', every=6 * 3600)
+    return True
+
+
+def tick(dry=False):
+    now = time.time()
+    pending = cli.call('/api/questions?status=answered&pending=1&limit=5000', auth=False).get('questions') or []
+    pending.sort(key=lambda q: q.get('answered_at') or 0)  # oldest first: a busy hour never starves an answer
+    if not dry:
+        reap()
+    scope = task_agent_scope()
+    started, live = False, None
+    for q in pending:
+        if now - (q.get('answered_at') or 0) < SETTLE:
+            continue
+        try:
+            task = cli.call(f"/api/tasks/{q['task_id']}", auth=False) if q.get('task_id') else None
+        except SystemExit as e:  # one card's task unreadable this minute: the others and the watchdog go on
+            print(f"?{q['id']}: its task is unreadable now ({e}), next tick")
+            continue
+        # Other work than its task's session (cli.other_work: another project the asker named), or the asker let it
+        # go (`tasks wait`: too big and idle): same work stays with the chat that has its context, else a fresh run.
+        fresh = q.get('handoff_at') or cli.other_work(q, task)
+        if not fresh and q.get('waited_at') and now - q['waited_at'] < BEAT:
+            continue  # its asker is waiting in a live chat: it claims the answer itself
+        if not fresh and q.get('session_id'):
+            if live is None:
+                live = live_sessions()
+            state = live.get(q['session_id'])
+            if state == 'working':
+                continue  # mid-turn: a fork now would be a second agent in its folder; it goes once the turn ends
+            if state and q.get('kind') != ENDING and now - q['answered_at'] < LIVE_GRACE:
+                continue  # its chat is open: his next prompt there takes it (`tasks hook-prompt`)
+        if agents(task, scope):  # the scoped task agent's own task: applied its way, as a Telegram reply
+            if dry:
+                print(f"?{q['id']}: task-agent reply {task['id']} {q['answer']!r}")
+                continue
+            if claim(q):
+                args = [TASK_AGENT, 'reply'] + (['--noted'] if q.get('answered_via') == 'task' else []) + [str(task['id']), q['answer']]
+                r = subprocess.run(args, capture_output=True, text=True, timeout=600)
+                if q.get('answer_note'):  # not as the owner: that would answer the task's other questions
+                    cli.call(f"/api/tasks/{task['id']}/comments", {'text': f"His note: {q['answer_note']}", 'author': 'decisions'})
+                if r.returncode:
+                    tell(f"⚠️ Couldn't apply your answer „{q['answer'][:60]}“\n{(r.stdout or r.stderr).strip()[:300]}")
+            continue
+        # He picked what the asker already went on with: nothing to carry out. Not for a blocking question or a
+        # next-step box (there the asker stopped and asked before acting: the first button is a proposal, not done).
+        if cli.went_on(q) and q.get('kind') not in ('next-step', ENDING):
+            if dry:
+                print(f"?{q['id']}: took the default, nothing to run")
+            elif claim(q) and task and 'decision' in task['tags'] and task['status'] in ('todo', 'doing'):
+                cli.call(f"/api/tasks/{task['id']}", {'status': 'done'})
+            continue
+        if not dry:
+            watchdog(q, now)  # ready to run: from here on, waiting is the queue's, not its chat's
+        if started:
+            continue  # one run per tick; the rest only get the watchdog
+        if busy_with(q, running()):
+            continue  # that session or that folder is already carrying out another answer: never two runs on one
+        why = held_back()
+        if dry:
+            print(f"?{q['id']}: a fresh run" + (f" (held: {why})" if why else '') + f"\n{prompt(q, task)}\n")
+            continue
+        if why:
+            print(f"?{q['id']} waits: {why}")
+            started = True
+            continue
+        count_run()  # the run claims it first thing; a run that finds it taken does nothing
+        os.makedirs(STATE, exist_ok=True)
+        with open(os.path.join(STATE, 'last_start'), 'w') as f:
+            f.write(str(time.time()))
+        print(f"?{q['id']}: started {start_run(q)}")
+        started = True
+    return 0
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ['run'] and len(argv) == 2:
+        return run(int(argv[1].lstrip('?#')))
+    return tick(dry='--dry-run' in argv)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

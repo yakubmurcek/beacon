@@ -1,0 +1,28 @@
+/* The hub header inside his other apps (budget, Lighthouse), which are passed through under
+   http://beacon and render the same header markup. Their own CSS (Tailwind) never sees tokens.css or
+   app.css, so the header gets the Paper tokens and its base box here, scoped to .top and the phone tab
+   bar; hub.css (loaded after) does the rest exactly as on the hub's own pages.
+   Keep the values in step with tokens.css (tests/test_design.py checks they match). */
+.top, .top .apps {
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --gutter: 24px; --shell-w: 1200px;
+  --r-md: 12px; --r-pill: 999px;
+  --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px;
+  --ease: cubic-bezier(.2, .8, .2, 1); --t-fast: 120ms; --t: 180ms; --t-slow: 320ms;
+  --bg: #F3EFE6; --panel: #FBF9F4; --line: #DDD6C8; --text: #17150F; --muted: #5E584C;
+  --accent: #FF5A1F; --accent-ink: #B83A0E; --accent-soft: rgba(255, 90, 31, .12); --on-accent: #17150F;
+  --sel-bg: #17150F; --sel-fg: #F3EFE6; --hover: rgba(23, 21, 15, .06); --glass: #F3EFE6;
+  --shadow-2: 0 2px 4px rgba(23, 21, 15, .05), 0 10px 24px -12px rgba(23, 21, 15, .22);
+  --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+.top {
+  position: sticky; top: 0; z-index: 1000; box-sizing: border-box;  /* above the wall's scanline overlay */
+  background: var(--bg); border-bottom: 1px solid var(--line);  /* solid: these apps can be dark below it */
+  font-family: var(--sans); color: var(--text); -webkit-font-smoothing: antialiased;
+}
+.top *, .top *::before, .top *::after { box-sizing: border-box; }
+.top a { text-decoration: none; }
+@media (max-width: 900px) { header.top { background: var(--bg); border-bottom: 1px solid var(--line); } .top .apps { background: var(--bg); } }  /* beats hub.css's see-through phone header: these apps are dark below it */
+/* hub.css (loaded after) puts .top at z-index 30; the wall's CRT overlay sits at 60 */
+header.top { z-index: 1000; }
+/* no search or theme switch in these apps: the empty tools row would leave a band on phones */
+.top .tools:empty { display: none; }

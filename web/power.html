@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Beacon · Power</title>
+  <meta name="description" content="Electricity at home: the PC's watts and the Shelly plugs, in kWh and Kč.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=tower2">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="hub.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Hub">
+  <meta name="theme-color" content="#F3EFE6">
+  <link rel="preload" href="fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/bricolage-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="power.css">
+  <link rel="stylesheet" href="hub.css">
+  <script>try{if(localStorage.getItem("hub.theme")==="cyber"){var r=document.documentElement,m=document.querySelector('meta[name="theme-color"]');r.dataset.theme="cyber";r.style.setProperty("--cy-t",-(Date.now()%60000)/1000+"s");if(m){m.dataset.plain=m.content;m.content="#0B0916"}}}catch(e){}</script>
+  <script src="hub.js" defer></script>
+  <script src="/config.js"></script>
+</head>
+<body class="power-page">
+  <header class="top">
+    <div class="top-row">
+      <a class="brand" href="/team" aria-label="Beacon home"><img src="/favicon.svg?v=tower2" width="28" height="28" alt=""><span>Beacon</span></a><nav class="apps" aria-label="Hub"><a class="app" href="/team" data-app="team"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.6a3.2 3.2 0 0 1 0 6.8"/><path d="M18 14.2c1.8.8 3 2.7 3 5.8"/></svg><span>Team</span></a><a class="app" href="/tasks" data-app="tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5"/><path d="m8 12 3 3 5-6"/></svg><span>Tasks</span></a><a class="app" href="/decisions" data-app="decisions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21v-9"/><path d="M12 12 6.5 6.5"/><path d="m12 12 5.5-5.5"/><path d="M5 10V5h5"/><path d="M19 10V5h-5"/></svg><span>Decisions</span><span class="badge" id="hub-decisions-badge"></span></a><a class="app" href="/outreach" data-app="business"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg><span>Business</span></a><a class="app" href="/usage" data-app="system" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/></svg><span>System</span></a></nav><nav class="sys" aria-label="System"><a href="/usage">Usage</a><a href="/ai">AI jobs</a><a href="/machines">Machines</a><a href="/power" class="on" aria-current="page">Power</a><a href="/labs">Labs</a></nav><span class="row-break" aria-hidden="true"></span>
+      <div class="tools"></div>
+    </div>
+  </header>
+  <script>try{var n=localStorage.getItem("hub.decisionsOpen");if(n>0)document.getElementById("hub-decisions-badge").textContent=n}catch(e){}</script>
+
+  <main class="wrap" id="main">
+    <p class="error" id="error" hidden></p>
+    <section class="tiles">
+      <div class="tile"><div class="k">PC now</div><div class="v" id="now">–</div><div class="s" id="nowparts"></div></div>
+      <div class="tile"><div class="k" id="winlabel">Last 24 h</div><div class="v" id="winkwh">–</div><div class="s" id="winczk"></div></div>
+      <div class="tile"><div class="k">This month so far</div><div class="v" id="month">–</div><div class="s" id="monthkwh"></div></div>
+      <div class="tile"><div class="k">Month at this rate</div><div class="v" id="proj">–</div><div class="s" id="projs"></div></div>
+    </section>
+    <section class="panel">
+      <div class="row">
+        <h2>PC watts</h2>
+        <div class="seg" id="seg"><button data-h="24" class="on">24 h</button><button data-h="168">7 d</button><button data-h="720">30 d</button></div>
+      </div>
+      <div class="legend"><span><i style="background:var(--wall)"></i>whole PC (est.)</span><span><i style="background:var(--cpu)"></i>CPU</span><span><i style="background:var(--gpu)"></i>GPU</span></div>
+      <svg id="chart" aria-label="Watts over time"></svg>
+    </section>
+    <section class="panel">
+      <div class="row"><h2>Per day</h2><span class="legend"><span><i class="sq"></i>full day</span><span><i class="sq pale"></i>part of the day logged</span></span></div>
+      <svg id="days" aria-label="Daily energy"></svg>
+    </section>
+    <section class="panel">
+      <div class="row"><h2>Plugs</h2><span class="legend"><span><i class="sq night"></i>share at the night price</span></span></div>
+      <table><thead><tr><th>Plug</th><th>Now</th><th>Today</th><th>7 days</th><th>Month</th><th class="kwh">kWh</th><th>Night</th></tr></thead><tbody id="plugs"></tbody></table>
+    </section>
+    <section class="panel">
+      <div class="row"><h2 id="appstitle">What used it</h2></div>
+      <table><thead><tr><th>App</th><th>Kč</th><th class="kwh">kWh</th><th>Avg W</th><th>Busy</th></tr></thead><tbody id="apps"></tbody></table>
+    </section>
+    <p class="note" id="tariff"></p>
+    <p class="note" id="model"></p>
+  </main>
+  <script src="power.js" defer></script>
+</body>
+</html>

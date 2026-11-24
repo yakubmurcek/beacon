@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Beacon cards</title>
+<style>
+:root {/*TOKENS*/
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --display: ui-rounded, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #1d1b17; --panel: #262420; --panel-2: #34312b; --line: #3d3a33;
+  --text: #f3efe6; --muted: #b3ab9b; --dim: #6b655a; --faint: #8f887a;
+  --bad: #ff6b5e; --good: #4cc98a; --warn: #f0a050;
+  --accent: #FF6A33; --accent-ink: #ff9a70; --accent-soft: rgba(255, 106, 51, .2); --s1: #6aa8f0;
+  color-scheme: dark;
+}
+html, body { margin: 0; background: transparent; color: var(--text); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+.bc { padding: 2px 0 4px; }
+.bc-head { display: flex; align-items: center; gap: 8px; margin: 0 2px 10px; }
+.bc-head h2 { margin: 0; font: 800 20px/1.15 var(--display); letter-spacing: -0.02em; }
+.bc-live { margin-left: auto; padding: 3px 9px; border-radius: 999px; font: 600 11.5px/1.2 var(--sans);
+  color: var(--good); background: color-mix(in srgb, var(--good) 13%, transparent); white-space: nowrap; }
+.bc-wait { padding: 18px 4px; color: var(--muted); font-size: 14px; }
+/*CARDS_CSS*/
+.lc-suggest { display: flex; flex-wrap: wrap; gap: 8px; }
+.lc-chip { min-height: 36px; padding: 7px 13px; border-radius: 999px; border: 1.5px solid var(--line); background: var(--panel);
+  font: 500 14.5px/1.25 var(--sans); color: var(--text); text-align: left; cursor: pointer; }
+.lc-chip:hover { border-color: var(--accent); color: var(--accent-ink); }
+@media (max-width: 520px) { .lc.half.lc-bars, .lc.half.lc-list, .lc.half.lc-line { grid-column: 1 / -1; } }
+</style>
+</head>
+<body>
+<div class="bc" id="root"><p class="bc-wait">Drawing…</p></div>
+<script>
+'use strict';
+(function () {
+  const root = document.getElementById('root');
+  let nextId = 1;
+  const pending = {};
+  const send = (m) => window.parent.postMessage(m, '*');
+  function request(method, params) {
+    const id = nextId++;
+    send({ jsonrpc: '2.0', id, method, params });
+    return new Promise((resolve) => { pending[id] = resolve; });
+  }
+  // a follow-up chip asks the assistant, as if he typed it
+  function ask(text) {
+    request('ui/message', { role: 'user', content: [{ type: 'text', text }] });
+  }
+
+//CARDS_JS
+
+  function show(data) {
+    if (!data || !Array.isArray(data.cards)) return;
+    root.textContent = '';
+    const head = el('div', 'bc-head');
+    head.appendChild(el('h2', '', data.title || 'Beacon'));
+    head.appendChild(el('span', 'bc-live', '● Live from Beacon'));
+    root.appendChild(head);
+    const grid = el('div', 'lab-grid');
+    for (const c of data.cards) {
+      const node = render(c);
+      if (node) grid.appendChild(node);
+    }
+    root.appendChild(grid);
+    size();
+  }
+
+  function theme(ctx) {
+    const t = ctx && ctx.theme;
+    if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
+  }
+
+  let lastH = 0;
+  function size() {
+    const h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+    if (Math.abs(h - lastH) < 2) return;
+    lastH = h;
+    send({ jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { width: Math.ceil(document.documentElement.scrollWidth), height: h } });
+  }
+  new ResizeObserver(size).observe(document.body);
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window.parent) return;
+    const m = e.data;
+    if (!m || m.jsonrpc !== '2.0') return;
+    if (m.id != null && !m.method) {  // a response to one of ours
+      const done = pending[m.id];
+      delete pending[m.id];
+      if (done) done(m.result || null);
+      return;
+    }
+    if (m.method === 'ui/notifications/tool-result') show((m.params || {}).structuredContent);
+    else if (m.method === 'ui/notifications/host-context-changed') theme(m.params);
+    else if (m.method === 'ui/resource-teardown' || m.method === 'ping') send({ jsonrpc: '2.0', id: m.id, result: {} });
+  });
+
+  request('ui/initialize', {
+    protocolVersion: '2026-01-26',
+    appInfo: { name: 'beacon-cards', version: '1.0.0' },
+    appCapabilities: { availableDisplayModes: ['inline'] },
+  }).then((res) => {
+    if (res) theme(res.hostContext);
+    send({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
+  });
+
+  // ChatGPT also hands the result on window.openai; take it if the standard message never comes
+  setTimeout(() => {
+    if (root.querySelector('.lab-grid')) return;
+    const o = window.openai;
+    if (o && o.toolOutput) show(o.toolOutput);
+    if (o && o.theme) theme({ theme: o.theme });
+  }, 600);
+})();
+</script>
+</body>
+</html>

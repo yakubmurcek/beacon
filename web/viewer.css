@@ -1,0 +1,34 @@
+/* The in-app viewer (web/viewer.js): pictures and videos open over the page, never in a new tab (2026-11-22). */
+.viewer { position: fixed; inset: 0; z-index: 1000; display: none; background: color-mix(in srgb, black calc(94% * var(--fade, 1)), transparent);
+  color: var(--on-img); outline: none; overscroll-behavior: contain; }
+.viewer.on { display: block; }
+html.viewer-open, html.viewer-open body { overflow: hidden; }
+.viewer-stage { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; touch-action: none; user-select: none; }
+.viewer-media { max-width: 100vw; max-height: 100vh; max-height: 100dvh; object-fit: contain; transform-origin: center; will-change: transform; }
+.viewer-stage[data-kind="image"] .viewer-media { cursor: zoom-in; -webkit-user-drag: none; }
+.viewer.zoomed .viewer-stage .viewer-media { cursor: grab; }
+.viewer-stage video.viewer-media { width: min(100vw, 1600px); background: black; }
+.viewer-embed { width: min(100vw, 177.8vh, 1600px); aspect-ratio: 16 / 9; height: auto; border: 0; background: black; }
+.viewer-bar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 8px;
+  padding: max(10px, env(safe-area-inset-top)) 12px 10px; background: linear-gradient(var(--img-scrim), transparent); pointer-events: none; }
+.viewer-bar > * { pointer-events: auto; }
+.viewer-count { font: 700 13px var(--sans); background: color-mix(in srgb, var(--on-img) 16%, transparent); border-radius: var(--r-pill); padding: 4px 10px; }
+.viewer-count:empty { display: none; }
+.viewer-label { flex: 1; min-width: 0; font: 600 14px var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.viewer-btn { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; border: 0; padding: 0;
+  background: color-mix(in srgb, var(--on-img) 16%, transparent); color: var(--on-img); font-size: 20px; line-height: 1; text-decoration: none; cursor: pointer; }
+.viewer-btn:hover { background: color-mix(in srgb, var(--on-img) 28%, transparent); color: var(--on-img); }
+.viewer-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 52px; height: 52px; border-radius: 50%; border: 0;
+  background: color-mix(in srgb, var(--on-img) 16%, transparent); color: var(--on-img); font-size: 34px; line-height: 1; cursor: pointer; }
+.viewer-nav.prev { left: 12px; } .viewer-nav.next { right: 12px; }
+.viewer-nav[hidden] { display: none; }
+.viewer-hint { position: absolute; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+  font: 500 12px var(--sans); color: color-mix(in srgb, var(--on-img) 70%, transparent); white-space: nowrap; pointer-events: none;
+  animation: viewer-hint var(--t-slow) var(--ease) forwards; }
+@keyframes viewer-hint { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+.viewer:fullscreen { background: black; }
+@media (hover: none) { .viewer-nav { display: none; } }
+/* On the card: a picture says it opens bigger. */
+a.see-pic { cursor: zoom-in; }
+a.see-pic::after { content: '⤢'; position: absolute; top: 8px; left: 8px; width: 28px; height: 28px; display: grid; place-items: center;
+  border-radius: 50%; background: var(--img-scrim); color: var(--on-img); font-size: 15px; pointer-events: none; }

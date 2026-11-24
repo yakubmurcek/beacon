@@ -1,0 +1,14 @@
+{
+  "name": "Questions",
+  "short_name": "Questions",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "description": "What the agents need me to decide, and every decision I made.",
+  "display": "standalone",
+  "background_color": "#F3EFE6",
+  "theme_color": "#F3EFE6",
+  "icons": [
+    { "src": "questions-icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

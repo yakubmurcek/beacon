@@ -1,0 +1,2281 @@
+#!/usr/bin/env python3
+"""task-agent: the agent that works tasks handed to it at http://beacon.
+
+Every minute a systemd timer on the agent's home machine runs this once (linux-setup `apps/task-agent`); systemd
+never starts a second run while one is going, so one task at a time:
+
+  -. loose ends first, quietly: a task a dead run left `doing` is given back, and a PR merged
+     or closed on GitHub moves its task (done, or back to him), checked every 10 minutes;
+  0. route every new task (filed since ROUTE_SINCE and 5 minutes old, mostly by Claude sessions): one cheap
+     tool-less model call says agent (it gets the `claude` tag), his (a note says why), or ask
+     (one question for him on Telegram). The Hand to agent button still works by hand;
+  1. take the most urgent open `todo` task tagged `claude` (parked ones wait, and so does one
+     whose body says `Not before YYYY-MM-DD` until that day; at most MAX_RUNS_A_DAY runs in 24 h);
+  2. claim it: status `doing`, a note, and the session id it is about to run under, linked, so
+     the task page shows the agent live (state and what it is doing, from /api/live);
+  3. gather what he typed in the sessions linked to it (the one that filed it) from the hub, which
+     has every machine's prompts, since the agent can't read a session on another machine;
+  4. run headless Claude Code on it with the ship-task skill in a fresh git worktree of the
+     task's repo (never a checkout, which may be a live app), unattended: a task with no
+     Done-test gets one written first (or a question), doc-sync and a `low` code review come
+     before any PR, and it stops at an open PR noted on the task, closes work that needs no
+     code, or notes what it needs from him;
+  5. report back: one Telegram message (telegram-alarm, the Hermes bot) that starts with the
+     task number and says what a reply does. A task whose agent asked him something (a `⏳`
+     note), or whose run ended without a word on the task, goes back to `todo` without the tag,
+     so it is never retried blind: his reply (`reply` below) hands it back.
+
+  task-agent              route new tasks, then work the next one (exits 0 when none is waiting)
+  task-agent reply ID TEXT   his Telegram reply, passed on by Hermes: `merge`, `drop`, `mine`,
+                             or an answer / change request (noted, and the task goes back to the agent).
+                             His answer to a task's question on http://beacon/decisions comes the same
+                             way, from answer-dispatcher (`reply --noted`: answered on the task).
+  task-agent --dry-run    show the queue, the task it would take and the prompt
+  task-agent sync-prs     only the PR check: a merged PR closes its task (own timer, any mode)
+  task-agent pause|resume   stop / restart everything autonomous (routing and runs); the PR check,
+                            the dead-run sweep, his replies and `--id` keep working
+  task-agent --id N       work task N now (it must still be handed to the agent)
+
+Scoped mode (TASK_AGENT_ONLY=project:tag[,...], 2026-11-21 task 1744): only tasks of that project carrying that
+tag (and `claude`) are worked, nothing is routed, his page answers and PR states are left to him, and the global
+pause doesn't apply (stop the timer to stop it). Today: clean-the-snow:discord, the Discord bug agent.
+A repo with `.claude/agent/task-agent.json` brings its own run: a preflight before the claim (a failure leaves the
+task queued), its own brief instead of ship-task, its own MCP servers and settings (hooks), env, a folder for proof
+images that go to Telegram as photos, and the Telegram header (`from`). Its `checker` (task 1744, 2026-11-21): when
+the run claims a fix that works (its last note `⏳ … Otestuj`) and changed the game, a FRESH run that never saw the
+fixer's session verifies it from evidence only (the report, the fixer's shots, the real diff from the Studio gate's
+log) in its own Play, and can reject it: a reject goes back to the fixer once, then the report says `neověřeno`.
+
+Guardrails on a repo's own run (task 1744, 2026-11-21): at most 2 fix attempts per bug (then straight to him
+with what was tried), a daily cost cap and his plan's quota, a circuit breaker (3 failed runs in a row stop it) and a
+kill switch (`stop` / `start` on Telegram, or `task-agent stop|start`), the frozen "Hotovo když" every fix is judged
+against (none = a question for him, no fix), the project's regression suite right before the fix and after it, a
+Team Create lock before the checker, a scorecard with a weekly Czech summary (`task-agent scorecard`), and a report
+he leaves unanswered is recalled after 2 days and closed after 7.
+
+Uses the `tasks` command's client (next to this file) for the hub, TASKS_URL and TASKS_TOKEN.
+Standard library only.
+"""
+import argparse
+import contextlib
+import datetime
+import fcntl
+import glob
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import re
+import shutil
+import socketserver
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import uuid
+import zoneinfo
+
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'hub'))
+import settings  # noqa: E402  (hub/settings.py: the deployment's names)
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+_spec = importlib.util.spec_from_loader('tasks_cli', importlib.machinery.SourceFileLoader('tasks_cli', os.path.join(HERE, 'tasks')))
+cli = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cli)
+
+TAG = 'claude'
+AUTO = 'auto'  # an agent proposed it on its own: the router never routes it; only his `claude` tag starts it (2026-11-21)
+WAITS = ('parked', 'needs-spec')  # needs-spec: open questions left, not ready to work
+NOT_BEFORE = re.compile(r'not before:?\**\s*(\d{4}-\d{2}-\d{2})', re.I)
+ME = 'task-agent'
+OWNER, OWNER_NAME = settings.OWNER_ID, settings.OWNER_NAME  # his notes carry OWNER as their author
+AGENT = settings.CONFIG['agent']
+PROJECTS = os.environ.get('TASK_AGENT_PROJECTS', settings.p('projects'))
+WORK = os.environ.get('TASK_AGENT_WORK', settings.p('work'))
+GITHUB = os.environ.get('TASK_AGENT_GITHUB', settings.OWNER['github'])
+TIMEOUT = int(os.environ.get('TASK_AGENT_TIMEOUT', str(80 * 60)))
+CLAUDE = os.environ.get('TASK_AGENT_CLAUDE') or shutil.which('claude') or os.path.expanduser('~/.local/bin/claude')
+MACHINE = os.environ.get('TASK_AGENT_MACHINE') or os.uname().nodename.split('.')[0]
+TELL = os.environ.get('TASK_AGENT_TELL', 'telegram-alarm')  # tests swap in `true`
+TELL_CHARS = 200  # the most of an agent's words that go to Telegram
+DONE_TEST = re.compile(r'^#{1,4}\s*done[- ]test', re.I | re.M)
+SCHEDULED, SELF = '[scheduled]', 'You are the task agent'  # loop fires and this agent's own prompts
+ONLY = [tuple((x.strip().split(':', 1) + [''])[:2]) for x in os.environ.get('TASK_AGENT_ONLY', '').split(',') if x.strip()]
+AGENT_CONF = os.path.join('.claude', 'agent', 'task-agent.json')
+ASK_CHARS = 600  # a repo run's `👉` line (what it needs from him) is never cut to TELL_CHARS, only to this
+SYSTEMCTL = os.environ.get('TASK_AGENT_SYSTEMCTL', 'systemctl')  # tests swap in a stub
+JAIL_UNIT = 'cts-agent-{id}'  # a jailed run's transient unit: a fixed name, so a timeout can stop it
+# A jailed run never carries the hub token (task 1744 review): it reaches the hub only through a proxy task-agent
+# runs for the length of the run, bound to that one task (`TaskProxy`), on a socket bound into the jail, and its
+# `tasks` command is `tasks-jail` bound over the real client.
+SOCK_DIR = os.environ.get('TASK_AGENT_SOCK_DIR', '/run/cts-tasks')
+JAIL_SOCK = '/run/cts-tasks.sock'
+JAIL_TASKS = os.path.join(HERE, 'tasks-jail')
+QUIET = (22, 8)  # Europe/Prague hours in which a repo run's (scoped mode's) Telegram waits for the morning
+RETRIES_A_DAY = 4  # a run that could not start (retry=true) is queued again at most this often in 24 h
+PROMPTS, PROMPT_CHARS, CONTEXT_CHARS = 15, 800, 8000  # what of a linked session goes into the prompt
+GH = os.environ.get('TASK_AGENT_GH') or shutil.which('gh') or '/usr/bin/gh'
+PR_URL = re.compile(r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+')
+PICKUP = '🤖 Picked up by the agent'
+SYNC_EVERY = int(os.environ.get('TASK_AGENT_SYNC_EVERY', str(10 * 60)))  # how often PRs on doing tasks are checked
+# The worker's final answer: the line for his phone, apart from whatever ending his setup asks a
+# session for (a `⏳ Needs you` block's last line went to Telegram as is, 2026-10-31).
+PHONE_SCHEMA = json.dumps({'type': 'object', 'required': ['phone'], 'properties': {
+    'phone': {'type': 'string', 'description': 'one short sentence for his phone, max 20 words'}}})
+# A repo's own run may also say it could not start at all (task 1744 review): the task goes back in the queue.
+CONF_SCHEMA = json.dumps({'type': 'object', 'required': ['phone'], 'properties': {
+    'phone': {'type': 'string', 'description': 'one short sentence for his phone, max 20 words'},
+    'retry': {'type': 'boolean', 'description': 'true ONLY if you could not start the work at all (Studio busy with '
+              "someone else's Play, the machine or Studio not ready, the gate unreachable) and changed nothing: the "
+              'task is queued again quietly. Otherwise false or left out.'}}})
+
+# The router: every new open task gets one cheap, tool-less model call that decides who does it.
+# Tasks older than ROUTE_SINCE (the ClickUp backlog) are never routed: hand those over by hand.
+ROUTER = 'task-router'
+ROUTE_SINCE = float(os.environ.get('TASK_AGENT_ROUTE_SINCE', '1791403200'))  # 2026-10-07 22:00 Prague
+ROUTE_MODEL = os.environ.get('TASK_AGENT_ROUTE_MODEL', 'sonnet')
+ROUTE_PER_RUN = 5
+# A task this new may be its filer's own work (filed, then marked doing a second later): it gets
+# that long to claim it before the router hands it out (2026-11-01: routed to the agent 1 s after filing).
+ROUTE_GRACE = int(os.environ.get('TASK_AGENT_ROUTE_GRACE', str(5 * 60)))
+MAX_RUNS_A_DAY = int(os.environ.get('TASK_AGENT_MAX_RUNS', '15'))  # a guard on the plan's quota
+STATE = os.environ.get('TASK_AGENT_STATE', os.path.expanduser('~/.local/state/task-agent'))
+ROUTE_SCHEMA = json.dumps({'type': 'object', 'required': ['route', 'why'], 'properties': {
+    'route': {'type': 'string', 'enum': ['agent', 'human', 'ask']},
+    'why': {'type': 'string', 'description': 'one short sentence'},
+    'question': {'type': 'string', 'description': 'with route=ask: the one question for him'}}})
+
+# His Telegram replies (through Hermes: `task-agent reply ID "text"`).
+MERGE = {'merge', 'merge it', 'yes merge', 'ok merge', 'merge pls', 'merge please', 'ship it', 'mergni', 'mergni to'}
+DROP = {'drop', 'drop it', 'cancel', 'forget it', 'zahod', 'zahoď'}  # not 'no': that answers a question
+MINE = {'mine', 'i do it', "i'll do it", 'ill do it', 'me', 'udělám', 'udelam', 'já', 'ja'}
+
+
+def allowed(t):
+    """In scoped mode only the listed project:tag pairs; otherwise every task."""
+    return not ONLY or any(t['project'] == p and (not tag or tag in t['tags']) for p, tag in ONLY)
+
+
+def queue():
+    tasks = cli.call('/api/tasks?status=todo&limit=2000', auth=False)['tasks']
+    today = time.strftime('%Y-%m-%d')
+    ready = [t for t in tasks if TAG in t['tags'] and allowed(t) and not any(w in t['tags'] for w in WAITS)
+             and not any(d > today for d in NOT_BEFORE.findall(t.get('body') or ''))]
+    return sorted(ready, key=lambda t: (t.get('priority') or 5, (t.get('due') or '9999')[:16], t['created_at']))
+
+
+def note(tid, text, author=ME):
+    cli.call(f'/api/tasks/{tid}/comments', {'text': text, 'author': author})
+
+
+def gh_env():
+    env = dict(os.environ)
+    if not env.get('GH_TOKEN'):  # gh on this box has no login of its own: the vault's token
+        try:
+            tok = subprocess.run(['secrets', 'get', 'GITHUB_TOKEN'], capture_output=True, text=True, timeout=20).stdout.strip()
+            if tok:
+                env['GH_TOKEN'] = tok
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return env
+
+
+# ------------------------------------------------------------------ the router
+
+def to_route():
+    """New open tasks nobody has routed yet: todo, filed since ROUTE_SINCE but over ROUTE_GRACE
+    ago, not handed to the agent, not parked, and with no note from the router. Tasks once seen
+    routed are remembered on this box, so a minute costs one list read, not one read per task."""
+    tasks = cli.call('/api/tasks?status=todo&limit=2000', auth=False)['tasks']
+    routed = read_ids('routed')
+    fresh = [t for t in tasks if ROUTE_SINCE <= t['created_at'] <= time.time() - ROUTE_GRACE
+             and TAG not in t['tags'] and AUTO not in t['tags'] and not any(w in t['tags'] for w in WAITS)
+             and t['id'] not in routed]
+    out, seen = [], set()
+    for t in sorted(fresh, key=lambda t: t['created_at']):
+        if (t.get('last_note') or {}).get('author') == ROUTER:
+            seen.add(t['id'])
+            continue
+        full = cli.call(f"/api/tasks/{t['id']}", auth=False)
+        if any(c['author'] == ROUTER for c in full['comments']):
+            seen.add(t['id'])
+            continue
+        out.append(dict(t, comments=full['comments']))
+        if len(out) >= ROUTE_PER_RUN:
+            break
+    if seen:
+        write_ids('routed', routed | seen)
+    return out
+
+
+def read_ids(name):
+    try:
+        with open(os.path.join(STATE, name)) as f:
+            return {int(x) for x in f.read().split() if x.isdigit()}
+    except OSError:
+        return set()
+
+
+def write_ids(name, ids):
+    os.makedirs(STATE, exist_ok=True)
+    tmp = os.path.join(STATE, name + '.tmp')
+    with open(tmp, 'w') as f:
+        f.write('\n'.join(map(str, sorted(ids))))
+    os.replace(tmp, os.path.join(STATE, name))
+
+
+def route_prompt(task, context):
+    notes = '\n'.join(f"- {c['author']}: {c['text'][:600]}" for c in task.get('comments') or [])
+    return f"""Decide who does this task: an AI coding agent working alone, or {OWNER_NAME} (the owner).
+
+The agent is Claude Code running unattended on a Linux server ({MACHINE}) with: every one of his GitHub
+repos (it clones, branches, tests and opens a PR; it never merges or deploys to users), the web,
+his notes and past conversations (gbrain), his mail (read), ssh to his servers, and his task list.
+It can NOT: type a password or 2FA code, pay or spend money, sign anything, touch a physical device
+or his Mac/iPhone (Xcode, the simulator, Mac apps, App Store Connect in a browser), send messages to
+people in his name, make his product, pricing, taste or client decisions, or merge to production.
+
+route = "agent" when the agent can finish it alone and the result is clear enough to check.
+route = "human" when it needs his hands, his accounts, his decision or his voice.
+route = "ask" only when the agent could do it but what he wants is unclear: give the one question
+that would make it clear.
+
+Task #{task['id']} [{task['project']}]: {task['title']}
+
+{task.get('body') or '(no body)'}
+{('Notes:' + chr(10) + notes) if notes else ''}
+{('What he typed in the session that filed it:' + chr(10) + context) if context else ''}"""
+
+
+def decide(task, context):
+    cmd = [CLAUDE, '-p', route_prompt(task, context), '--model', ROUTE_MODEL, '--effort', 'low', '--tools', '',
+           '--system-prompt', 'You route tasks. Answer only with the JSON asked for.',
+           '--setting-sources', '', '--strict-mcp-config', '--output-format', 'json', '--json-schema', ROUTE_SCHEMA,
+           '--name', f"Route: {task['title']}"[:60]]  # a readable name in --resume and the usage page
+    try:
+        r = subprocess.run(cmd, cwd=WORK if os.path.isdir(WORK) else None, capture_output=True, text=True, timeout=300)
+        out = json.loads(r.stdout)
+        out = out.get('structured_output') if isinstance(out, dict) else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return out if isinstance(out, dict) and out.get('route') in ('agent', 'human', 'ask') else None
+
+
+def route(task):
+    tid = task['id']
+    d = decide(task, origin(task))
+    if not d:
+        return None  # no answer this time: tried again next minute
+    why = d.get('why', '').strip()
+    if d['route'] == 'agent':
+        note(tid, f'🧭 To the agent: {why}', ROUTER)
+        cli.call(f'/api/tasks/{tid}', {'tags': [*task['tags'], TAG]})
+    elif d['route'] == 'ask' and d.get('question'):
+        note(tid, f"🧭 Routing asks first: {why}", ROUTER)
+        note(tid, f"⏳ Needs you: {d['question'].strip()}", ROUTER)
+        tell(task, f"Before I hand this over, one question: {d['question'].strip()}",
+             'Answer here, or say mine and I will leave it to you.', icon='🧭')
+    else:
+        note(tid, f'🧭 Yours: {why}', ROUTER)
+    return d['route']
+
+
+def runs_today():
+    """Agent runs in the last 24 h (a small log on this box), to stay inside MAX_RUNS_A_DAY."""
+    path = os.path.join(STATE, 'runs')
+    try:
+        with open(path) as f:
+            words = f.read().split()
+    except OSError:
+        return []
+    out = []
+    for x in words:  # a torn line (a crash mid-write) is skipped, never the whole log
+        try:
+            if float(x) > time.time() - 86400:
+                out.append(float(x))
+        except ValueError:
+            pass
+    return out
+
+
+def unlog_run(at):
+    """A run that could not start is not one of the day's runs: its stamp (log_run's, within a second or two) goes."""
+    keep, gone = [], False
+    for x in runs_today():
+        if not gone and abs(x - at) < 3:
+            gone = True
+            continue
+        keep.append(x)
+    with open(os.path.join(STATE, 'runs'), 'w') as f:
+        f.write('\n'.join(f'{x:.0f}' for x in keep))
+
+
+def log_run():
+    os.makedirs(STATE, exist_ok=True)
+    keep = runs_today() + [time.time()]
+    with open(os.path.join(STATE, 'runs'), 'w') as f:
+        f.write('\n'.join(f'{x:.0f}' for x in keep))
+
+
+def git(*args, cwd=None):
+    return subprocess.run(['git', *args], cwd=cwd, capture_output=True, text=True, timeout=300)
+
+
+def workdir(task):
+    """A fresh worktree of the task's repo at origin's default branch, or the projects folder for
+    a task with no repo (a check, research). The repo is cloned there first if it isn't yet."""
+    project = task['project']
+    repo = os.path.join(PROJECTS, project)
+    if not os.path.isdir(os.path.join(repo, '.git')):
+        if project == 'personal' or not project.replace('-', '').replace('_', '').replace('.', '').isalnum():
+            return PROJECTS, None
+        url = f'git@github.com:{GITHUB}/{project}.git'
+        if git('ls-remote', '--heads', url).returncode != 0:
+            return PROJECTS, None
+        if git('clone', '-q', url, repo).returncode != 0:
+            return PROJECTS, None
+    git('fetch', '-q', 'origin', cwd=repo)
+    head = git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD', cwd=repo).stdout.strip() or 'origin/main'
+    path = os.path.join(WORK, f"task-{task['id']}-{int(time.time())}")
+    os.makedirs(WORK, exist_ok=True)
+    r = git('worktree', 'add', '-q', '--detach', path, head, cwd=repo)
+    if r.returncode != 0:
+        raise RuntimeError(f'git worktree add failed: {r.stderr.strip()[:300]}')
+    return path, repo
+
+
+def origin(task, own=()):
+    """What he typed in the sessions linked to the task (the one that filed it, or worked it
+    before), from the hub, which has every machine's prompts within seconds. The agent can't
+    read a session on another machine, so this is how that conversation reaches it."""
+    out, size = [], 0
+    for sid in task.get('sessions') or []:
+        sid = sid['session_id'] if isinstance(sid, dict) else sid
+        if sid in own:
+            continue
+        try:
+            s = cli.call('/api/session?session=' + urllib.parse.quote(sid), auth=False)
+        except (SystemExit, Exception):  # not in the hub, or the hub didn't answer: work without it
+            continue
+        said = [t['text'].strip() for t in s.get('turns') or []
+                if t.get('text') and not t['text'].startswith(SCHEDULED) and not t['text'].startswith(SELF)]
+        kept = []
+        for text in reversed(said[-PROMPTS:]):  # newest first, so a full budget drops the oldest
+            text = text if len(text) <= PROMPT_CHARS else text[:PROMPT_CHARS] + ' …'
+            if size + len(text) > CONTEXT_CHARS:
+                break
+            size += len(text)
+            kept.insert(0, '  > ' + text.replace('\n', '\n    '))
+        if kept:
+            out.append('\n'.join([f"Session {sid.split(':', 1)[-1]} ({s.get('agent')} on {s.get('machine')}, "
+                                  f"project {s.get('project')}):", *kept]))
+    return '\n\n'.join(out)
+
+
+def agent_conf(where):
+    """A repo's own run setup (`.claude/agent/task-agent.json` in the worktree), or None."""
+    try:
+        with open(os.path.join(where, AGENT_CONF)) as f:
+            conf = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return conf if isinstance(conf, dict) else None
+
+
+def frozen_for_fixer(task, conf):
+    block = criteria(task, conf)
+    return (f"""
+## Hotovo když (frozen when the bug was filed; you can't change it)
+The independent checker judges your fix only against this block and its own before/after Play. If you think it is
+wrong, say so in your report; never fix toward anything else.
+
+{block}
+""") if block else ''
+
+
+def brief_prompt(task, where, conf, context, proof):
+    with open(os.path.join(where, conf['brief'])) as f:
+        brief = f.read()
+    said = (f"""
+What he typed in the session(s) linked to this task, oldest first:
+{context}
+""") if context else ''
+    return f"""You are the task agent on {MACHINE}, working task #{task['id']} from http://beacon. This run is
+unattended: nobody is watching this session and nobody can answer a question.
+
+Task #{task['id']} [{task['project']}]: {task['title']}
+Read it in full first: `tasks show {task['id']}` (body and every note). You are in {where}, a fresh worktree
+of the repo made for this run.{'' if conf.get('proof_from') else f' Proof images go in {proof}.'}
+{said}
+{brief.replace('{id}', str(task['id'])).replace('{proof}', proof)}
+{frozen_for_fixer(task, conf)}
+If you can't start the work at all (Studio busy with someone else's Play, the machine or Studio not ready, the
+gate unreachable) and changed nothing, don't hand it back: end with `retry` true in your final answer, and the
+task is queued again for a later run."""
+
+
+def prompt(task, where, repo, context=''):
+    place = (f'You are in {where}: a fresh git worktree of {task["project"]} at origin\'s default branch, '
+             f'made for this task. Branch from here. Never work in {repo} or any other checkout: '
+             f'on this box a checkout can be a live app.') if repo else (
+             f'This task has no repo of its own on GitHub; you are in {where}. Never switch the branch '
+             f'of a checkout there: on this box a checkout can be a live app.')
+    said = (f"""
+What he typed in the session(s) linked to this task, oldest first (the conversation it came from).
+Replies aren't included. When they matter, read the whole conversation from gbrain: its
+`get_page` tool with `slug` = the session id below and `fuzzy: true` (gbrain's search can't find
+a session by its id; a session shows up there about 5 minutes after it last spoke):
+{context}
+""") if context else ''
+    spec = '' if DONE_TEST.search(task.get('body') or '') else f"""
+This task has no Done-test yet. Before any work, write one: from the task, its notes, the
+conversation above and what you find (gbrain `query`, the repo's docs), decide what result would
+prove it done, and add it to the body as a `## Done-test` section (`tasks set {task['id']} body=-`
+with the full new body on stdin). If you can't tell what he wants with confidence, don't guess:
+ask (the ⏳ rule below) and stop.
+"""
+    return f"""You are the task agent on {MACHINE}, working task #{task['id']} from http://beacon. This run is
+unattended: nobody is watching this session and nobody can answer a question.
+
+Task #{task['id']} [{task['project']}]: {task['title']}
+Read it in full first: `tasks show {task['id']}` (body and every note).
+{said}{spec}
+Load the ship-task skill (Skill tool) and follow it from its step 2. Step 1 and 4 are done: you
+were handed this task, it is marked doing, and this session is linked to it so its page shows
+you live. Its quality steps are not optional: the doc-sync skill, then the code-review skill at
+`low` on your diff (fix what it finds), before you open a PR.
+{place}
+
+- A note links a PR you (an earlier run) opened and he asked for changes: continue on that PR's
+  branch (`gh pr checkout <url>`) and push to it, no second PR.
+- Code: ship-task's unattended path. Stop at an open PR, never merge. Note it on the task with
+  `tasks note {task['id']} "👉 PR <url> (<from> → <to>): <what it does>"` and leave it doing.
+- No code needed (a check, research, an answer): do it, then `tasks done {task['id']} -m "✅ <what you found or did>"`.
+- Blocked on him (a password, a decision, a vague task with no clear result): don't guess.
+  Any reasons go in a plain `tasks note` first; then
+  `tasks note {task['id']} "⏳ Needs you: <one short question, max 20 words>"` and stop. That line
+  goes to his phone as is: a question he can answer in a word or two, no reasons, no lists.
+- Your final answer's `phone` field goes to his phone as is, in the voice of {AGENT['voice']}: one short sentence, max 20 words,
+  saying what happened in plain words, e.g. "Remote Control on the PC now skips the prompts. The
+  PR is ready." Name a PR by number, never paste its URL. No name prefix, no branch names,
+  test counts, file paths or caveats (caveats go in a task note).
+"""
+
+
+def tasks_in_jail():
+    """Where `tasks` resolves inside the jail (/usr/local/bin/tasks links into the ro-bound client checkout)."""
+    found = shutil.which('tasks')
+    return os.path.realpath(found) if found else os.path.join(settings.p('projects'), '.tasks-client/client/tasks')
+
+
+def jailed(cmd, env, where, jail, timeout, unit, sock=None):
+    """The run as a transient systemd unit that sees almost nothing: the system read-only, an empty home with only
+    the paths the conf lists (no ~/.ssh, no vault, no gh login, no hub token), its own Claude config dir sharing the
+    login file, writes only in its worktree. Root's tools to other machines are simply not there (task 1744 review).
+    Its unit has a fixed name (`unit`), so a timeout stops it instead of leaving it to RuntimeMaxSec. The hub only
+    through `sock`, a TaskProxy for this one task, seen inside at JAIL_SOCK, with `tasks-jail` as its `tasks`."""
+    home = jail['config_dir']
+    os.makedirs(home, exist_ok=True)
+    creds = os.path.join(os.path.expanduser('~'), '.claude', '.credentials.json')
+    if not os.path.exists(os.path.join(home, '.credentials.json')):
+        open(os.path.join(home, '.credentials.json'), 'w').close()
+    keep = {'HOME', 'PATH', 'LANG', 'TASKS_URL', 'CTS_AGENT_TASK', 'CLAUDE_CONFIG_DIR', *(jail.get('env_keep') or []),
+            *(env.get('_CONF_ENV') or '').split()} - {'TASKS_TOKEN', 'GH_TOKEN'}
+    env.pop('TASKS_TOKEN', None)
+    env['CLAUDE_CONFIG_DIR'] = home
+    binds = [p for p in ['/run/systemd/resolve', *(jail.get('run') or [])] if os.path.exists(p)]
+    if sock:
+        binds += [f'{sock}:{JAIL_SOCK}', f'{JAIL_TASKS}:{tasks_in_jail()}']
+    # Root without capabilities, namespaces, /proc of others or systemd/D-Bus/tailscale sockets: a fresh
+    # systemd-run, /proc/1/root and nsenter all got past the first jail (probe 2026-11-21).
+    run = ['systemd-run', f'--unit={unit}', '--wait', '--pipe', '--collect', '--quiet', '-p', 'ProtectSystem=strict',
+           '-p', 'ProtectHome=tmpfs', '-p', 'PrivateTmp=yes', '-p', 'NoNewPrivileges=yes',
+           '-p', 'CapabilityBoundingSet=', '-p', 'AmbientCapabilities=', '-p', 'RestrictNamespaces=yes',
+           '-p', 'ProtectProc=invisible', '-p', 'ProtectKernelTunables=yes', '-p', 'ProtectKernelModules=yes',
+           '-p', 'ProtectControlGroups=yes', '-p', 'LockPersonality=yes', '-p', 'TemporaryFileSystem=/run',
+           '-p', 'BindReadOnlyPaths=' + ' '.join(binds),
+           '-p', f'RuntimeMaxSec={timeout + HELD_MAX}', '-p', f'WorkingDirectory={where}',
+           '-p', 'BindReadOnlyPaths=' + ' '.join(p for p in jail.get('ro') or [] if os.path.exists(p)),
+           '-p', f'BindPaths={where} {home} {creds}:{home}/.credentials.json']
+    for k in sorted(keep):
+        if env.get(k):
+            run += ['-E', f'{k}={env[k]}']
+    return run + cmd
+
+
+BRAKE_STATE = os.environ.get('TASK_AGENT_BRAKE_STATE', '/var/lib/claude-usage/brake.json')
+HELD_MAX = 6 * 3600  # a jailed unit's RuntimeMaxSec on top of its timeout: room for the usage brake's holds
+
+
+def held(unit):
+    """The usage brake (claude-usage-brake) holds this run: its jailed unit frozen, or task-agent's own calls."""
+    try:
+        with open(BRAKE_STATE) as f:
+            units = json.load(f).get('units') or {}
+    except (OSError, ValueError, AttributeError):
+        return False
+    return f'{unit or "task-agent"}.service' in units
+
+
+def run_timed(cmd, timeout, unit=None, **kw):
+    """subprocess.run(capture_output, text, timeout) whose timeout counts only the time the run could work:
+    minutes the usage brake froze it don't count (2026-11-22 night: three runs frozen by the brake hit their
+    70 min, were called failed and tripped the circuit breaker)."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         stdin=subprocess.DEVNULL, **kw)
+    used, last = 0.0, time.monotonic()
+    while True:
+        try:
+            out, err = p.communicate(timeout=max(0.2, min(15.0, timeout - used)))
+            return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            now = time.monotonic()
+            if not held(unit):
+                used += now - last
+            last = now
+            if used >= timeout:
+                p.kill()
+                p.communicate()
+                raise
+
+
+def stop_unit(unit):
+    """Stop a jailed run's unit and forget a failed one (a leftover makes the next systemd-run of that name fail)."""
+    for verb in ('stop', 'reset-failed'):
+        try:
+            subprocess.run([SYSTEMCTL, verb, f'{unit}.service'], capture_output=True, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def stop_leftover_jails():
+    """Called holding the run lock, so no run is going: a jailed unit still alive is a leftover (task-agent killed)."""
+    for pattern in (JAIL_UNIT, CHECK_UNIT):  # a fixer's or a checker's run
+        try:
+            r = subprocess.run([SYSTEMCTL, 'list-units', pattern.format(id='*') + '.service', '--all', '--plain',
+                                '--no-legend'], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in r.stdout.splitlines():
+            name = line.split()[0] if line.split() else ''
+            if re.fullmatch(pattern.format(id=r'\d+') + r'\.service', name):
+                print(f'task-agent: stopping leftover {name}', file=sys.stderr)
+                stop_unit(name[:-len('.service')])
+
+
+class TaskProxy:
+    """The jailed run's only way to the hub: a unix socket that does, for this one task only, what its brief uses:
+    `show` (with every note), `note` and `done`. Writes carry the run's own author (`Claude Code <sid8>`, set here,
+    never by the caller), so finish() still finds its notes. One JSON request per connection:
+    {"cmd": "show"|"note"|"done", "id": N, "text": "...", "json": bool} -> {"out": "..."} or {"error": "..."}."""
+    MAX = 200_000
+
+    def __init__(self, tid, sid, path):
+        self.tid, self.author, self.path = int(tid), f'Claude Code {sid[:8]}', path
+        self.server = None
+
+    def start(self):
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(self.path)
+        proxy = self
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                try:
+                    req = json.loads(self.rfile.readline(proxy.MAX + 1000) or b'{}')
+                    out = {'out': proxy.answer(req)}
+                except PermissionError as e:
+                    out = {'error': str(e)}
+                except (Exception, SystemExit) as e:
+                    out = {'error': str(e).strip() or type(e).__name__}
+                self.wfile.write((json.dumps(out, ensure_ascii=False) + '\n').encode())
+
+        old = os.umask(0o177)  # the socket is root's alone (0600) from its first moment
+        try:
+            self.server = socketserver.ThreadingUnixStreamServer(self.path, Handler)
+        finally:
+            os.umask(old)
+        os.chmod(self.path, 0o600)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        return self
+
+    def stop(self):
+        if self.server:
+            self.server.shutdown()
+            self.server.server_close()
+            self.server = None
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(self.path)
+
+    def answer(self, req):
+        cmd, tid = req.get('cmd'), req.get('id')
+        if cmd not in ('show', 'note', 'done'):
+            raise PermissionError(f'only `tasks show|note|done {self.tid}` here')
+        if not isinstance(tid, int) or isinstance(tid, bool) or tid != self.tid:
+            raise PermissionError(f'only your own task #{self.tid}')
+        text = req.get('text')
+        if text is not None and (not isinstance(text, str) or len(text) > self.MAX):
+            raise PermissionError('the text must be a string under 200 kB')
+        if cmd == 'show':
+            t = cli.call(f'/api/tasks/{tid}', auth=False)
+            if req.get('json'):
+                return json.dumps(t, ensure_ascii=False, indent=1)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):  # the client's own layout (the main thread prints nothing meanwhile)
+                cli.show(t)
+            return buf.getvalue().rstrip('\n')
+        if cmd == 'note':
+            if not (text or '').strip():
+                raise PermissionError('an empty note')
+            cli.call(f'/api/tasks/{tid}/comments', {'text': text, 'author': self.author})
+            return f'noted on #{tid}'
+        if text:
+            cli.call(f'/api/tasks/{tid}/comments', {'text': text, 'author': self.author})
+        return cli.line(cli.call(f'/api/tasks/{tid}', {'status': 'done'}))
+
+
+def login_lasts(seconds):
+    """True when root's Claude login token is good for `seconds` more. A jailed run shares the login file through
+    its own config dir, so it must never be the one to refresh it (a rotated token lost there kills root's login,
+    which hosts his Remote Control sessions). An already expired token is refreshed here, as root, first."""
+    path = os.path.join(os.path.expanduser('~'), '.claude', '.credentials.json')
+    def left():
+        try:
+            with open(path) as f:
+                return json.load(f)['claudeAiOauth']['expiresAt'] / 1000 - time.time()
+        except (OSError, ValueError, KeyError, TypeError):
+            return -1
+    if left() <= 0:
+        env = {k: v for k, v in os.environ.items() if k != 'CLAUDE_CODE_SESSION_ID'}
+        subprocess.run([CLAUDE, '-p', 'ok', '--model', 'haiku', '--tools', '', '--strict-mcp-config', '--setting-sources', ''],
+                       capture_output=True, text=True, timeout=180, env=env, stdin=subprocess.DEVNULL, cwd=WORK if os.path.isdir(WORK) else None)
+    return left() > seconds
+
+
+def run_claude(task, sid, where, text, conf=None, proof=None):
+    env = gh_env()
+    env.pop('CLAUDE_CODE_SESSION_ID', None)  # its own id comes from --session-id
+    cmd = [CLAUDE, '-p', text, '--session-id', sid, '--permission-mode', 'auto', '--output-format', 'json',
+           '--json-schema', CONF_SCHEMA if conf else PHONE_SCHEMA, '--max-budget-usd', f'{RUN_USD:g}',
+           '--name', task['title'][:60]]  # the session is called by its task, like `tasks doing` names one
+    timeout = TIMEOUT
+    began = time.time()
+    home = ((conf or {}).get('jail') or {}).get('config_dir') or os.path.join(os.path.expanduser('~'), '.claude')
+    unit = proxy = None
+    if conf:  # the repo's own run: only its MCP servers, its guard hooks on top of the repo's, no browser
+        if conf.get('mcp_config'):
+            cmd += ['--mcp-config', os.path.join(where, conf['mcp_config']), '--strict-mcp-config']
+        if conf.get('settings'):
+            cmd += ['--settings', os.path.join(where, conf['settings'])]
+        if conf.get('tools'):
+            cmd += ['--tools', ','.join(conf['tools'])]
+        cmd += ['--no-chrome', '--setting-sources', 'project']  # never his user settings (they authorize push, ssh)
+        # Pinned per repo, so a default change in the CLI never silently changes who fixes his bugs.
+        if conf.get('model'):
+            cmd += ['--model', conf['model']]
+        if conf.get('effort'):
+            cmd += ['--effort', conf['effort']]
+        env.pop('GH_TOKEN', None)
+        env.update({k: str(v) for k, v in (conf.get('env') or {}).items()})
+        env['_CONF_ENV'] = ' '.join(list(conf.get('env') or {}) + ([conf['proof_env']] if conf.get('proof_env') else []))
+        env['CTS_AGENT_TASK'] = str(task['id'])
+        if conf.get('proof_env') and proof:
+            env[conf['proof_env']] = proof
+        if conf.get('timeout_min'):
+            timeout = int(conf['timeout_min']) * 60
+        if conf.get('jail'):
+            unit = JAIL_UNIT.format(id=task['id'])
+            stop_unit(unit)  # a leftover of an earlier run of this task
+            proxy = TaskProxy(task['id'], sid, os.path.join(SOCK_DIR, f"{task['id']}.sock")).start()
+            cmd = jailed(cmd, env, where, conf['jail'], timeout, unit, proxy.path)
+    out = None
+    try:
+        r = run_timed(cmd, timeout, unit, cwd=where, env=env)
+    except subprocess.TimeoutExpired:
+        return None, f'stopped after {timeout // 60} min'
+    finally:  # only the systemd-run client dies with the timeout: the jailed claude would run on
+        if unit:
+            stop_unit(unit)
+        if proxy:
+            proxy.stop()
+        with contextlib.suppress(Exception):  # the ledger never breaks a run
+            try:
+                out = json.loads(r.stdout)
+            except (NameError, UnboundLocalError, ValueError):
+                out = None
+            spend(task['id'], 'fixer', sid, run_cost(out, home, sid), (time.time() - began) / 60)
+    if not isinstance(out, dict):
+        return None, (r.stderr or r.stdout or f'exit {r.returncode}').strip()[-400:]
+    if out.get('is_error') or r.returncode != 0:
+        return None, str(out.get('result') or f'exit {r.returncode}').strip()[-400:]
+    return out, None
+
+
+# A session's ending in his setup (`⏳ Needs you:` items, their italic detail lines, the status
+# legend, `✅ All done.`): never a line for his phone.
+ENDING = ('✅', '⏳', '*', '- ', '• ', '|', '#', '🚧', '🔀', '🚀', '👀', '🔴', '```')
+
+
+def last_line(text):
+    lines = [x.strip() for x in (text or '').strip().splitlines() if x.strip() and not x.strip().startswith(ENDING)]
+    return lines[-1][:300] if lines else ''
+
+
+def phone(out):
+    """The line for his phone from a finished run: its structured `phone` answer, else the last
+    plain line of its reply."""
+    if not out:
+        return ''
+    said = out.get('structured_output')
+    words = said.get('phone') if isinstance(said, dict) else None
+    words = (words if isinstance(words, str) else '') or last_line(out.get('result'))
+    return re.sub(r'^\s*\**ozpin\**\s*:\s*', '', words.strip(), flags=re.I)[:300]
+
+
+def tidy(where, repo, conf=None, proof=None):
+    """Remove the worktree once nothing in it is unsaved; keep it (and say so) otherwise. A repo with its own run
+    (conf) keeps only tracked changes: its untracked files are hook logs, copied next to the proof first."""
+    if not repo:
+        return None
+    if conf:
+        logs = os.path.join(where, '.claude')
+        for fn in os.listdir(logs) if os.path.isdir(logs) else []:
+            if proof and (fn.endswith('.log') or fn.endswith('.jsonl')):
+                os.makedirs(proof, exist_ok=True)
+                shutil.copy(os.path.join(logs, fn), os.path.join(proof, fn))
+    dirty = git('status', '--porcelain', *(['--untracked-files=no'] if conf else []), cwd=where).stdout.strip()
+    unpushed = git('log', '--oneline', '@{u}..', cwd=where)
+    if dirty or (unpushed.returncode == 0 and unpushed.stdout.strip()):
+        return f'unsaved work left in {MACHINE}:{where}'
+    git('worktree', 'remove', '--force', where, cwd=repo)
+    return None
+
+
+def work(task, dry=False):
+    tid = task['id']
+    if dry:  # as if its repo were cloned already, when GitHub has one
+        repo = os.path.join(PROJECTS, task['project'])
+        has = os.path.isdir(os.path.join(repo, '.git')) or (task['project'] != 'personal' and git(
+            'ls-remote', '--heads', f"git@github.com:{GITHUB}/{task['project']}.git").returncode == 0)
+        print(prompt(task, os.path.join(WORK, f'task-{tid}-…') if has else PROJECTS, repo if has else None, origin(task)))
+        return 0
+    try:
+        where, repo = workdir(task)
+    except RuntimeError as e:
+        return give_back(task, f'could not set up its repo: {e}')
+    except (Exception, SystemExit) as e:  # the hub or git gone mid-way: never left half set up
+        return give_back(task, f'the run broke off ({(str(e).strip() or type(e).__name__)[:200]})')
+    conf = agent_conf(where)
+    base = None
+    if conf:
+        full = cli.call(f'/api/tasks/{tid}', auth=False)
+        if attempts(full['comments']) >= MAX_ATTEMPTS:
+            git('worktree', 'remove', '--force', where, cwd=repo)
+            return give_up(task, full, conf)
+        if conf.get('criteria_dir') and not criteria(task, conf, full):
+            git('worktree', 'remove', '--force', where, cwd=repo)
+            return needs_spec(task, full, conf)
+    if conf and conf.get('preflight'):
+        # Before the claim: a busy or sleeping machine leaves the task queued for the next run, never handed back.
+        # After a failure it waits `preflight_backoff_min` (the preflight may open apps on another machine).
+        stamp = os.path.join(STATE, f"preflight-failed-{task['project']}")
+        try:
+            if time.time() - os.path.getmtime(stamp) < int(conf.get('preflight_backoff_min', 15)) * 60:
+                git('worktree', 'remove', '--force', where, cwd=repo)
+                return 0
+        except OSError:
+            pass
+        try:
+            pre = subprocess.run(conf['preflight'], cwd=where, capture_output=True, text=True, timeout=600)
+            why = '' if pre.returncode == 0 else (pre.stderr or pre.stdout).strip()[-300:]
+        except (OSError, subprocess.SubprocessError) as e:
+            why = str(e)
+        if why:
+            print(f'task-agent: #{tid} waits, preflight: {why}', file=sys.stderr)
+            git('worktree', 'remove', '--force', where, cwd=repo)
+            os.makedirs(STATE, exist_ok=True)
+            open(stamp, 'w').close()
+            return 0
+    if conf and conf.get('suite'):
+        # The baseline right before the fix (guardrail 4): what passes now must still pass after it. Can't run =
+        # the task waits like a failed preflight.
+        base = suite(conf, where)
+        if base is None:
+            print(f'task-agent: #{tid} waits: the regression suite could not run (Studio busy or someone in Team Create)',
+                  file=sys.stderr)
+            git('worktree', 'remove', '--force', where, cwd=repo)
+            os.makedirs(STATE, exist_ok=True)
+            open(os.path.join(STATE, f"preflight-failed-{task['project']}"), 'w').close()
+            return 0
+    if conf and conf.get('jail') and not login_lasts((int(conf.get('timeout_min') or TIMEOUT // 60) + 15) * 60):
+        print(f'task-agent: #{tid} waits: the Claude login expires before a jailed run would end', file=sys.stderr)
+        git('worktree', 'remove', '--force', where, cwd=repo)
+        return 0
+    sid = str(uuid.uuid4())
+    claimed = time.time()
+    log_run()
+    cli.call(f'/api/tasks/{tid}', {'status': 'doing'})
+    try:
+        return finish(task, sid, claimed, where, repo, conf, base)
+    except (Exception, SystemExit) as e:  # never leave it doing with nobody on it
+        why = str(e).strip() or type(e).__name__
+        print(f'task-agent: #{tid} failed: {why}', file=sys.stderr)
+        try:
+            return give_back(task, f'the run broke off ({why[:200]})', '', conf, claimed)
+        except (Exception, SystemExit):
+            return 1  # the hub is gone too: the orphan sweep gives it back on a later run
+
+
+def finish(task, sid, claimed, where, repo, conf=None, base=None):
+    tid = task['id']
+    if conf:
+        score(tid, title=task['title'])
+    cli.call(f'/api/tasks/{tid}/sessions', {'session_id': f'Claude Code:{sid}'})
+    context = origin(task, own={f'Claude Code:{sid}'})
+    note(tid, f'{PICKUP} on {MACHINE} (session {sid[:8]})'
+              + (', with what he said in the session it came from.' if context else '.'))
+    proof = proof_dir(tid, claimed) if conf else None
+    text = brief_prompt(task, where, conf, context, proof) if conf else prompt(task, where, repo, context)
+    out, err = run_claude(task, sid, where, text, conf, proof)
+    collect_shots(conf, proof, claimed)
+    left = tidy(where, repo, conf, proof)
+    sender = (conf or {}).get('from', '')
+    after = cli.call(f'/api/tasks/{tid}', auth=False)
+    said = [c for c in after['comments'] if c['at'] >= claimed and c['author'] != ME]
+    mine = [c for c in said if c['author'] == f'Claude Code {sid[:8]}'] if conf else said
+    asked = after['status'] == 'doing' and bool(mine) and mine[-1]['text'].startswith('⏳')
+    opened = after['status'] == 'doing' and any(PR_URL.search(c['text']) for c in said)
+    writes = studio_writes(conf, proof, claimed) if conf else None
+    check = None
+    if conf and conf.get('checker') and asked and claims_fix(mine[-1]['text']) and writes[0]:
+        hold_questions(tid)  # nobody tests a fix the checker may still reject: asked again after the check
+        check = checked(task, conf, claimed, proof, 1, base)
+        if check['verdict'] == 'reject':
+            # Back to the fixer once, with the checker's evidence as a note; then a fresh checker on the whole diff.
+            note(tid, reject_note(check))
+            used = attempts(cli.call(f'/api/tasks/{tid}', auth=False)['comments']) >= MAX_ATTEMPTS
+            redo = None if used else refix(task, conf, claimed)
+            if used:
+                check = dict(check, then=f'{MAX_ATTEMPTS} pokusy vyčerpány, další už ne')
+            elif not redo:
+                check = dict(check, then='agent ji nestihl opravit znovu')
+            else:
+                out, err, sid, mine, after, asked, left2 = redo
+                left = left or left2
+                said = [c for c in after['comments'] if c['at'] >= claimed and c['author'] != ME]
+                opened = after['status'] == 'doing' and any(PR_URL.search(c['text']) for c in said)
+                writes = studio_writes(conf, proof, claimed)
+                if asked and claims_fix(mine[-1]['text']) and writes[0]:
+                    check = checked(task, conf, claimed, proof, 2, base)
+                else:  # the retry reverted, gave up or asked something else: what it did, in its own phone line
+                    check = dict(check, then=phone(out) or 'oprava se znovu neověřila')
+        note(tid, check_note(check))
+        if asked:  # the question again, after the verdict (its first copy was held while the check ran)
+            note(tid, mine[-1]['text'])
+    if conf and wants_retry(out) and after['status'] == 'doing' and not (asked or opened):
+        # It could not start (Studio busy, the machine not ready): queued again quietly, not one of the day's runs.
+        if not writes[0] and requeue(task, after, claimed, phone(out)):
+            return 0
+        if not writes[0]:
+            return give_back(task, 'could not start', phone(out), conf, claimed,
+                             cz=f'dnes už {RETRIES_A_DAY}× nemohl začít' + (f": {phone(out).rstrip('.')}" if phone(out) else ''))
+    # What the task shows decides, not how the process ended: a PR opened, a question asked or the
+    # task closed stands even if the run errored after it; anything else would sit doing with
+    # nobody on it, so it goes back.
+    if not (asked or opened or after['status'] in ('done', 'dropped')):
+        why = err or ('it ended without a note on the task' if not said
+                      else 'it ended without a PR, a question or closing the task')
+        return give_back(task, why + (f' ({left})' if left else ''), phone(out), conf, claimed)
+    if left:
+        note(tid, f'⚠️ {left}')
+    if conf:
+        good = not check or check['verdict'] == 'pass'
+        outcome(task, good, '' if good else f"kontrola: {check['verdict']}")
+        score(tid, verdict=('ověřeno' if good else 'neověřeno') if check else ('předáno' if asked else after['status']))
+    words = phone(out) or f"{after['status']}: see the task"
+    changed = f'\n🛠️ Změny v testovací kopii: {writes_line(writes)}.' if conf else ''
+    pics = photos(proof)
+    if check:
+        changed += '\n' + check_line(check)
+        if check['verdict'] != 'pass':
+            words = f'⚠️ Neověřeno: {words}'
+        pics = check['photos'] or pics
+    if asked:
+        # It needs him: back on his list (without the tag, so it isn't picked up again until he
+        # answers, which hands it back).
+        cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': [t for t in after['tags'] if t != TAG]})
+        ask = mine[-1]['text'].lstrip('⏳').strip()
+        ask = ask[len("Needs you:"):].strip() if ask.startswith("Needs you:") else ask
+        if conf:  # a report, not a question: his phone line, then what it needs from him, never cut short
+            tell(task, f'{short(words, TELL_CHARS, CZ_MORE)}\n👉 {short(ask, ASK_CHARS, CZ_MORE)}{changed}',
+                 conf_hint(ask), sender=sender, photos=pics, limit=None)
+        else:
+            tell(task, f'One question first: {ask}', 'Answer here and the work carries on, or say mine.')
+    elif opened:
+        tell(task, PR_URL.sub(lambda m: 'PR #' + m.group(0).rsplit('/', 1)[-1], words), 'Merge it, or tell me what to change.')
+    elif conf:  # finished, nothing asked of him: news, no sound
+        tell(task, short(words, TELL_CHARS, CZ_MORE) + changed, sender=sender, photos=pics, limit=None, quiet=True)
+    else:
+        tell(task, words, sender=sender, photos=photos(proof), quiet=True)
+    return 0
+
+
+def collect_shots(conf, proof, since, src_key='proof_from'):
+    """Shots the Studio gate saved during a run (its `proof_from` folder) move into the run's proof folder."""
+    src_dir = (conf or {}).get(src_key)
+    if not (src_dir and proof and os.path.isdir(src_dir)):
+        return
+    for f in sorted(os.listdir(src_dir)):
+        src = os.path.join(src_dir, f)
+        if os.path.getmtime(src) >= since:
+            os.makedirs(proof, exist_ok=True)
+            shutil.move(src, os.path.join(proof, f))
+
+
+# ------------------------------------------------------------------ the independent checker (task 1744)
+# 2026-11-21: after the fixer says a dev-copy fix works, a fresh agent that never saw its reasoning verifies it
+# and can reject it; one fixer + one checker, no router. Research: clean-the-snow
+# docs/research/independent-checker-2026-11-21.md (fail before / pass after, evidence not text, a way out).
+CHECK_UNIT = 'cts-check-{id}'
+CHECK_INPUT = 'check-input'  # the checker's whole view of the fix, written into its fresh worktree
+CLAIM = re.compile(r'^⏳\s*(?:Needs you:)?\s*(otestuj|ověř|vyzkoušej)', re.I)
+CHECK_SCHEMA = json.dumps({'type': 'object', 'required': ['verdict', 'saw', 'why', 'reproduced_without_fix', 'criteria'],
+                           'properties': {
+    'reproduced_without_fix': {'type': 'boolean', 'description': 'true only if YOU saw the reported bug in your own '
+                               'Play with the fix switched off (fail before the fix); a pass needs it'},
+    'criteria': {'type': 'array', 'description': 'every line of the frozen "Hotovo když" block, judged on your own '
+                 'runs', 'items': {'type': 'object', 'required': ['line', 'met'], 'properties': {
+                     'line': {'type': 'string'}, 'met': {'type': 'boolean'},
+                     'evidence': {'type': 'string', 'description': 'what you saw (with the fix on) that decides it'}}}},
+    'verdict': {'type': 'string', 'enum': ['pass', 'reject', 'cant_verify'],
+                'description': 'pass: you saw the bug with the fix off (or the fixer\'s before) and saw it gone with '
+                               'the fix on, on the reported path, with no new errors. reject: you reproduced the bug '
+                               'with the fix on, or the fix breaks something / only hides it. cant_verify: anything '
+                               'else (could not reach the path, Studio busy, not reproducible).'},
+    'expected': {'type': 'string', 'description': 'what should happen per the bug report, written before your Play'},
+    'repro': {'type': 'string', 'description': 'the path you played, step by step'},
+    'before': {'type': 'string', 'description': 'what your run with the fix switched off showed, or why there is none'},
+    'after': {'type': 'string', 'description': 'what your run with the fix on showed'},
+    'console': {'type': 'string', 'description': 'new console errors in each run, quoted (or none)'},
+    'captures': {'type': 'array', 'items': {'type': 'string'}, 'description': 'capture ids of your own shots'},
+    'saw': {'type': 'string', 'description': 'Czech, one plain sentence, max 25 words: what YOU saw, for the owner'},
+    'why': {'type': 'string', 'description': 'reject: what is wrong + how to reproduce it (goes to the fixer); '
+                                             'cant_verify: why; pass: one line on what proves it'},
+    'limits': {'type': 'string', 'description': 'what you could not check (phone, two players, live servers)'}}})
+
+
+def claims_fix(text):
+    """The fixer's last note says the fix works and asks him to test it (`⏳ Needs you: Otestuj …`)."""
+    return bool(CLAIM.match(text or ''))
+
+
+def gate_diff(conf, since):
+    """What the fixer really changed, from the Studio gate's own log (outside the jail), never from its notes: every
+    script edit and every Edit-mode Luau call since `since`. Play-time calls end with the Play: left out."""
+    rows = []
+    try:
+        with open(conf['checker']['writes_log'], encoding='utf-8', errors='replace') as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(r, dict) or float(r.get('t') or 0) < since:
+                    continue
+                edit_dm = r.get('datamodel') == 'Edit' or (r.get('datamodel') is None and r.get('mode') == 'Edit')
+                if r.get('tool') == 'multi_edit' or (r.get('tool') == 'execute_luau' and edit_dm):
+                    rows.append(r)
+    except (OSError, KeyError, TypeError, ValueError):
+        pass
+    out = []
+    for r in rows:
+        if r['tool'] == 'multi_edit':
+            out.append(f"### Script edit: {r.get('file')}")
+            for e in r.get('edits') or []:
+                out += ['OLD:', '```lua', str(e.get('old_string', '')).rstrip('\n'), '```',
+                        'NEW:', '```lua', str(e.get('new_string', '')).rstrip('\n'), '```']
+        else:
+            out += ['### Luau run on the Edit copy (may be a lasting change, may only read)', '```lua',
+                    str(r.get('code') or '').rstrip('\n'), '```']
+    return '\n'.join(out)
+
+
+def check_package(task, conf, claimed, proof, where):
+    """The checker's input in `where/check-input`: the bug report (the task as filed plus notes by people, Discord
+    and stats before the fix run), the fixer's before/after shots (labelled claims) and the gate's diff. No word the
+    fixer wrote, so its reasoning can't sway the verdict. Returns False when there is no diff to check."""
+    diff = gate_diff(conf, claimed)
+    if not diff.strip():
+        return False
+    t = cli.call(f"/api/tasks/{task['id']}", auth=False)
+    by_people = [c for c in t.get('comments') or [] if c['at'] < claimed and c['author'] not in (ME, ROUTER)
+                 and not c['author'].startswith('Claude Code')]
+    inp = os.path.join(where, CHECK_INPUT)
+    os.makedirs(inp, exist_ok=True)
+    frozen = criteria(task, conf, t)
+    report = [f"# #{task['id']} {t['title']}", '']
+    if frozen:
+        report += ['## The frozen definition of fixed (judge only against this and your own runs)', '', frozen, '',
+                   '## The report as filed', '']
+    report += [t.get('body') or '']
+    for c in by_people:
+        report += ['', f"## Note by {c['author']}", c['text']]
+    with open(os.path.join(inp, 'report.md'), 'w') as f:
+        f.write('\n'.join(report) + '\n')
+    with open(os.path.join(inp, 'diff.md'), 'w') as f:
+        f.write(diff + '\n')
+    for path, cap in photos(proof):  # neutral names: the fixer's capture ids are its words
+        shutil.copy(path, os.path.join(inp, f"fixer-claim-{'before' if ' před:' in cap else 'after'}{os.path.splitext(path)[1]}"))
+    return True
+
+
+def verify(task, conf, claimed, proof, round_no):
+    """One fresh checker run: its own worktree, config dir, jail and gate (check mode), no hub, no Bash, and its
+    answer is structured. A pass without a new `after-*` shot of its own is not a pass. Returns the verdict dict
+    (with its `photos` and `session`)."""
+    cconf, tid = conf['checker'], task['id']
+    base = {'verdict': 'cant_verify', 'saw': '', 'why': '', 'photos': [], 'round': round_no}
+    if not login_lasts((int(cconf.get('timeout_min') or 35) + 15) * 60):
+        return dict(base, why='přihlášení Claude by vypršelo během kontroly')
+    try:
+        where, repo = workdir(task)
+    except (Exception, SystemExit) as e:
+        return dict(base, why=f'kontrola se nespustila ({str(e)[:120]})')
+    started = time.time()
+    cproof = os.path.join(proof, f'check-{round_no}')
+    try:
+        if not check_package(task, conf, claimed, proof, where):
+            return dict(base, why='v logu Studia není žádná změna ke kontrole')
+        with open(os.path.join(where, cconf['brief'])) as f:
+            brief = f.read().replace('{id}', str(tid)).replace('{input}', os.path.join(where, CHECK_INPUT))
+        csid = str(uuid.uuid4())
+        log_run()
+        cmd = [CLAUDE, '-p', brief, '--session-id', csid, '--permission-mode', 'auto', '--output-format', 'json',
+               '--json-schema', CHECK_SCHEMA, '--mcp-config', os.path.join(where, cconf['mcp_config']),
+               '--strict-mcp-config', '--tools', ','.join(cconf.get('tools') or ['Read', 'Glob', 'Grep', 'ToolSearch']),
+               '--no-chrome', '--setting-sources', 'project', '--max-budget-usd', f'{RUN_USD:g}']
+        if cconf.get('model'):
+            cmd += ['--model', cconf['model']]
+        if cconf.get('effort'):
+            cmd += ['--effort', cconf['effort']]
+        env = gh_env()
+        for k in ('CLAUDE_CODE_SESSION_ID', 'GH_TOKEN', 'TASKS_TOKEN', 'TASKS_URL'):
+            env.pop(k, None)  # no hub at all: it can't read the fixer's notes
+        env.update({k: str(v) for k, v in (conf.get('env') or {}).items()})
+        env['_CONF_ENV'] = ' '.join(conf.get('env') or {})
+        env['CTS_AGENT_TASK'] = str(tid)
+        timeout = int(cconf.get('timeout_min') or 35) * 60
+        unit = CHECK_UNIT.format(id=tid)
+        stop_unit(unit)
+        # A config dir of its own each time: an earlier check's transcript (the first round's) is never there.
+        home = os.path.join(cconf['jail']['config_dir'], f'{tid}-{round_no}-{int(started)}')
+        cmd = jailed(cmd, env, where, dict(cconf['jail'], config_dir=home), timeout, unit)
+        whole = None
+        try:
+            r = run_timed(cmd, timeout, unit, cwd=where, env=env)
+            whole = json.loads(r.stdout)
+            said = whole.get('structured_output')
+        except subprocess.TimeoutExpired:
+            said = {'verdict': 'cant_verify', 'saw': '', 'why': f'kontrola nestihla doběhnout za {timeout // 60} min'}
+        except (ValueError, AttributeError):
+            said = {'verdict': 'cant_verify', 'saw': '', 'why': 'kontrola neodevzdala výsledek'}
+        finally:
+            stop_unit(unit)
+            with contextlib.suppress(Exception):  # its cost, read before its config dir (and transcript) goes
+                spend(tid, 'checker', csid, run_cost(whole, home, csid), (time.time() - started) / 60)
+            shutil.rmtree(home, ignore_errors=True)
+        collect_shots(cconf, cproof, started)
+        tidy(where, repo, conf, cproof)
+    except (Exception, SystemExit) as e:
+        with contextlib.suppress(Exception):
+            git('worktree', 'remove', '--force', where, cwd=repo)
+        return dict(base, why=f'kontrola spadla ({(str(e).strip() or type(e).__name__)[:120]})')
+    check = dict(base, **{k: v for k, v in (said or {}).items() if isinstance(v, (str, list, bool))}, session=csid)
+    if check.get('verdict') not in ('pass', 'reject', 'cant_verify'):
+        check['verdict'] = 'cant_verify'
+    check['photos'] = [(p, f"#{tid} kontrola {cap.split(' ', 1)[1]}") for p, cap in photos(cproof)]
+    if check['verdict'] == 'pass' and check.get('reproduced_without_fix') is not True:
+        # Fail before, pass after (guardrail 3): no bug seen with the fix off = nothing proves the fix did it.
+        check.update(verdict='cant_verify', why='kontrola chybu bez opravy sama nezopakovala, takže nic nedokazuje, '
+                                                'že ji opravila oprava')
+    unmet = [c.get('line', '?') for c in check.get('criteria') or [] if isinstance(c, dict) and c.get('met') is not True]
+    if check['verdict'] == 'pass' and (unmet or not check.get('criteria')):
+        check.update(verdict='cant_verify', why='nesplněno z „Hotovo když“: ' + ('; '.join(unmet)[:200] if unmet else
+                                                                                  'kontrola body nevyhodnotila'))
+    if check['verdict'] == 'pass':
+        # Evidence, not text: a pass needs its own shot with the fix off and with it on (fail before, pass after).
+        for kind, cz in ((' před:', 'před opravou'), (' po:', 'po opravě')):
+            if not any(kind in cap for _, cap in check['photos']):
+                check.update(verdict='cant_verify', why=f'kontrola řekla „funguje“, ale bez vlastního snímku {cz}')
+                break
+    return check
+
+
+def checked(task, conf, claimed, proof, round_no, base):
+    """Guardrails round the checker: nobody else in Team Create (else wait, then neověřeno), the regression suite
+    against the baseline taken right before the fix (worse = rejected without spending a checker run), then the
+    fresh checker itself."""
+    gone = {'verdict': 'cant_verify', 'saw': '', 'photos': [], 'round': round_no}
+    if not lock_ok(conf):
+        return dict(gone, why='v testovací kopii celou dobu editoval někdo jiný (Team Create), kontrola neběžela')
+    after, note_line = None, ''
+    if conf.get('suite'):
+        if base is None:
+            return dict(gone, why='sada kontrol před opravou neběžela, není s čím porovnat')
+        worse, after = suite_worse(conf, None, base)
+        if after is None:
+            return dict(gone, why='sada kontrol po opravě neběžela (Studio obsazené?)')
+        note_line = suite_note(base, after)
+        if worse:
+            return {'verdict': 'reject', 'round': round_no, 'photos': [], 'suite': note_line,
+                    'saw': 'Po opravě se zhoršila kontrola hry: ' + ', '.join(w.split(' (')[0] for w in worse),
+                    'why': 'Po opravě je horší sada kontrol (před → po): ' + '; '.join(worse)
+                           + '. Oprav to tak, aby žádná kontrola nebyla horší než před opravou.'}
+    check = verify(task, conf, claimed, proof, round_no)
+    if note_line:
+        check['suite'] = note_line
+    return check
+
+
+def hold_questions(tid):
+    """Withdraw the task's open question (the fixer's `⏳ Otestuj`) while its fix is checked: he answers the copy
+    task-agent asks again after the verdict, never a fix that may be rejected."""
+    try:
+        for q in cli.call(f'/api/questions?status=open&task={tid}', auth=False)['questions']:
+            cli.call(f"/api/questions/{q['id']}/withdraw", {'note': 'nezávislá kontrola běží; zeptá se znovu'})
+    except (Exception, SystemExit) as e:
+        print(f'task-agent: #{tid} question not held: {e}', file=sys.stderr)
+
+
+def reject_note(check):
+    """The checker's reject, for the fixer's second run (brief step 1) and for him: its evidence, not an opinion."""
+    parts = [f"🔎 Kontrola zamítla opravu (kolo {check['round']}; nezávislý kontrolor, neviděl postup opravy).",
+             f"Proč: {check.get('why') or '-'}"]
+    for k, cz in (('repro', 'Co hrál'), ('before', 'Bez opravy'), ('after', 'S opravou'), ('console', 'Konzole'),
+                  ('suite', 'Sada kontrol')):
+        if check.get(k):
+            parts.append(f'{cz}: {check[k]}')
+    return '\n'.join(parts)
+
+
+def check_line(check):
+    """His phone's line about the check."""
+    v = check['verdict']
+    if v == 'pass':
+        return f"🔎 Nezávislá kontrola: ✅ ověřeno – {check.get('saw') or check.get('why')}"
+    if v == 'reject' and check.get('then'):
+        return f"🔎 Nezávislá kontrola: ❌ opravu zamítla ({check.get('saw') or check.get('why')}); pak: {check['then']}"
+    if v == 'reject':
+        return f"🔎 Nezávislá kontrola: ❌ neověřeno, zamítla i opravenou verzi – {check.get('saw') or check.get('why')}"
+    return f"🔎 Nezávislá kontrola: ⚠️ neověřeno – {check.get('why') or check.get('saw') or 'bez důvodu'}"
+
+
+def check_note(check):
+    """The full check result as a note on the task (its session, so it can be read later)."""
+    lines = [check_line(check)]
+    for k, cz in (('expected', 'Očekával'), ('repro', 'Co hrál'), ('before', 'Bez opravy'), ('after', 'S opravou'),
+                  ('console', 'Konzole'), ('suite', 'Sada kontrol'), ('why', 'Důvod'), ('limits', 'Neověřil')):
+        if check.get(k):
+            lines.append(f'{cz}: {check[k]}')
+    for c in check.get('criteria') or []:
+        if isinstance(c, dict):
+            lines.append(f"{'✅' if c.get('met') is True else '❌'} {c.get('line', '?')}"
+                         + (f" – {c['evidence']}" if c.get('evidence') else ''))
+    if check.get('session'):
+        lines.append(f"(kontrola: session {check['session'][:8]}, kolo {check['round']})")
+    return '\n'.join(lines)
+
+
+def refix(task, conf, claimed):
+    """The fixer's one retry after a reject: a fresh run on the same task (it reads the reject note first). Returns
+    (out, err, sid, its notes, task, asked, left) or None when it could not start."""
+    tid = task['id']
+    if any(c['author'] == OWNER and c['at'] >= claimed for c in cli.call(f'/api/tasks/{tid}', auth=False)['comments']):
+        return None  # he answered meanwhile: his word, not a second try, decides what happens next
+    try:
+        where, repo = workdir(task)
+    except (Exception, SystemExit):
+        return None
+    if not login_lasts((int(conf.get('timeout_min') or TIMEOUT // 60) + 15) * 60):
+        git('worktree', 'remove', '--force', where, cwd=repo)
+        return None
+    sid = str(uuid.uuid4())
+    again = time.time()
+    try:
+        cli.call(f'/api/tasks/{tid}/sessions', {'session_id': f'Claude Code:{sid}'})
+        note(tid, f'🔁 Kontrola opravu zamítla: agent ji opravuje znovu (session {sid[:8]}).')
+    except (Exception, SystemExit):
+        git('worktree', 'remove', '--force', where, cwd=repo)
+        return None
+    log_run()
+    proof = proof_dir(tid, claimed)
+    out, err = run_claude(task, sid, where, brief_prompt(task, where, conf, origin(task, own={f'Claude Code:{sid}'}), proof),
+                          conf, proof)
+    collect_shots(conf, proof, again)
+    left = tidy(where, repo, conf, proof)
+    after = cli.call(f'/api/tasks/{tid}', auth=False)
+    mine = [c for c in after['comments'] if c['at'] >= again and c['author'] == f'Claude Code {sid[:8]}']
+    asked = after['status'] == 'doing' and bool(mine) and mine[-1]['text'].startswith('⏳')
+    return out, err, sid, mine, after, asked, left
+
+
+def proof_dir(tid, claimed):
+    return os.path.join(WORK, 'proof', f'task-{tid}-{int(claimed)}')
+
+
+CZ_MORE = ' … (zbytek je na úkolu)'
+
+
+def short(text, n, more=' … (the rest is on the task)'):
+    """At most n characters, cut at a word; the full text is on the task."""
+    return text if len(text) <= n else text[:n].rsplit(' ', 1)[0].rstrip(' ,;:') + more
+
+
+def conf_hint(ask):
+    """What a reply does, for a repo run's ending (his replies: `ok` notes it and hands it back, `zahoď` drops it)."""
+    for prefix, hint in AGENT.get('forward_hints', {}).items():  # "send it to <collaborator>" asks: what to reply
+        if ask.startswith(prefix):
+            return hint
+    if re.match(r'(otestuj|ověř|vyzkoušej)', ask, re.I):
+        return 'Napiš ok / co je špatně / zahoď.'
+    return 'Odpověz sem a agent pokračuje, nebo napiš zahoď.'
+
+
+def cz_plural(n, one, few, many):
+    return one if n == 1 else few if 2 <= n <= 4 else many
+
+
+def studio_writes(conf, proof, since):
+    """The Studio writes of this run, for his phone and the task: from the gate's log (`writes_from`, outside the
+    jail, every run appends to it; this run's lines are copied next to the proof), else the worktree's copy in the
+    proof folder. Returns (what lasts, e.g. 'Foo: 2 úpravy, execute_luau (Edit): 1 úprava' or '', and how many
+    calls ran in a Play's Server/Client, which end with the Play: the repro's ClaudeAgentPlay mark is one)."""
+    rows = []
+    gate = os.path.join(conf['writes_from'], 'studio-edits.log') if conf.get('writes_from') else None
+    src = gate if gate and os.path.isfile(gate) else os.path.join(proof or '', 'studio-edits.log')
+    try:
+        with open(src, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) < 3:
+                    continue
+                try:
+                    at = datetime.datetime.fromisoformat(parts[0].replace('Z', '+00:00')).timestamp()
+                except ValueError:
+                    continue
+                if src != gate or at >= since:
+                    rows.append((line, parts[2]))
+    except OSError:
+        pass
+    if src == gate and rows and proof:
+        os.makedirs(proof, exist_ok=True)
+        with open(os.path.join(proof, 'gate-studio-edits.log'), 'w') as f:
+            f.writelines(line for line, _ in rows)
+    count, play = {}, 0
+    for _, target in rows:
+        m = re.fullmatch(r'execute_luau\((\w*)\)', target)
+        if m and m.group(1) in ('Server', 'Client'):
+            play += 1
+            continue
+        name = f'execute_luau ({m.group(1) or "?"})' if m else target.rsplit('.', 1)[-1] or target
+        count[name] = count.get(name, 0) + 1
+    items = [f"{k}: {n} {cz_plural(n, 'úprava', 'úpravy', 'úprav')}" for k, n in count.items()]
+    return ', '.join(items[:6]) + (f' a {len(items) - 6} dalších' if len(items) > 6 else ''), play
+
+
+def writes_line(writes):
+    """'Foo: 1 úprava (+2 v Play, nic trvalého)', 'žádné (+1 v Play, nic trvalého)', 'žádné'."""
+    lasting, play = writes
+    return (lasting or 'žádné') + (f' (+{play} v Play, nic trvalého)' if play else '')
+
+
+CZ_WHY = [(re.compile(r'^stopped after (\d+) min'), r'zastaven po \1 min'),
+          (re.compile(r'^it ended without a note on the task'), 'skončil bez jediné poznámky na úkolu'),
+          (re.compile(r'^it ended without a PR, a question or closing the task'), 'skončil bez otázky a bez uzavření úkolu'),
+          (re.compile(r'^the run broke off'), 'běh se přerušil'),
+          (re.compile(r'unsaved work left in '), 'v pracovní složce zůstaly neuložené změny: ')]
+
+
+def cz_why(why):
+    for pat, cz in CZ_WHY:
+        why = pat.sub(cz, why)
+    return why
+
+
+def wants_retry(out):
+    said = (out or {}).get('structured_output')
+    return isinstance(said, dict) and said.get('retry') is True
+
+
+def requeue(task, after, claimed, words):
+    """A run that could not start goes back in the queue with its tags, quietly, and is not counted as one of the
+    day's runs; the preflight's backoff applies before the next try. False once it has done so RETRIES_A_DAY times
+    in 24 h (then it goes back to him)."""
+    tid = task['id']
+    path = os.path.join(STATE, 'retries')
+    try:
+        with open(path) as f:
+            seen = json.load(f)
+    except (OSError, ValueError):
+        seen = {}
+    seen = {k: [x for x in v if x > time.time() - 86400] for k, v in seen.items() if isinstance(v, list)}
+    if len(seen.get(str(tid), [])) >= RETRIES_A_DAY:
+        return False
+    seen.setdefault(str(tid), []).append(time.time())
+    os.makedirs(STATE, exist_ok=True)
+    with open(path + '.tmp', 'w') as f:
+        json.dump({k: v for k, v in seen.items() if v}, f)
+    os.replace(path + '.tmp', path)
+    note(tid, '↩️ Agent nemohl začít' + (f' ({words})' if words else '') + '; zkusí to znovu za chvíli.')
+    cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': list(dict.fromkeys([*after['tags'], TAG]))})
+    unlog_run(claimed)
+    open(os.path.join(STATE, f"preflight-failed-{task['project']}"), 'w').close()
+    return True
+
+
+def photos(proof):
+    """A repo run's proof for his phone: the newest `before-*` and the newest `after-*` shot (a gate shot is named
+    `<unix time>-<capture id>.png`), each captioned with what it shows. Never anything else (`junk-*`)."""
+    if not proof or not os.path.isdir(proof):
+        return []
+    found = {}
+    for f in os.listdir(proof):
+        m = re.fullmatch(r'(?:(\d+)-)?(before|after)-(.+)\.(png|jpe?g)', f, re.I)
+        if not m:
+            continue
+        path = os.path.join(proof, f)
+        rank = (int(m.group(1)) if m.group(1) else int(os.path.getmtime(path)), os.path.getmtime(path), f)
+        kind = m.group(2).lower()
+        if kind not in found or rank > found[kind][0]:
+            found[kind] = (rank, path, m.group(3))
+    return [(found[k][1], f"#{os.path.basename(proof).split('-')[1]} {cz}: {found[k][2]}")
+            for k, cz in (('before', 'před'), ('after', 'po')) if k in found]
+
+
+def give_back(task, why, words='', conf=None, since=None, cz=None):
+    tid = task['id']
+    tags = [t for t in task['tags'] if t != TAG]
+    cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': tags})
+    if not conf:
+        note(tid, f'⚠️ The agent stopped without finishing: {why}.' + (f'\n\nIts last words: {words}' if words else '')
+             + '\n\nBack with you: a reply with more detail hands it back to the agent.')
+        tell(task, f'The agent stopped short: {why}.', 'Tell me a little more and it tries again, or say mine.')
+        return 1
+    # A repo's own run: in Czech, with what it changed in Studio before it stopped, so nothing is silent.
+    with contextlib.suppress(Exception):
+        if why != 'could not start':  # Studio busy all day is not the agent failing
+            outcome(task, False, cz or cz_why(why)[:80])
+        score(tid, title=task['title'], verdict='nedokončeno')
+    proof = proof_dir(tid, since) if since else None
+    writes = writes_line(studio_writes(conf, proof, since) if since else ('', 0))
+    head = f'Agent skončil předčasně ({cz or cz_why(why)}). Změny v testovací kopii: {writes}.'
+    note(tid, f'⚠️ {head}' + (f'\n\nJeho poslední slova: {words}' if words else '')
+         + '\n\nZpět u tebe: odpověď s podrobnostmi ho vrátí agentovi.')
+    tell(task, short(head, ASK_CHARS, CZ_MORE), 'Napiš víc a agent to zkusí znovu, nebo zahoď.',
+         sender=conf.get('from', ''), photos=photos(proof), limit=None,
+         quiet=why == 'could not start')  # Studio busy all day: nothing for him to do
+    return 1
+
+
+def tell(task, text, hint='', icon='🤖', sender='', photos=(), limit=TELL_CHARS, quiet=False):
+    """One Telegram message. It starts with the task number, which is how Hermes knows what a
+    reply to it is about (it sees the replied-to text). Proof photos go first, each captioned with
+    the task number (a repo run's: also what it shows), then the message. A repo run's message (or
+    any in scoped mode) waits out the night (QUIET)."""
+    if limit and len(text) > limit:  # he reads it on a phone; the full text is on the task
+        text = short(text, limit)
+    # Line 1 is what a lock-screen notification shows: the project's emoji and the task in words; its
+    # number only at the end of that line as "(#N)", which Hermes routes a reply by (SOUL.md). Not at the
+    # message's end: Hermes quotes only the first 500 chars of a replied-to message. 2026-11-22.
+    if sender and icon == '🤖':
+        icon = sender.split(' ', 1)[0]
+    msg = f"{icon} {task['title'][:60]} (#{task['id']})\n{text}" + (f'\n{hint}' if hint else '')
+    head = ['--from', sender] if sender else []
+    sends = []
+    for i, pic in enumerate(photos):
+        path, cap = pic if isinstance(pic, tuple) else (pic, f"#{task['id']} {i + 1}/{len(photos)}")
+        cap = re.sub(r'^#(\d+) (.*)$', r'📸 \2 (#\1)', cap, flags=re.S)  # "#1755 po: x" → "📸 po: x (#1755)"
+        sends.append([*head, '--quiet', '--photo', path, cap])  # the message after it is the one that buzzes
+    # quiet: news that needs nothing from him arrives without a sound (2026-11-22, #624)
+    sends.append([*head, *(['--quiet'] if quiet else []), msg])
+    deliver(sends, hold=bool(ONLY or sender))
+    print(msg)
+
+
+# ------------------------------------------------------------------ guardrails (task 1744, 2026-11-21)
+# Approved by him 2026-11-21 ("add all 8") plus the frozen "Hotovo když" (9). Research: clean-the-snow
+# docs/research/independent-checker-2026-11-21.md "Guardrails". Only repo runs (a `.claude/agent/task-agent.json`)
+# use them; the kill switch and the spend cap stop every run.
+MAX_ATTEMPTS = 2  # fix attempts per bug (a run and its after-reject retry are 2); each reply of his allows 2 more
+DAILY_USD = float(os.environ.get('TASK_AGENT_DAILY_USD', '25'))  # API-price estimate of the day's runs (8 runs ~$1-3)
+RUN_USD = float(os.environ.get('TASK_AGENT_RUN_USD', '10'))  # --max-budget-usd of one run (a runaway's ceiling)
+WEEK_PCT = 90  # his plan's weekly quota: past this the agent leaves the rest to him
+FAILS_IN_A_ROW = 3  # failed runs in a row before it pauses itself (circuit breaker)
+USAGE = os.environ.get('TASK_AGENT_USAGE', '/var/lib/claude-usage/usage.json')  # the claude-usage poller's snapshot
+REMIND_DAYS, CLOSE_DAYS = 2, 7  # an unanswered report: one reminder, then closed with a note
+STOP_WORDS = {'stop', 'stop agent', 'agent stop', 'zastav', 'zastav agenta', 'stůj', 'stuj'}
+START_WORDS = {'start', 'start agent', 'agent start', 'spusť', 'spust', 'spusť agenta', 'spust agenta', 'pusť', 'pust'}
+OK_WORDS = {'ok', 'okay', 'oki', 'jo', 'ano', 'funguje', 'ok funguje', 'funguje to', 'jo funguje', 'super', 'díky',
+            'diky', 'dik', 'works', 'yes', '👍', 'hotovo', 'paráda', 'parada'}
+STALE = '⌛'  # task-agent's note when a report went unanswered for CLOSE_DAYS
+GAVE_UP = '⛔'
+OUT_OF_RUN = ('- Out of scope for this run\'s check: anything only ' + OWNER_NAME + ', a publish or the live stats can show later '
+              '(his OK, his own Play, "after the next publish"); judge the parts a dev-copy run can see.')
+SPEC_ASK = 'Kdy to bude opravené?'  # the question a bug with no definition of fixed gets (here and in the watcher)
+# "Hotovo když" (Done when): the tasks client refuses a body heading with "Hotovo" (a progress claim), so the
+# watchers file it as "## Done when: …"; an older body may say "## Hotovo když".
+CRITERIA_HEAD = re.compile(r'^#{1,4}\s*(hotovo když|done when)\b.*$', re.I | re.M)
+
+
+def stopped():
+    """The kill switch (his `stop` on Telegram) or the circuit breaker: why the agent is stopped, or ''."""
+    try:
+        with open(os.path.join(STATE, 'stopped')) as f:
+            return f.read().strip() or 'stopped'
+    except OSError:
+        return ''
+
+
+def stop_agent(why, by=OWNER):
+    """No new runs until `start`. Runs going now are stopped too (their task goes back with what they changed)."""
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, 'stopped'), 'w') as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M')} {by}: {why}\n")
+    stop_leftover_jails()
+
+
+def start_agent():
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.path.join(STATE, 'stopped'))
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.path.join(STATE, 'streak'))
+
+
+def prague_day(at=None):
+    return datetime.datetime.fromtimestamp(NOW() if at is None else at, zoneinfo.ZoneInfo('Europe/Prague')).strftime('%Y-%m-%d')
+
+
+def transcript_cost(home, sid):
+    """A run's cost at API list prices from its own transcript (a timed-out run has no JSON answer)."""
+    try:
+        spec = importlib.util.spec_from_file_location('hub_pricing', os.path.join(HERE, '..', 'hub', 'pricing.py'))
+        pricing = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pricing)
+    except (OSError, ImportError, AttributeError):
+        return 0.0
+    seen = {}
+    for path in glob.glob(os.path.join(home or '', 'projects', '*', f'{sid}.jsonl')):
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                m = r.get('message') if isinstance(r, dict) else None
+                if r.get('type') == 'assistant' and isinstance(m, dict) and m.get('usage'):
+                    seen[m.get('id') or len(seen)] = (m.get('model'), m['usage'])
+    usd = 0.0
+    for model, u in seen.values():
+        cc = u.get('cache_creation') or {}
+        usd += pricing.cost(model, 'standard', input=u.get('input_tokens', 0),
+                            cache_write_5m=cc.get('ephemeral_5m_input_tokens', 0) if cc else u.get('cache_creation_input_tokens', 0),
+                            cache_write_1h=cc.get('ephemeral_1h_input_tokens', 0), cache_read=u.get('cache_read_input_tokens', 0),
+                            output=u.get('output_tokens', 0)) or 0
+    return usd
+
+
+def run_cost(out, home, sid):
+    usd = (out or {}).get('total_cost_usd') if isinstance(out, dict) else None
+    return float(usd) if isinstance(usd, (int, float)) else transcript_cost(home, sid)
+
+
+def spend(tid, kind, sid, usd, minutes):
+    """One run in the ledger (STATE/spend.jsonl): the day's cap and the scorecard read it."""
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, 'spend.jsonl'), 'a') as f:
+        f.write(json.dumps({'at': NOW(), 'task': int(tid), 'kind': kind, 'sid': sid, 'usd': round(usd, 4),
+                            'min': round(minutes, 1)}) + '\n')
+    score(tid, runs=1, minutes=minutes, usd=usd)
+
+
+def ledger():
+    try:
+        with open(os.path.join(STATE, 'spend.jsonl')) as f:
+            rows = [json.loads(x) for x in f if x.strip()]
+    except (OSError, ValueError):
+        return []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def spent_today():
+    today = prague_day()
+    return sum(float(r.get('usd') or 0) for r in ledger() if prague_day(r.get('at') or 0) == today)
+
+
+def money_stop():
+    """Why no run may start now for money, or '': the day's API-price estimate is spent, his plan's week is nearly
+    used up, or real money (the plan's paid extra usage) went out today."""
+    spent = spent_today()
+    if spent >= DAILY_USD:
+        return f'dnešní rozpočet agenta je vyčerpaný (${spent:.2f} z ${DAILY_USD:.0f} v cenách API)'
+    try:
+        with open(USAGE) as f:
+            u = json.load(f)
+        fetched = datetime.datetime.fromisoformat(u['fetched_at'].replace('Z', '+00:00')).timestamp()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return ''  # no poller reading: the dollar cap above still holds
+    if NOW() - fetched > 3 * 3600:
+        return ''
+    week = (u.get('weekly') or {}).get('used_percent', u.get('used_percent'))
+    if isinstance(week, (int, float)) and week >= WEEK_PCT:
+        return f'týdenní limit předplatného je na {week:.0f} % (agent nechává zbytek tobě)'
+    extra = u.get('extra_usage') or {}
+    used = extra.get('used')
+    if isinstance(used, (int, float)):
+        path = os.path.join(STATE, 'extra-baseline')
+        try:
+            with open(path) as f:
+                base = json.load(f)
+        except (OSError, ValueError):
+            base = {}
+        if base.get('day') != prague_day() or not isinstance(base.get('used'), (int, float)):
+            base = {'day': prague_day(), 'used': used}
+            os.makedirs(STATE, exist_ok=True)
+            with open(path, 'w') as f:
+                json.dump(base, f)
+        if used > base['used'] + 0.005:
+            return (f"dnes se platí skutečné peníze navíc ({used - base['used']:.2f} {extra.get('currency') or ''}"
+                    ' nad předplatné)').replace(' )', ')')
+    return ''
+
+
+def outcome(task, ok, why=''):
+    """The circuit breaker: FAILS_IN_A_ROW failed runs in a row (handed back short, or a fix the checker did not
+    verify) stop the agent until his `start`. A run that could not start is neither."""
+    path = os.path.join(STATE, 'streak')
+    try:
+        with open(path) as f:
+            fails = json.load(f)
+    except (OSError, ValueError):
+        fails = []
+    fails = [] if ok else [*(fails if isinstance(fails, list) else []), {'task': task['id'], 'why': why[:120], 'at': NOW()}]
+    os.makedirs(STATE, exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump(fails, f, ensure_ascii=False)
+    if len(fails) >= FAILS_IN_A_ROW and not stopped():
+        which = ', '.join(f"#{x['task']} ({x['why']})" for x in fails[-FAILS_IN_A_ROW:])
+        stop_agent(f'{FAILS_IN_A_ROW} failed runs in a row: {which}', 'circuit breaker')
+        conf = agent_conf(os.path.join(PROJECTS, task['project'])) or {}
+        tell(task, f'⏸️ Agent se sám zastavil: {FAILS_IN_A_ROW} neúspěšné běhy po sobě ({which}).',
+             'Napiš start, až to bude zase v pořádku.', sender=conf.get('from', ''), limit=None)
+
+
+def attempts(comments):
+    """Fix attempts since his last word on the task (or the stale close): a pickup or an after-reject retry each,
+    a run that could not start none. Counted from the task's own notes, so it holds across days and machines."""
+    start = max([i + 1 for i, c in enumerate(comments) if c['author'] == OWNER
+                 or (c['author'] == ME and c['text'].startswith(STALE))] or [0])
+    n = 0
+    for c in comments[start:]:
+        if c['author'] != ME:
+            continue
+        if c['text'].startswith(PICKUP) or c['text'].startswith('🔁'):
+            n += 1
+        elif c['text'].startswith('↩️ Agent nemohl začít'):
+            n -= 1
+    return max(n, 0)
+
+
+def tried(comments):
+    """What the attempts since his last word did, one line each, for his phone."""
+    start = max([i + 1 for i, c in enumerate(comments) if c['author'] == OWNER
+                 or (c['author'] == ME and c['text'].startswith(STALE))] or [0])
+    out = []
+    for c in comments[start:]:
+        first = c['text'].strip().splitlines()[0] if c['text'].strip() else ''
+        if (c['author'] == ME and first.startswith(('🔎', '⚠️ Agent skončil'))) or (
+                c['author'].startswith('Claude Code') and first.startswith(('✅', '⚠️', '❓'))):
+            out.append('• ' + short(first, 180, ' …'))
+    return out[-6:]
+
+
+def give_up(task, full, conf):
+    """MAX_ATTEMPTS used: straight to him with what was tried; no more runs until he answers."""
+    tid = task['id']
+    cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': [t for t in full['tags'] if t != TAG]})
+    lines = tried(full['comments']) or ['• (žádný pokus nenechal zprávu)']
+    note(tid, f'{GAVE_UP} {MAX_ATTEMPTS} pokusy bez úspěchu: agent na úkol dál nesahá, rozhoduješ ty. Co zkusil:\n'
+         + '\n'.join(lines))
+    tell(task, f'{GAVE_UP} Po {MAX_ATTEMPTS} pokusech to agent vzdal. Zkusil:\n' + '\n'.join(lines),
+         'Napiš, co dál (agent to zkusí znovu), nebo zahoď.', sender=conf.get('from', ''), limit=None)
+    score(tid, verdict='vzdáno po 2 pokusech')
+    return 0
+
+
+def criteria(task, conf, full=None):
+    """The frozen "Hotovo když" (Done when) block: written when the task was filed, from the reporter's own words,
+    in a root-only folder the jailed runs can't see (`criteria_dir`). A task filed with it only in its body (or a
+    stats task's) is frozen the first time it is worked. Returns the text, or '' when the task has none."""
+    folder = conf.get('criteria_dir')
+    if not folder:
+        return ''
+    path = os.path.join(folder, f"{task['id']}.md")
+    try:
+        with open(path, encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        pass
+    body = (full or task).get('body') or ''
+    # "## Done when" (the watchers' frozen block) first; else the "## Done-test" every task body has since the
+    # tasks client asks for one: missing it left four specced tasks asking him "Kdy to bude opravené?" (2026-11-22).
+    m = CRITERIA_HEAD.search(body) or DONE_TEST.search(body)
+    if m:
+        nxt = re.search(r'^#{1,4}\s', body[m.end():], re.M)
+        block = body[m.start(): m.end() + (nxt.start() if nxt else len(body) - m.end())].strip()
+        if not CRITERIA_HEAD.search(body):  # a task's Done-test also names steps after this run: never judged here
+            block += '\n' + OUT_OF_RUN
+    else:  # a vague report he was asked about (needs_spec, the watcher's question): his answer is the definition
+        notes = (full or {}).get('comments') or []
+        asked = [i for i, c in enumerate(notes) if SPEC_ASK in c['text'] and c['author'] != OWNER]
+        his = [c['text'].strip() for c in notes[asked[-1] + 1:] if c['author'] == OWNER] if asked else []
+        if not his:
+            return ''
+        block = '\n'.join(['## Hotovo když (z odpovědi vlastníka)', *[f'- {x}' for x in his],
+                           '- Žádná kontrola ze sady (snow_reach, escape_scan, light_span_check, ui_*) není horší.'])
+    os.makedirs(folder, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(block + '\n')
+    return block
+
+
+def spec_card(task, full):
+    """The spec question as a card he can answer without opening the task (2026-11-22: a bare "Kdy to bude
+    opravené?" four times, no word on which bug): the bug in the question, what was reported, a one-tap default."""
+    title = re.sub(r'^[^:]{1,40}:\s*', '', task['title'])  # "Clean the Snow: …" -> the bug itself
+    body = (full or task).get('body') or ''
+    said = re.search(r'^Summary:\s*(.+)$', body, re.M)
+    if said:
+        said = said.group(1).strip()
+    else:
+        lines = [x.strip() for x in body.splitlines() if x.strip() and not x.lstrip().startswith(('#', '```', 'From ', 'Filed by'))]
+        said = lines[0] if lines else ''
+    said = said if len(said) <= 300 else said[:299].rstrip() + '…'
+    gone = f'Už se neděje: {title}'
+    return {
+        'question': f'Kdy je „{title}“ opravené? Napiš, co má hráč vidět.',
+        'context': '\n'.join([*([f'- 🐞 Nahlášeno: {said}'] if said else []),
+                              '- 🤖 Bez toho agent nezačne: nepozná, kdy je hotovo. Tvoje odpověď se stane zadáním.']),
+        'options': [gone], 'default': gone, 'kind': 'spec', 'blocking': True, 'task_id': task['id'],
+        'asked_by': 'task-agent', 'project': task['project'],
+    }
+
+
+def needs_spec(task, full, conf):  # conf: same signature as the other outcomes
+    """A bug with no "Hotovo když": nobody can say when it is fixed, so no autonomous fix: a question for him."""
+    tid = task['id']
+    tags = [t for t in full['tags'] if t != TAG]
+    cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': list(dict.fromkeys([*tags, 'needs-spec']))})
+    q = cli.call('/api/questions', spec_card(task, full))
+    # Not a ⏳ note (that card would carry only the task's title): the note is the task's history, and his answer
+    # after it is the spec (criteria() looks for SPEC_ASK).
+    note(tid, f"❓ {SPEC_ASK} Zeptal jsem se na Decisions (?{q['id']}): co má hráč vidět, až to bude hotové.")
+    # The ⏳ note is already his Decisions card (hub/questions.py): no Telegram buzz on top, four of those in four
+    # minutes were the spam he named (2026-11-22). His answer there hands the task back to this agent.
+    return 0
+
+
+def suite(conf, where, only=None):
+    """The project's regression checks (guardrail 4), run outside the jail: {name: {"bad": n} | {"error"}} or None
+    when they could not run at all (Studio busy, someone in Team Create)."""
+    cmd = list(conf['suite']) + (['--only', ','.join(only)] if only else [])
+    try:
+        r = subprocess.run(cmd, cwd=where, capture_output=True, text=True, timeout=20 * 60)
+        res = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        res = None
+    return res.get('checks') if isinstance(res, dict) else None
+
+
+def suite_worse(conf, where, base):
+    """The checks that got worse than right before the fix (each re-run once: a flaky one must fail twice), or
+    None when they could not run. Returns (worse lines, after)."""
+    after = suite(conf, where)
+    if after is None:
+        return None, None
+    def bad(res, k):
+        v = (res or {}).get(k) or {}
+        return v.get('bad') if isinstance(v.get('bad'), int) else None
+    worse = [k for k in base if bad(base, k) is not None and (bad(after, k) is None or bad(after, k) > bad(base, k))]
+    if worse:
+        again = suite(conf, where, worse) or {}
+        after.update(again)
+        worse = [k for k in worse if bad(after, k) is None or bad(after, k) > bad(base, k)]
+    lines = [f"{k}: {bad(base, k)} → {bad(after, k) if bad(after, k) is not None else 'neběžela'}"
+             + (f" ({'; '.join(map(str, after[k].get('lines', [])[:2]))})" if isinstance(after.get(k), dict) and after[k].get('lines') else '')
+             for k in worse]
+    return lines, after
+
+
+def suite_note(base, after):
+    keys = list(dict.fromkeys([*(base or {}), *(after or {})]))
+    def val(res, k):
+        v = (res or {}).get(k) or {}
+        return v.get('bad') if isinstance(v.get('bad'), int) else '–'
+    return 'Sada kontrol (před opravou → po ní): ' + ', '.join(f'{k} {val(base, k)} → {val(after, k)}' for k in keys)
+
+
+def lock_ok(conf, where=None):
+    """Right before the checker: nobody else in Studio's Team Create session. Waits up to 30 min, else False."""
+    if not conf.get('lock'):
+        return True
+    end = time.time() + int(os.environ.get('TASK_AGENT_LOCK_MAX', str(30 * 60)))
+    while True:
+        try:
+            if subprocess.run(conf['lock'], cwd=where, capture_output=True, text=True, timeout=300).returncode == 0:
+                return True
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if time.time() > end:
+            return False
+        time.sleep(int(os.environ.get('TASK_AGENT_LOCK_WAIT', '120')))
+
+
+# The scorecard (guardrail 7): per bug, every run's minutes and cost, the checker's verdict and his answer.
+def score(tid, **kv):
+    path = os.path.join(STATE, 'scorecard.json')
+    try:
+        with open(path) as f:
+            card = json.load(f)
+    except (OSError, ValueError):
+        card = {}
+    row = card.setdefault(str(tid), {'runs': 0, 'minutes': 0.0, 'usd': 0.0, 'first': NOW()})
+    for k, v in kv.items():
+        if k in ('runs', 'minutes', 'usd'):
+            row[k] = round(row.get(k, 0) + v, 4)
+        elif v is not None:
+            row[k] = v
+    row['last'] = NOW()
+    os.makedirs(STATE, exist_ok=True)
+    with open(path + '.tmp', 'w') as f:
+        json.dump(card, f, ensure_ascii=False, indent=1)
+    os.replace(path + '.tmp', path)
+
+
+def scorecard():
+    try:
+        with open(os.path.join(STATE, 'scorecard.json')) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def week_summary(card, since):
+    rows = [r for r in card.values() if (r.get('last') or 0) >= since and not r.get('test')
+            and not str(r.get('title', '')).startswith('TEST')]
+    if not rows:
+        return ''
+    n = lambda pred: sum(1 for r in rows if pred(r))
+    ok = n(lambda r: r.get('outcome') == 'přijato')
+    no = n(lambda r: r.get('outcome') == 'zamítnuto')
+    unver = n(lambda r: str(r.get('verdict', '')).startswith(('neověřeno', 'vzdáno')) and not r.get('outcome'))
+    wait = len(rows) - ok - no - unver
+    usd = sum(r.get('usd') or 0 for r in rows)
+    mins = sum(r.get('minutes') or 0 for r in rows)
+    per = f', na přijatou opravu ${usd / ok:.2f}' if ok else ''
+    return (f"📊 Agent na chyby, posledních 7 dní: {len(rows)} {cz_plural(len(rows), 'chyba', 'chyby', 'chyb')}\n"
+            f"✅ přijato {ok} · ❌ zamítnuto {no} · ⚠️ neověřeno {unver} · ⏳ čeká {wait}\n"
+            f"⏱️ {mins:.0f} min práce · 💵 ${usd:.2f} v cenách API{per} (platí předplatné)")
+
+
+def weekly():
+    """Mondays from 9:00 Prague, once a week: the scorecard's last 7 days on Telegram, in Czech."""
+    now = datetime.datetime.fromtimestamp(NOW(), zoneinfo.ZoneInfo('Europe/Prague'))
+    if now.weekday() != 0 or now.hour < 9:
+        return
+    week = now.strftime('%G-W%V')
+    stamp = os.path.join(STATE, 'weekly-told')
+    try:
+        with open(stamp) as f:
+            if f.read().strip() == week:
+                return
+    except OSError:
+        pass
+    text = week_summary(scorecard(), NOW() - 7 * 86400)
+    os.makedirs(STATE, exist_ok=True)
+    with open(stamp, 'w') as f:
+        f.write(week)
+    if text:
+        conf = agent_conf(os.path.join(PROJECTS, ONLY[0][0])) if ONLY else None
+        deliver([[*(['--from', conf['from']] if conf and conf.get('from') else []), text]], hold=True)
+
+
+def stale_reports():
+    """A report of this agent he has not answered (its question still the task's last word): one reminder after
+    REMIND_DAYS, closed after CLOSE_DAYS with a note; a task whose fix is still in the game goes back to the agent
+    to put it back first (the `zahoď` path)."""
+    path = os.path.join(STATE, 'reminded')
+    try:
+        with open(path) as f:
+            told = json.load(f)
+    except (OSError, ValueError):
+        told = {}
+    for t in cli.call('/api/tasks?status=todo&limit=2000', auth=False)['tasks']:
+        n = t.get('last_note') or {}
+        if not allowed(t) or TAG in t['tags'] or not n.get('text', '').startswith('⏳') or not (
+                n.get('author') == ME or str(n.get('author', '')).startswith('Claude Code')):
+            continue
+        age, tid = NOW() - n['at'], t['id']
+        conf = agent_conf(os.path.join(PROJECTS, t['project'])) or {}
+        ask = n['text'].lstrip('⏳').strip()
+        ask = ask[len('Needs you:'):].strip() if ask.startswith('Needs you:') else ask
+        if age >= CLOSE_DAYS * 86400:
+            full = cli.call(f'/api/tasks/{tid}', auth=False)
+            with contextlib.suppress(Exception, SystemExit):
+                for q in cli.call(f'/api/questions?status=open&task={tid}', auth=False)['questions']:
+                    cli.call(f"/api/questions/{q['id']}/withdraw", {'note': f'bez odpovědi {CLOSE_DAYS} dní'})
+            if re.search(rf'-- AGENT #{tid}\b', json.dumps(full.get('comments') or [], ensure_ascii=False)):
+                note(tid, f'{STALE} Bez odpovědi {CLOSE_DAYS} dní: agent vrátí své změny v testovací kopii a úkol '
+                          'zavře (vrať změny agenta a zavři úkol).')
+                cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': list(dict.fromkeys([*t['tags'], TAG]))})
+                words = 'agent vrátí svou změnu a úkol zavře'
+            else:
+                note(tid, f'{STALE} Bez odpovědi {CLOSE_DAYS} dní: zavřeno. Odpověď ho kdykoli otevře znovu.')
+                cli.call(f'/api/tasks/{tid}', {'status': 'dropped'})
+                words = 'zavřeno'
+            score(tid, outcome='bez odpovědi')
+            tell(t, f'{STALE} {CLOSE_DAYS} dní bez odpovědi: {words}.', sender=conf.get('from', ''), limit=None, quiet=True)
+            told.pop(str(tid), None)
+        elif age >= REMIND_DAYS * 86400 and told.get(str(tid)) != n['at']:
+            tell(t, f'⏰ Čeká na tebe {int(age // 86400)} dny: {short(ask, ASK_CHARS, CZ_MORE)}',
+                 f'Bez odpovědi se za {CLOSE_DAYS - int(age // 86400)} dní zavře.', sender=conf.get('from', ''), limit=None)
+            told[str(tid)] = n['at']
+    os.makedirs(STATE, exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump(told, f)
+
+
+def seed_scorecard():
+    """The scorecard from the runs so far (the hub's notes + each run's transcript), once: every task this agent
+    ever picked up. Tasks whose bug was planted for a test are marked `test` and left out of the summaries."""
+    card = {}
+    homes = [p for p in [*glob.glob(os.path.join(WORK, 'claude-*-home')), os.path.join(os.path.expanduser('~'), '.claude')]
+             if os.path.isdir(p)]  # jailed runs' config dirs, and root's own for the first unjailed runs
+    for t in cli.call('/api/tasks?status=all&limit=4000', auth=False)['tasks']:
+        if not allowed(t):
+            continue
+        full = cli.call(f"/api/tasks/{t['id']}", auth=False)
+        picks = [c for c in full['comments'] if c['author'] == ME and c['text'].startswith(PICKUP)]
+        if not picks:
+            continue
+        row = {'title': t['title'], 'first': picks[0]['at'], 'last': full['comments'][-1]['at'], 'runs': 0,
+               'minutes': 0.0, 'usd': 0.0}
+        for i, c in enumerate(full['comments']):
+            m = re.search(r'session ([0-9a-f]{8})', c['text']) if c['author'] == ME and (
+                c['text'].startswith(PICKUP) or c['text'].startswith('🔁')) else None
+            if not m:
+                continue
+            row['runs'] += 1
+            later = [x for x in full['comments'][i + 1:] if x['author'] != ME or x['text'].startswith('🔎')]
+            row['minutes'] += round(((later[0]['at'] if later else c['at']) - c['at']) / 60, 1)
+            for home in homes:
+                for path in glob.glob(os.path.join(home, 'projects', '*', m.group(1) + '*.jsonl')):
+                    row['usd'] += transcript_cost(home, os.path.basename(path)[:-len('.jsonl')])
+        row['usd'] = round(row['usd'], 4)
+        checks = [c['text'].splitlines()[0] for c in full['comments'] if c['author'] == ME and c['text'].startswith('🔎 Nezávislá')]
+        if checks:
+            row['verdict'] = 'ověřeno' if '✅' in checks[-1] else 'neověřeno'
+        his = [c['text'] for c in full['comments'] if c['author'] == OWNER]
+        if his:
+            word = ' '.join(his[-1].lower().strip(' .!?').split())
+            row['outcome'] = 'přijato' if word in OK_WORDS else 'zamítnuto' if word in DROP else None
+        blob = json.dumps(full, ensure_ascii=False)
+        row['test'] = bool(re.search(r'AgentPlant|planted|podstrčen|test plant|\bjail copy\b', blob, re.I))
+        card[str(t['id'])] = {k: v for k, v in row.items() if v is not None}
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, 'scorecard.json'), 'w') as f:
+        json.dump(card, f, ensure_ascii=False, indent=1)
+    return card
+
+
+def show_scorecard(argv):
+    if '--seed' in argv:
+        seed_scorecard()
+    card = scorecard()
+    for tid, r in sorted(card.items(), key=lambda x: int(x[0])):
+        print(f"#{tid:>5} {'TEST ' if r.get('test') else ''}{str(r.get('title', ''))[:50]:50} runs {r.get('runs', 0)}"
+              f" {r.get('minutes', 0):5.0f} min ${r.get('usd', 0):6.2f}  {r.get('verdict', '-')} / {r.get('outcome', '-')}")
+    text = week_summary(card, 0 if '--all' in argv else NOW() - 7 * 86400)
+    print(text or '(nothing in the window)')
+    if '--send' in argv and text:
+        conf = agent_conf(os.path.join(PROJECTS, ONLY[0][0])) if ONLY else None
+        deliver([[*(['--from', conf['from']] if conf and conf.get('from') else []), text]], hold=True)
+    return 0
+
+
+# ------------------------------------------------------------------ quiet hours
+
+NOW = time.time  # tests set the clock
+
+
+def quiet_now():
+    """22:00-08:00 in Prague: a repo run's messages wait for the morning (the agent may still work)."""
+    hour = datetime.datetime.fromtimestamp(NOW(), zoneinfo.ZoneInfo('Europe/Prague')).hour
+    return hour >= QUIET[0] or hour < QUIET[1]
+
+
+def send(args):
+    try:
+        subprocess.run([TELL, *args], capture_output=True, timeout=120 if '--photo' in args else 60)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def deliver(sends, hold=False):
+    """Send now, or (quiet hours, hold) queue them in order in the state folder for flush_held."""
+    if hold and quiet_now():
+        os.makedirs(STATE, exist_ok=True)
+        with open(os.path.join(STATE, 'held.jsonl'), 'a') as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            for args in sends:
+                f.write(json.dumps({'args': args, 'at': NOW()}, ensure_ascii=False) + '\n')
+        return
+    flush_held()
+    for args in sends:
+        send(args)
+
+
+def flush_held():
+    """The night's held messages, in order, on the first tick after the quiet hours."""
+    path = os.path.join(STATE, 'held.jsonl')
+    if not os.path.exists(path) or quiet_now():
+        return
+    sending = path + '.sending'
+    try:
+        os.replace(path, sending)  # a crash mid-way never sends the first ones twice
+    except OSError:
+        return
+    with open(sending, encoding='utf-8') as f:
+        rows = f.read().splitlines()
+    for line in rows:
+        try:
+            send(json.loads(line)['args'])
+        except (ValueError, KeyError, TypeError):
+            continue
+    os.remove(sending)
+
+
+def cap_notice(why=None):
+    """Scoped mode, the day's runs (or its budget) used up while a task waits: one Telegram a day says so."""
+    ready = queue()
+    if not ready:
+        return
+    today = datetime.datetime.fromtimestamp(NOW(), zoneinfo.ZoneInfo('Europe/Prague')).strftime('%Y-%m-%d')
+    stamp = os.path.join(STATE, 'cap-told')
+    try:
+        with open(stamp) as f:
+            if f.read().strip() == today:
+                return
+    except OSError:
+        pass
+    os.makedirs(STATE, exist_ok=True)
+    with open(stamp, 'w') as f:
+        f.write(today)
+    t = ready[0]
+    conf = agent_conf(os.path.join(PROJECTS, t['project'])) or {}
+    n = MAX_RUNS_A_DAY
+    head = (why[0].upper() + why[1:]) if why else f"Dnešní limit agenta vyčerpán ({n} {cz_plural(n, 'běh', 'běhy', 'běhů')})"
+    tell(t, f"{head}, #{t['id']} počká do zítřka.", sender=conf.get('from', ''), limit=None)
+
+
+# ------------------------------------------------------------------ loose ends
+
+def sweep_orphans():
+    """A run that died mid-way (the box rebooted, the process was killed) leaves its task doing,
+    the pickup its last word, with nobody on it, for good (#598 sat so for 15 days). Called while
+    holding the run lock, so no run of this box is going: such a task is given back. The first
+    time, within a day, it goes back in the queue (most deaths are the box, not the task);
+    otherwise to him."""
+    for t in cli.call('/api/tasks?status=doing&limit=2000', auth=False)['tasks']:
+        n = t.get('last_note') or {}
+        mid_check = n.get('text', '').startswith(('🔎', '🔁'))  # it died while its fix was being checked
+        if not allowed(t) or n.get('author') != ME or not (n.get('text', '').startswith(f'{PICKUP} on {MACHINE} ') or mid_check):
+            continue
+        full = cli.call(f"/api/tasks/{t['id']}", auth=False)
+        died = sum(1 for c in full['comments'] if c['author'] == ME and c['text'].startswith('⚠️ The agent\'s run died'))
+        again = (died == 0 and time.time() - n['at'] < 86400 and TAG in full['tags']
+                 and not any(w in full['tags'] for w in WAITS))
+        tags = full['tags'] if again else [x for x in full['tags'] if x != TAG]
+        cli.call(f"/api/tasks/{t['id']}", {'status': 'todo', 'tags': tags})
+        note(t['id'], "⚠️ The agent's run died mid-way and nothing came back. "
+             + ('It goes back in the queue for one more try.' if again
+                else 'Back with you: a reply with more detail hands it back to the agent.'))
+        print(f"task-agent: #{t['id']} was left mid-run; {'queued again' if again else 'given back'}", file=sys.stderr)
+
+
+def pr_state(url, env):
+    try:
+        r = subprocess.run([GH, 'pr', 'view', url, '--json', 'state', '-q', '.state'], env=env,
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    state = r.stdout.strip()
+    return state if r.returncode == 0 and state in ('OPEN', 'MERGED', 'CLOSED') else None
+
+
+def sync_prs(force=False):
+    """A PR on a doing task that was merged or closed on GitHub (by him, or by a session) moves
+    the task, the way his `merge` reply would: merged -> done, closed unmerged -> back on his list.
+    Without this a merged PR left its task doing for good (34 of them on 2026-11-01). Only a task
+    whose newest note names a PR, with none of its PRs still open: a later note (a review ask, a
+    question) means the task has moved past its PR. Every SYNC_EVERY seconds, quietly."""
+    stamp = os.path.join(STATE, 'synced')
+    try:
+        if not force and time.time() - os.path.getmtime(stamp) < SYNC_EVERY:
+            return
+    except OSError:
+        pass
+    os.makedirs(STATE, exist_ok=True)
+    with open(stamp, 'w'):  # first: a failure waits for the next window, not the next minute
+        pass
+    env = None
+    for t in cli.call('/api/tasks?status=doing&limit=2000', auth=False)['tasks']:
+        if t['project'] in AGENT['publish_gated']:  # merged is not live until a publish (a game's); his call (2026-11-22)
+            continue
+        if not PR_URL.search((t.get('last_note') or {}).get('text') or ''):
+            continue
+        full = cli.call(f"/api/tasks/{t['id']}", auth=False)
+        if not full['comments'] or not PR_URL.search(full['comments'][-1]['text']):
+            continue
+        env = env or gh_env()
+        prs = list(dict.fromkeys(m.group(0) for c in full['comments'] for m in PR_URL.finditer(c['text'])))
+        states = {pr: pr_state(pr, env) for pr in prs}
+        newest = list(dict.fromkeys(PR_URL.findall(full['comments'][-1]['text'])))
+        if None in states.values() or 'OPEN' in states.values():
+            continue
+        tags = [x for x in full['tags'] if x != TAG]
+        names = ', '.join('#' + pr.rsplit('/', 1)[-1] for pr in newest)
+        if any(states[pr] == 'MERGED' for pr in newest):
+            cli.call(f"/api/tasks/{t['id']}", {'status': 'done', 'tags': tags})
+            note(t['id'], f'✅ PR {names} merged on GitHub, so the task is done.')
+        else:
+            cli.call(f"/api/tasks/{t['id']}", {'status': 'todo', 'tags': tags})
+            note(t['id'], f'↩️ PR {names} was closed without merging. Back on his list.')
+
+
+# ------------------------------------------------------------------ his replies
+
+def latest_pr(task):
+    for c in reversed(task['comments']):
+        m = PR_URL.search(c['text'])
+        if m:
+            return m.group(0)
+    return None
+
+
+def take_answers(tid):
+    """His reply carried out here: the task's answers it settles are claimed, so answer-dispatcher never runs
+    them a second time."""
+    try:
+        for q in cli.call(f'/api/questions?status=answered&task={tid}&pending=1', auth=False)['questions']:
+            if q["task_id"] != tid:  # an older hub reads task=1 as "any task"
+                continue
+            cli.call(f"/api/questions/{q['id']}/claim", {'by': ME})
+    except SystemExit as e:
+        print(f'task-agent: answers on #{tid} not claimed: {e}', file=sys.stderr)
+
+
+def reply(tid, text, noted=False):
+    """His Telegram reply about a task, passed on verbatim by Hermes. `merge` merges the PR the
+    agent opened, `drop` drops the task, `mine` keeps it his; anything else is an answer or a
+    change request: noted as his, and the task goes back to the agent. Prints one line for him."""
+    word = ' '.join(text.lower().strip(' .!?`"\'').split())
+    if word in STOP_WORDS:  # the kill switch: a reply to any of the agent's messages
+        stop_agent(f'his "{text.strip()[:40]}" on Telegram (#{tid})')
+        print('Zastaveno: agent nezačne nic nového (a běžící běh ukončil), dokud nenapíšeš start.')
+        return 0
+    if word in START_WORDS:
+        was = stopped()
+        start_agent()
+        print('Agent zase běží.' if was else 'Agent už běží.')
+        return 0
+    task = cli.call(f'/api/tasks/{tid}', auth=False)
+    pr = latest_pr(task)
+    if str(tid) in scorecard() and claims_fix(next((c['text'] for c in reversed(task['comments'])
+                                                    if c['text'].startswith('⏳')), '')):
+        # His word on a fix the agent asked him to test (guardrail 7).
+        score(tid, outcome='přijato' if word in OK_WORDS else None if word in MINE else 'zamítnuto')
+    if word in MERGE:
+        if not pr:
+            print(f"There's nothing to merge on #{tid} yet.")
+            return 1
+        env = gh_env()
+        subprocess.run([GH, 'pr', 'ready', pr], env=env, capture_output=True, text=True, timeout=60)
+        r = subprocess.run([GH, 'pr', 'merge', pr, '--squash', '--delete-branch'], env=env,
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            print(f"Couldn't merge #{tid}: {(r.stderr or r.stdout).strip().splitlines()[-1:] or ['no reason given']}"[:300])
+            return 1
+        # His note first: it answers the task's open question, which closing would withdraw.
+        note(tid, f'✅ Merged {pr} (his reply on Telegram).', OWNER)
+        take_answers(tid)
+        cli.call(f'/api/tasks/{tid}', {'status': 'done', 'tags': [t for t in task['tags'] if t != TAG]})
+        print(f'Merged. #{tid} is done.')
+    elif word in DROP and re.search(rf'-- AGENT #{tid}\b', json.dumps(task.get('comments') or [], ensure_ascii=False)):
+        # A repo agent's change is still in the game (marked `-- AGENT #id`): dropping the task would leave it there.
+        # The agent takes it back and reverts its lines first, then closes the task itself.
+        note(tid, f'{text.strip()} (vrať změny agenta a zavři úkol)', OWNER)
+        take_answers(tid)
+        cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': [*[t for t in task['tags'] if t != TAG], TAG]})
+        print(f'Understood. The agent reverts its change on #{tid}, then closes it.')
+    elif word in DROP:
+        if pr:
+            subprocess.run([GH, 'pr', 'close', pr, '--delete-branch'], env=gh_env(), capture_output=True, timeout=60)
+        note(tid, '🗑️ Dropped (his reply on Telegram).' + (f' Closed {pr}.' if pr else ''), OWNER)
+        take_answers(tid)
+        cli.call(f'/api/tasks/{tid}', {'status': 'dropped', 'tags': [t for t in task['tags'] if t != TAG]})
+        print(f'Dropped #{tid}' + (' and closed its PR.' if pr else '.'))
+    elif word in MINE:
+        cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': [t for t in task['tags'] if t != TAG]})
+        note(tid, '👉 He takes it himself (his reply on Telegram).', OWNER)
+        take_answers(tid)
+        print(f'Very well, #{tid} is yours.')
+    else:
+        if not noted:  # answered on the task itself: his note is there already
+            note(tid, text.strip(), OWNER)  # an answer: a `needs-spec` question is answered by it
+        cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': [*[t for t in task['tags'] if t not in (TAG, 'needs-spec')], TAG]})
+        if allowed(task):  # this agent works it next; a task outside its scope is answer-dispatcher's to resume
+            take_answers(tid)
+        print(f'Understood. The agent picks #{tid} back up shortly.')
+    return 0
+
+
+def step(name, fn, *args):
+    """One housekeeping step; a hub blip or a bug in it never stops the others or the queue."""
+    try:
+        return fn(*args)
+    except (Exception, SystemExit) as e:
+        print(f'task-agent: {name} skipped: {str(e).strip() or type(e).__name__}', file=sys.stderr)
+        return None
+
+
+def hold_lock():
+    """The box's run lock, held until the process exits: a run by hand (`--id`) and the timer's
+    never work at once, and while it is held nobody is mid-run, which the orphan sweep relies on."""
+    os.makedirs(STATE, exist_ok=True)
+    f = open(os.path.join(STATE, 'lock'), 'w')
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] in (['pause'], ['resume'], ['status']):
+        return pause(argv[0])
+    if argv[:1] == ['stop']:  # the kill switch, also for Hermes on a bare "agent stop"
+        stop_agent(' '.join(argv[1:]) or 'by hand')
+        print('Zastaveno: agent nezačne nic nového (a běžící běh ukončil), dokud nenapíšeš start.')
+        return 0
+    if argv[:1] == ['start']:
+        was = stopped()
+        start_agent()
+        print('Agent zase běží.' if was else 'Agent už běží.')
+        return 0
+    if argv[:1] == ['sync-prs']:  # its own timer (task-pr-sync): runs whatever mode the agent is in (task 1828)
+        sync_prs(force=True)
+        return 0
+    if argv[:1] == ['scorecard']:
+        return show_scorecard(argv[1:])
+    if argv[:1] == ['reply']:
+        r = argparse.ArgumentParser(prog='task-agent reply', description='Pass on his reply about a task.')
+        r.add_argument('--noted', action='store_true', help='he answered on the task: his note is there already')
+        r.add_argument('id', type=lambda v: int(v.lstrip('#')))
+        r.add_argument('text', nargs='+')
+        a = r.parse_args(argv[1:])
+        return reply(a.id, ' '.join(a.text), a.noted)
+    p = argparse.ArgumentParser(description='Route new tasks, then work the next one handed to the agent.')
+    p.add_argument('--dry-run', action='store_true', help="show what it would take, change nothing")
+    p.add_argument('--id', type=int, help='work this task now (it must be handed to the agent)')
+    a = p.parse_args(argv)
+    if a.dry_run:
+        return run(a)
+    lock = hold_lock()
+    if not lock:
+        print('task-agent: another run is going on this box', file=sys.stderr)
+        return 0
+    try:
+        step('leftover jails', stop_leftover_jails)
+        step('orphan sweep', sweep_orphans)
+        return run(a)
+    finally:
+        lock.close()
+
+
+def paused():
+    return os.path.exists(os.path.join(STATE, 'paused'))
+
+
+def pause(cmd):
+    """He can stop the agent working on its own (2026-11-01: "for now no agents autonomously").
+    A file in the state folder, so it survives reboots and deploys; resume deletes it."""
+    path = os.path.join(STATE, 'paused')
+    if cmd == 'pause':
+        os.makedirs(STATE, exist_ok=True)
+        with open(path, 'w') as f:
+            f.write(time.strftime('%Y-%m-%d %H:%M\n'))
+    elif cmd == 'resume' and paused():
+        os.remove(path)
+    print('paused: no routing, no runs (PR check and dead-run sweep still go)' if paused()
+          else 'running: routes new tasks and works the queue')
+    return 0
+
+
+def run(a):
+    if not a.dry_run:
+        step('held messages', flush_held)  # the night's messages first, in the order they were held
+    # His answers on http://beacon/decisions are answer-dispatcher's (task 1776): it calls `reply` for this agent's tasks.
+    if not a.dry_run and not a.id and ONLY:
+        step('stale reports', stale_reports)
+        step('weekly summary', weekly)
+    if not a.dry_run and not a.id and not ONLY:
+        step('PR sync', sync_prs)
+        if paused():
+            return 0  # no model call of its own: nothing routed, nothing worked
+        for t in step('routing', to_route) or []:
+            step(f'routing #{t["id"]}', route, t)
+    if not a.dry_run and not a.id:
+        if stopped():
+            return 0  # the kill switch or the circuit breaker: `start` lifts it
+        why = step('spend cap', money_stop)
+        if why:
+            if ONLY:
+                step('cap notice', cap_notice, why)
+            return 0
+        if len(runs_today()) >= MAX_RUNS_A_DAY:
+            if ONLY:
+                step('cap notice', cap_notice)
+            return 0  # the day's runs are used up; the queue waits
+    ready = queue()
+    if a.id:
+        ready = [t for t in ready if t['id'] == a.id]
+        if not ready:
+            sys.exit(f'task-agent: #{a.id} is not waiting for the agent (open, todo, tagged {TAG}, not parked)')
+    if a.dry_run:
+        for t in ready:
+            print(cli.line(t))
+    if not ready:
+        if a.dry_run:
+            print('queue empty')
+        return 0
+    return work(ready[0], dry=a.dry_run)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

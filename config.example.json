@@ -1,0 +1,206 @@
+{
+  "_about": "Beacon's settings with made-up values: a fresh clone runs on these. A deployment copies this file to ~/.config/beacon/config.json (or points BEACON_CONFIG at its own) and keeps only the sections it changes; each top-level section there replaces the one here (hub/settings.py).",
+  "owner": {
+    "id": "owner",
+    "name": "Alex",
+    "github": "example-user",
+    "emails": [
+      "alex@example.com"
+    ],
+    "mail_user": "alex",
+    "names": [
+      "Alex"
+    ],
+    "launchd_prefix": "com.example."
+  },
+  "hub": {
+    "machine": "cloud",
+    "https": "",
+    "agent_home": "devbox"
+  },
+  "machines": {
+    "cloud": {
+      "role": "VPS: the hub",
+      "always_on": true,
+      "icon": "☁️"
+    },
+    "devbox": {
+      "role": "home server: dev, previews, agents",
+      "always_on": true,
+      "icon": "🖥️"
+    },
+    "pi": {
+      "role": "Pi: wall TV",
+      "always_on": true,
+      "node_exporter": "http://pi:9100/metrics"
+    },
+    "laptop": {
+      "role": "laptop: iOS builds, the browser",
+      "always_on": false,
+      "icon": "💻",
+      "manual": true
+    },
+    "gamer": {
+      "role": "Windows PC: heavy compute",
+      "always_on": false,
+      "icon": "🎮"
+    },
+    "phone": {
+      "role": "phone",
+      "always_on": false
+    }
+  },
+  "apps": {
+    "budget": "http://devbox:3080",
+    "lighthouse": "http://devbox:3000",
+    "power": "http://devbox:8095",
+    "buildlog": "http://devbox:8097"
+  },
+  "paths": {
+    "projects": "~/projects",
+    "work": "~/agent-work",
+    "corpus": "~/ai-corpus",
+    "brain": "~/projects/ai-brain",
+    "gbrain": "~/.bun/bin/gbrain",
+    "calls_repo": "~/projects/transcribe",
+    "budget_db": "~/projects/budget/data/budget.db",
+    "scoreboard": "/var/lib/lighthouse/scoreboard.jsonl",
+    "watch": "/var/lib/rival-watch",
+    "card_rules": "~/.config/beacon/card-rules.md"
+  },
+  "project_names": {
+    "beacon": "Beacon",
+    "ai-brain": "AI brain",
+    "ai-corpus": "AI corpus",
+    "snow-game": "Snow Game",
+    "(projects root)": "Projects folder",
+    "(home)": "Home folder",
+    "(no project)": "No folder",
+    "scratch": "Temp folders",
+    "habit-app": "Habit app",
+    "weddings": "Wedding sites",
+    "coaching": "Coaching"
+  },
+  "projects": {
+    "hq": {
+      "name": "The studio's HQ",
+      "what": "the tools the AI team works with",
+      "stage": null,
+      "folders": [
+        "beacon",
+        "ai-brain",
+        "ai-corpus",
+        "lighthouse",
+        "budget"
+      ]
+    },
+    "snow-game": {
+      "name": "Snow Game",
+      "what": "a Roblox game",
+      "stage": "players",
+      "source": "live on Roblox"
+    },
+    "habit-app": {
+      "name": "Habit app",
+      "what": "an iPhone app",
+      "stage": "build",
+      "source": null
+    },
+    "weddings": {
+      "name": "Wedding sites",
+      "what": "websites for couples",
+      "stage": "out",
+      "source": "two sites live"
+    },
+    "coaching": {
+      "name": "Spreadsheet coaching",
+      "what": "1:1 lessons",
+      "stage": null
+    }
+  },
+  "site_names": {
+    "alex-site": "alex.example",
+    "snow-game-site": "Snow Game web"
+  },
+  "outcomes": {
+    "burn": [
+      20000,
+      30000
+    ],
+    "links": {
+      "appstore": "https://appstoreconnect.apple.com/",
+      "roblox": "https://create.roblox.com/dashboard/creations",
+      "reach": "https://www.tiktok.com/",
+      "vercel": "https://vercel.com/dashboard",
+      "bank": "/budget/import",
+      "mail": "",
+      "calls": ""
+    }
+  },
+  "rank": {
+    "roblox_universe": "1",
+    "tiktok": [
+      "example.handle"
+    ],
+    "not_earned": "own transfer|apple pay|google pay|revolut|wise|itunes|roblox"
+  },
+  "agent": {
+    "voice": "a calm, brief assistant",
+    "publish_gated": [
+      "snow-game"
+    ],
+    "client_words": "\\bkovo\\b",
+    "internal_repos": [
+      "beacon",
+      "ai-brain",
+      "ai-corpus",
+      "lighthouse",
+      ".claude",
+      ".tasks-client"
+    ],
+    "client_units": [
+      "client-api"
+    ],
+    "forward_hints": {
+      "Pošli Kovovi": "Přepošli Kovovi, napiš ok až to opraví."
+    }
+  },
+  "freshness": {
+    "_about": "Copies every machine must keep current (hub/freshness.py). checkouts: a git clone by path(s) and its GitHub repo, compared on the given branch; files: a copy of a file in the hub's checkout. machines: where it applies (all when left out). grace_h: how old the source may be before a copy lacking it is a problem. version_lag: how many patch releases a tool may trail the newest machine.",
+    "checkouts": [
+      {
+        "name": "Agent config",
+        "path": "~/.claude",
+        "repo": "example-user/agent-config",
+        "grace_h": 6
+      },
+      {
+        "name": "Machine setup",
+        "path": [
+          "~/projects/machine-setup"
+        ],
+        "repo": "example-user/machine-setup",
+        "grace_h": 26,
+        "machines": [
+          "cloud",
+          "devbox"
+        ]
+      }
+    ],
+    "files": [
+      {
+        "name": "tasks CLI",
+        "path": "~/.local/bin/tasks.py",
+        "source": "client/tasks",
+        "grace_h": 26,
+        "machines": [
+          "gamer"
+        ]
+      }
+    ],
+    "version_lag": {
+      "claude": 10,
+      "codex": 10
+    }
+  }
+}

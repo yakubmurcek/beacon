@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""tasks-sweep: close the open tasks that are already done, by evidence, not by memory.
+
+Sessions file tasks and often never close them: the work lands in another session, or he does it
+himself (828 open on 2026-11-17, many long done). Per project, a model reads the open tasks next to
+what happened since (the repo's commits, the tasks closed meanwhile with their notes) and says for
+each one: done, duplicate, obsolete, or open. Only a cited piece of evidence closes a task; each
+close is a note starting `auto-triage`, so it can be reopened. Old ClickUp imports nobody touched
+since the import and nothing marks as done are parked (hidden, kept).
+
+  tasks-sweep                      every project, evidence since each task was filed; prints, changes nothing
+  tasks-sweep --days 2 --apply     the nightly run: projects where something moved in 2 days, applied
+  tasks-sweep -p clean-the-snow --out d.json     decisions to a file;  tasks-sweep --apply-file d.json
+"""
+import argparse
+import concurrent.futures
+import datetime
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'hub'))
+import settings  # noqa: E402  (hub/settings.py: the deployment's names)
+
+URL = os.environ.get('TASKS_URL', 'http://beacon').rstrip('/')
+REPOS = os.environ.get('SWEEP_REPOS', settings.p('projects'))
+CLAUDE = os.environ.get('CLAUDE_BIN', 'claude')
+MODEL = os.environ.get('SWEEP_MODEL', 'sonnet')
+COST = []  # what each model call cost (claude -p reports it), summed at the end
+FAILED = []  # projects whose call gave no answer
+BATCH = 30
+DAY = 86400
+SCHEMA = json.dumps({
+    'type': 'object', 'required': ['decisions'],
+    'properties': {'decisions': {'type': 'array', 'items': {
+        'type': 'object', 'required': ['id', 'verdict', 'evidence'],
+        'properties': {'id': {'type': 'integer'},
+                       'verdict': {'enum': ['done', 'duplicate', 'obsolete', 'open']},
+                       'evidence': {'type': 'string'},
+                       'duplicate_of': {'type': ['integer', 'null']}}}}}})
+
+RULES = f"""You clean {settings.OWNER_NAME}'s task list. Sessions filed these tasks and often never closed them: the work
+was done in another session or by him. For EVERY open task below give one verdict. Closing a task that
+is not finished is far worse than leaving a finished one open: when in doubt, open.
+- done: every part of the title and of its Done-test happened, and you verified it. A commit counts
+  only if it is on the default branch (`git branch -r --contains <hash>` lists origin/main, origin/dev
+  or origin/master) or its PR merged; a commit only on another branch is not done. A task whose body
+  or last note says partial, not covered, waits for, or lists a step still left is open. A step of his
+  (test in Play, approve, send, decide) is done only if a note or closed task says he did it.
+- duplicate: another task asks for the same outcome with no extra scope (compare bodies and
+  Done-tests, not headlines). Set duplicate_of to the one to keep: the closed one if closed, else the
+  richer one. Never mark two tasks duplicates of each other.
+- obsolete: a later commit, task or note shows every reason the body gives for the task is gone.
+- open: anything else.
+Before calling a task open, search the working directory (the project's repo) for it: its own tag
+(e.g. "sprint 9 #31") and key words, in history notes, docs and CLAUDE.md.
+Evidence is one short line (max 200 chars), in English, quoting only what you verified (hash + where
+it is, task # + its note). Read and search only; edit nothing."""
+
+
+def get(path):
+    with urllib.request.urlopen(URL + path, timeout=30) as r:
+        d = json.load(r)
+    return d.get('tasks', d) if isinstance(d, dict) else d
+
+
+def day(ts):
+    return datetime.date.fromtimestamp(ts).isoformat() if ts else '?'
+
+
+def clip(s, n):
+    s = ' '.join((s or '').split())
+    return s if len(s) <= n else s[:n - 1] + '…'
+
+
+def repo_for(project):
+    path = os.path.join(REPOS, project)
+    return path if os.path.isdir(os.path.join(path, '.git')) else None
+
+
+def commits(repo, since):
+    try:
+        subprocess.run(['git', '-C', repo, 'fetch', '-q', 'origin'], capture_output=True, timeout=60)
+        out = subprocess.run(['git', '-C', repo, 'log', '--all', f'--since={since}', '--date=short',
+                              '--format=%h %ad %s'], capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [l for l in out.splitlines() if 'auto-sync' not in l][:800]
+
+
+def prompt(project, batch, open_all, closed, log):
+    lines = [RULES, '', f'Today: {datetime.date.today()}. Project: {project}.', '', '## Open tasks to judge']
+    for t in batch:
+        note = t.get('last_note') or {}
+        lines.append(f"#{t['id']} filed {day(t['created_at'])} [{t['status']}] {clip(t['title'], 200)}")
+        if t.get('body'):
+            lines.append(f"   body: {clip(t['body'], 500)}")
+        if note.get('text'):
+            lines.append(f"   last note {day(note.get('at'))}: {clip(note['text'], 300)}")
+    others = [t for t in open_all if t not in batch]
+    if others:
+        lines += ['', '## Other open tasks in this project (for duplicates)']
+        lines += [f"#{t['id']} {clip(t['title'], 140)}" for t in others]
+    lines += ['', '## Tasks closed in this project (newest first)']
+    lines += [f"#{t['id']} {t['status']} {day(t['closed_at'])} {clip(t['title'], 140)}"
+              + (f" | note: {clip((t.get('last_note') or {}).get('text'), 200)}" if t.get('last_note') else '')
+              for t in closed] or ['(none)']
+    lines += ['', '## Commits in the repo (newest first)'] + (log or ['(no repo)'])
+    return '\n'.join(lines)
+
+
+def judge(project, batch, open_all, closed, log, repo, effort):
+    cmd = [CLAUDE, '-p', '--model', MODEL, '--effort', effort,  # the prompt goes on stdin: too long for an argument
+           '--setting-sources', '', '--strict-mcp-config', '--tools', 'Read,Grep,Glob,Bash',
+           '--allowedTools', 'Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git branch:*),Bash(grep:*),Bash(gh pr view:*),Bash(gh pr list:*)', '--output-format', 'json', '--json-schema', SCHEMA,
+           '--system-prompt', 'You triage tasks against evidence. Answer only with the JSON asked for.']
+    env = {k: v for k, v in os.environ.items() if k != 'CLAUDE_CODE_SESSION_ID'}
+    try:
+        r = subprocess.run(cmd, input=prompt(project, batch, open_all, closed, log), cwd=repo or REPOS, env=env,
+                           capture_output=True, text=True, timeout=1200)
+        res = json.loads(r.stdout)
+        COST.append(res.get('total_cost_usd') or 0)
+        out = res.get('structured_output') or {}
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError) as e:
+        print(f'{project}: no answer ({e})', file=sys.stderr)
+        FAILED.append(project)
+        return []
+    ids = {t['id'] for t in batch}
+    return [d for d in out.get('decisions', []) if d.get('id') in ids]
+
+
+def settle(decisions, tasks):
+    """A duplicate is closed only if the task it points to exists and stays: open and in the list, or
+    done. Two pointing at each other, or at one the sweep also closes, are left open."""
+    by = {t['id']: t for t in tasks}
+    closing = {d['id'] for d in decisions if d['verdict'] != 'open'}
+    def keeps(i):
+        t = by.get(i)
+        return t and i not in closing and (t['status'] == 'done' or
+                                           (t['status'] in ('todo', 'doing') and 'parked' not in t['tags']))
+    for d in decisions:
+        if d['verdict'] == 'duplicate' and not keeps(d.get('duplicate_of')):
+            d['verdict'], d['evidence'] = 'open', 'duplicate target is closed by this sweep too: ' + d['evidence']
+            closing.discard(d['id'])
+    return decisions
+
+
+def sweep(projects, days, size=BATCH, effort='medium', cap=None):
+    tasks = get('/api/tasks?status=all&limit=2000')
+    now = time.time()
+    by = {}
+    for t in tasks:
+        by.setdefault(t['project'], []).append(t)
+    jobs = []
+    for project, ts in sorted(by.items()):
+        if projects and project not in projects:
+            continue
+        # a doing task is a live session's: never judged. Parked ones are (hidden is not done).
+        open_ = sorted([t for t in ts if t['status'] == 'todo'], key=lambda t: t['created_at'])
+        if not open_:
+            continue
+        repo = repo_for(project)
+        if days:  # nightly: only what moved, judged against what moved
+            since_ts = now - days * DAY
+        else:
+            since_ts = open_[0]['created_at'] - DAY
+        closed = sorted([t for t in ts if t['status'] in ('done', 'dropped') and (t['closed_at'] or 0) >= since_ts],
+                        key=lambda t: -(t['closed_at'] or 0))[:300]
+        log = commits(repo, day(since_ts)) if repo else []
+        if days and not closed and not log:
+            continue
+        for i in range(0, len(open_), size):
+            jobs.append((project, open_[i:i + size], open_, closed, log, repo))
+    if cap and len(jobs) > cap:  # a token budget: one batch per project in turn, a different start each night
+        print(f'{len(jobs)} batches, capped at {cap}', file=sys.stderr)
+        queues = {}
+        for j in jobs:
+            queues.setdefault(j[0], []).append(j)
+        names = sorted(queues)
+        k = datetime.date.today().toordinal()
+        names = names[k % len(names):] + names[:k % len(names)]
+        for q in queues.values():  # a big project's batches rotate too, not the oldest ones every night
+            r = k % len(q)
+            q[:] = q[r:] + q[:r]
+        picked = []
+        while len(picked) < cap:
+            for n in names:
+                if queues[n] and len(picked) < cap:
+                    picked.append(queues[n].pop(0))
+        jobs = picked
+    print(f'{len(jobs)} batches over {len({j[0] for j in jobs})} projects', file=sys.stderr)
+    decisions = []
+    with concurrent.futures.ThreadPoolExecutor(3) as pool:
+        for got in pool.map(lambda j: judge(*j, effort), jobs):
+            decisions += got
+    return settle(decisions, tasks), tasks
+
+
+def parkable(tasks, decided):
+    """ClickUp imports nobody touched since the import and the sweep did not close."""
+    closing = {d['id'] for d in decided if d['verdict'] != 'open'}
+    return [t for t in tasks if t['status'] == 'todo' and (t.get('source') or '').startswith('clickup:')
+            and 'parked' not in t['tags'] and t['id'] not in closing and not t.get('last_note')
+            and t['updated_at'] - t['created_at'] < DAY]
+
+
+def apply(decisions, park):
+    stamp = f'auto-triage {datetime.date.today()}'
+    n = 0
+    for d in decisions:
+        v = d['verdict']
+        if v == 'open':
+            continue
+        why = d['evidence'] if v != 'duplicate' else f"duplicate of #{d.get('duplicate_of')}: {d['evidence']}"
+        r = subprocess.run(['tasks', 'done' if v == 'done' else 'drop', str(d['id']), '-m', f'{stamp}: {why}'[:900]],
+                           capture_output=True, text=True)
+        n += r.returncode == 0
+        if r.returncode:
+            print(f"#{d['id']}: {r.stderr.strip()}", file=sys.stderr)
+    for t in park:
+        tags = ','.join(t['tags'] + ['parked'])
+        subprocess.run(['tasks', 'set', str(t['id']), f'tags={tags}'], capture_output=True)
+        subprocess.run(['tasks', 'note', str(t['id']), f'{stamp}: parked, a ClickUp import nobody touched since'],
+                       capture_output=True)
+    return n
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('-p', '--project', action='append', help='only these projects')
+    ap.add_argument('--days', type=float, help='nightly: projects with commits or closed tasks in this many days')
+    ap.add_argument('--out', help='write the decisions here (JSON)')
+    ap.add_argument('--apply', action='store_true', help='close, drop and park as decided')
+    ap.add_argument('--apply-file', help='apply decisions saved with --out')
+    ap.add_argument('--no-park', action='store_true')
+    ap.add_argument('--effort', default=None, help='model effort (default medium)')
+    ap.add_argument('--max-batches', type=int, default=None, help='at most this many model calls (default 8 with --days)')
+    ap.add_argument('--batch', type=int, default=BATCH, help='tasks per model call (fewer = more searching each)')
+    a = ap.parse_args()
+    if a.apply_file:
+        saved = json.load(open(a.apply_file))
+        decisions, park = saved['decisions'], saved.get('park', [])
+    else:
+        decisions, tasks = sweep(a.project, a.days, a.batch, a.effort or 'medium',
+                                 a.max_batches or (8 if a.days else None))
+        park = [] if (a.no_park or a.days) else parkable(tasks, decisions)
+        if a.project:
+            park = [t for t in park if t['project'] in a.project]
+        title = {t['id']: t['title'] for t in tasks}
+        for d in decisions:
+            d['title'] = title.get(d['id'], '')
+        if a.out:
+            with open(a.out, 'w') as f:
+                json.dump({'decisions': decisions, 'park': park}, f, ensure_ascii=False, indent=1)
+    counts = {}
+    for d in decisions:
+        counts[d['verdict']] = counts.get(d['verdict'], 0) + 1
+    print(f"judged {len(decisions)}: {counts}; park {len(park)}; cost ${sum(COST):.2f} ({len(COST)} calls)")
+    for d in decisions:
+        if d['verdict'] != 'open':
+            print(f"  #{d['id']} {d['verdict']}: {clip(d.get('title'), 70)} | {clip(d['evidence'], 140)}")
+    if a.apply or a.apply_file:
+        token = os.environ.get('TASKS_TOKEN') or subprocess.run(['secrets', 'get', 'TASKS_TOKEN'],
+                                                                 capture_output=True, text=True).stdout.strip()
+        os.environ['TASKS_TOKEN'] = token
+        n = apply(decisions, park)
+        print(f'closed {n}, parked {len(park)}')
+        if a.days and n:  # one line to him per night that closed something, so a wrong close gets seen
+            subprocess.run(['telegram-alarm', '--from', '🧹 Tasks',
+                            f'{n} úkolů zavřeno jako hotové podle důkazů (poznámka auto-triage). Špatně? tasks todo ID.'],
+                           capture_output=True)
+    if FAILED and not decisions:
+        sys.exit(f'tasks-sweep: every model call failed ({len(FAILED)}): is the Claude login alive?')
+
+
+if __name__ == '__main__':
+    main()
