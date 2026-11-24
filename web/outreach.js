@@ -203,6 +203,14 @@ function refreshFacets() {
   writeHash();
 }
 
+// the open roles of a lead, those in the chosen field first (a firm hiring a developer and a sales assistant shows
+// only the developer under IT)
+function openRoles(r) {
+  const rows = ((r.detail || []).find((x) => /open roles/i.test(x.title || '')) || { rows: [] }).rows;
+  const f = st.facets.Field;
+  return f ? rows.filter((x) => !x.field || x.field === f) : rows;
+}
+
 function leadCard(r) {
   const src = r.source || {};
   const links = [];
@@ -210,7 +218,9 @@ function leadCard(r) {
   else if (src.link) links.push(h('a', { href: src.link }, src.label || 'Source'));
   if (src.url && src.link) links.push(h('a', { href: src.link, class: 'sub' }, src.path_label || 'notes'));
   if (r.web) links.push(h('a', { href: r.web, target: '_blank', rel: 'noopener', class: 'sub' }, r.web.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')));
-  const roles = ((r.detail || []).find((x) => /open roles/i.test(x.title || '')) || { rows: [] }).rows.length;
+  const matching = openRoles(r);
+  const roles = matching.length;
+  const segment = st.facets.Field && matching.length ? matching[0].text : r.segment;
   const mail = (r.detail || []).some((x) => x.mail);
   return h('article', { class: 'lead', style: `--c:${pcolor(r.project)}`, tabindex: '0', role: 'button', 'aria-label': `${r.name}: open the detail`,
     onclick: (e) => { if (!e.target.closest('a')) openLead(r); },
@@ -219,12 +229,12 @@ function leadCard(r) {
       avatar(r.name, r.web),
       h('div', { class: 'lead-id' },
         h('h3', null, r.name),
-        h('div', { class: 'where' }, [st.project ? null : pname(r.project), r.segment, r.town].filter(Boolean).join(' · '))),
+        h('div', { class: 'where' }, [st.project ? null : pname(r.project), segment, r.town].filter(Boolean).join(' · '))),
       h('span', { class: 'st', style: `--sc:${SCOLOR[r.status] || 'var(--dim)'}` }, SWORD[r.status] || r.status)),
     r.chance || r.person || roles || mail ? h('div', { class: 'badges' },
       r.chance ? chanceChip(r.chance) : null,
       mail ? h('span', { class: 'bdg mailready' }, ic('mail'), 'Mail ready') : null,
-      roles ? h('span', { class: 'bdg' }, ic('briefcase'), roles === 1 ? '1 open role' : roles + ' open roles') : null,
+      roles ? h('span', { class: 'bdg' }, ic('briefcase'), (roles === 1 ? '1 open role' : roles + ' open roles') + (st.facets.Field ? ' in ' + st.facets.Field : '')) : null,
       r.person ? h('span', { class: 'bdg' }, ic('user'), r.person) : null) : null,
     r.know ? h('p', { class: 'know' }, r.know) : null,
     h('div', { class: 'next' + (r.next ? '' : ' none') }, h('span', null, 'Next'), r.next || (r.status === 'dropped' ? 'Nothing: dropped' : 'Not decided yet')),
@@ -257,9 +267,11 @@ function openLead(r, quiet) {
     const icon = (SECTION_IC.find(([re]) => re.test(sec.title || '')) || [])[1];
     const head = h('h4', null, ic(icon), sec.title);
     if (/open roles/i.test(sec.title || '')) {  // open roles: one card each, with how well it fits
-      return h('section', { class: 'ld-sec' }, head, h('div', { class: 'roles' }, sec.rows.map((x) => h(x.url ? 'a' : 'div', { class: 'role', ...(x.url ? { href: x.url, ...ext(x.url) } : {}) },
+      const f = st.facets.Field;
+      const sorted = f ? [...sec.rows].sort((a, b) => (b.field === f) - (a.field === f)) : sec.rows;
+      return h('section', { class: 'ld-sec' }, head, h('div', { class: 'roles' }, sorted.map((x) => h(x.url ? 'a' : 'div', { class: 'role' + (f && x.field && x.field !== f ? ' other' : ''), ...(x.url ? { href: x.url, ...ext(x.url) } : {}) },
         h('span', { class: 'role-t' }, x.text),
-        h('span', { class: 'role-m' }, x.fit ? meter(x.fit) : null, x.note || ''),
+        h('span', { class: 'role-m' }, x.field ? h('span', { class: 'fld' }, x.field) : null, x.fit ? meter(x.fit) : null, x.note || ''),
         x.url ? ic('arrow', 'go') : null))));
     }
     if (sec.rows.every((x) => x.url && !x.label)) {  // sources: chips with each site's own icon

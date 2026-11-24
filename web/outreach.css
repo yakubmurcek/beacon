@@ -164,6 +164,8 @@
 .role { position: relative; display: grid; gap: 6px; padding: 12px 40px 12px 14px; border-radius: var(--r-md); border: 1px solid var(--line);
   background: var(--panel); color: var(--text); text-decoration: none; }
 a.role:hover { border-color: var(--pop-line); }
+.role.other { opacity: .55; }
+.role .fld { flex: none; font: 700 11px/1 var(--sans); padding: 3px 7px; border-radius: var(--r-pill); background: var(--panel-2); color: var(--text); }
 .role-t { font: 650 14.5px/1.35 var(--sans); }
 .role-m { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; }
 .role .go { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--accent-ink); width: 18px; height: 18px; }
