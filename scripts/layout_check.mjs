@@ -133,7 +133,9 @@ for (const view of VIEWS) {
       const label = `${path} (${view.name}, ${mode.theme}, ${mode.lang})`;
       // a page may reload itself once (a new service worker right after a deploy): measure again after it settles
       const settle = async () => {
-        await page.goto(HUB + path, { waitUntil: 'networkidle', timeout: 20000 }).catch(() => page.waitForLoadState('load'));
+        const resp = await page.goto(HUB + path, { waitUntil: 'networkidle', timeout: 20000 }).catch(() => page.waitForLoadState('load'));
+        // the hub restarting (a deploy at night) answers with an error page: try again rather than raise a false alarm
+        if (resp && !resp.ok()) throw new Error(`${path} answered ${resp.status()}`);
         await page.evaluate(() => document.fonts.ready);
         return page.evaluate(measure, [COUNT, LIVE]);
       };
@@ -141,7 +143,7 @@ for (const view of VIEWS) {
       for (let tries = 1; !m; tries++) {
         try { m = await settle(); } catch (e) {
           if (tries === 3) throw e;
-          await page.waitForTimeout(1500);
+          await page.waitForTimeout(4000);
         }
       }
       seen.push([path, m.header]);
