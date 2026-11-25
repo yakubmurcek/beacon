@@ -596,7 +596,7 @@ def watchdog(q, now):
 HC_BIN = os.environ.get('HC_BIN') or shutil.which('hc') or '/usr/local/bin/hc'
 MACHINE = socket.gethostname().split('.')[0]
 IDLE = ('idle', 'done')  # hc's agent states that take input; a plain shell has none and is never typed into
-_hc_askers = None  # this tick's {asker id: terminal}, read once per tick
+_hc: dict = {}  # this tick's {asker id: terminal} under 'askers', read once per tick
 
 
 def hc(*args, timeout=30):
@@ -628,18 +628,17 @@ def claude_session_of(pid):
 def hc_askers():
     """This machine's live hc terminals by the id their asker files cards under: `hc:<machine>/<t>` for any agent
     (`tasks` outside Claude Code), and `Claude Code:<sid>` for a Claude Code running in one."""
-    global _hc_askers
-    if _hc_askers is None:
-        _hc_askers = {}
+    if 'askers' not in _hc:
+        _hc['askers'] = askers = {}
         for t in hc('ls').get('terminals') or []:
             if t.get('state') != 'live' or not t.get('address'):
                 continue
             term = t['address']
-            _hc_askers[f'hc:{MACHINE}/{term}'] = term
+            askers[f'hc:{MACHINE}/{term}'] = term
             sid = claude_session_of((hc('get', term).get('foreground') or {}).get('pid'))
             if sid:
-                _hc_askers[f'Claude Code:{sid}'] = term
-    return _hc_askers
+                askers[f'Claude Code:{sid}'] = term
+    return _hc['askers']
 
 
 def hc_mark(q):
@@ -712,8 +711,7 @@ def reopen(q, task):
 
 
 def tick(dry=False):
-    global _hc_askers
-    _hc_askers = None  # terminals come and go: read them afresh each tick
+    _hc.clear()  # terminals come and go: read them afresh each tick
     now = time.time()
     pending = cli.call('/api/questions?status=answered&pending=1&limit=5000', auth=False).get('questions') or []
     pending.sort(key=lambda q: q.get('answered_at') or 0)  # oldest first: a busy hour never starves an answer

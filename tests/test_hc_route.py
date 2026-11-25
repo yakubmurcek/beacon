@@ -40,7 +40,7 @@ class HcRouteTest(unittest.TestCase):
         return {}
 
     def run_takes(self, claimed=True):
-        self.d._hc_askers = None
+        self.d._hc.clear()
         with mock.patch.object(self.d, 'hc', side_effect=self.fake_hc), \
                 mock.patch.object(self.d, 'hc_screen', side_effect=lambda t: self.screen), \
                 mock.patch.object(self.d, 'claim', return_value=claimed) as claim, \
