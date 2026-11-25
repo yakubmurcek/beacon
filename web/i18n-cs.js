@@ -165,7 +165,7 @@ window.HUB_CS = {
     'Meeting': 'Schůzka', 'No lead matches.': 'Žádný kontakt neodpovídá.', 'Not contacted': 'Neosloveno', 'Not decided yet': 'Zatím nerozhodnuto',
     'Nothing matches.': 'Nic neodpovídá.', 'Nothing: dropped': 'Nic: vyřazeno', 'Open in Mail': 'Otevřít v Mailu', 'Open the form': 'Otevřít formulář',
     'Page': 'Stránka', 'Plan': 'Plán', 'Rejected': 'Odmítnuto', 'Replied': 'Odpověděl', 'Search a name, town, what we know…': 'Hledej jméno, město, cokoli víme…',
-    'Search a title…': 'Hledej název…', 'Send via': 'Poslat přes', 'Sent': 'Odesláno', 'Source': 'Zdroj', 'Subject': 'Předmět',
+    'Search a title…': 'Hledej název…', 'Send via': 'Poslat přes', 'Sent': 'Odesláno', 'Sent, waiting for a reply': 'Odesláno, čeká se na odpověď', 'Draft ready to send': 'Koncept připravený k odeslání', 'Source': 'Zdroj', 'Subject': 'Předmět',
     'The hub answered': 'Hub odpověděl', 'To': 'Komu', 'Waiting on you': 'Čeká na tebe', 'Website': 'Web', 'Write': 'Napsat',
     'businesses researched': 'prozkoumaných firem', 'days ago': 'dní zpátky', 'drafted or contacted': 'v konceptu nebo osloveno',
     'not contacted': 'neosloveno', 'open roles': 'volné pozice', 'reports and pages': 'zprávy a stránky', '1 open role': '1 volná pozice',
@@ -330,6 +330,7 @@ window.HUB_CS = {
     'money that is his (his half of cashable Robux, App Store, invoiced) minus ads, in Kč': 'peníze, které jsou jeho (jeho polovina vybratelných Robuxů, App Store, fakturace) mínus reklamy, v Kč',
   },
   patterns: {
+    'Sent {name}, waiting for a reply': 'Odesláno {name}, čeká se na odpověď',
     'Later: back at {name}': 'Později: vrátí se v {name}',
     '⏭ {n} put off till {name} · ': '⏭ {n|odložená|odložené|odložených} do {name} · ',
     'Views of his own TikTok videos, {name} visits, App Store listing impressions.':

@@ -8,7 +8,7 @@ const STATUS = [  // order, colour and plain word for each lead status (the lege
   ['client', 'var(--good)', 'Client'],
   ['meeting', '#1c5cab', 'Meeting'],
   ['replied', 'var(--s1)', 'Replied'],
-  ['sent', 'var(--s5)', 'Sent'],
+  ['sent', 'var(--s7)', 'Sent'],
   ['contacted', 'var(--s4)', 'Contacted'],
   ['drafted', 'var(--accent)', 'Draft, not sent'],
   ['not contacted', 'var(--dim)', 'Not contacted'],
@@ -17,13 +17,15 @@ const STATUS = [  // order, colour and plain word for each lead status (the lege
 ];
 // the band across the top of a card: where this lead stands, said as what it means for him
 const BAND = { client: ['star', 'Client'], meeting: ['user', 'Meeting set'], replied: ['mail', 'They replied'],
-  sent: ['mail', 'Sent, waiting for a reply'], contacted: ['phone', 'Contacted'], drafted: ['send', 'Draft ready to send'],
+  sent: ['check', 'Sent, waiting for a reply'], contacted: ['phone', 'Contacted'], drafted: ['send', 'Draft ready to send'],
   'not contacted': ['user', 'Not contacted yet'], rejected: ['x', 'Rejected'], dropped: ['x', 'Dropped'] };
 function bandOf(r) {  // [icon, word, colour]: the band and the State filter say the same
   const closed = r.ad === 'closed' && ['drafted', 'not contacted'].includes(r.status);
   if (closed) return ['x', r.status === 'drafted' ? "Ad closed: don't send" : 'Ad closed: skip it', 'var(--bad)'];
   const [icn, word] = BAND[r.status] || ['target', SWORD[r.status] || r.status];
-  return [icn, word, SCOLOR[r.status] || 'var(--dim)'];
+  // sent says when, so a sent card never reads like a draft waiting on him
+  const when = r.status === 'sent' && r.touched ? word.replace('Sent', `Sent ${fmtDate(r.touched)}`) : word;
+  return [icn, when, SCOLOR[r.status] || 'var(--dim)'];
 }
 function band(r) {
   const [icn, word, col] = bandOf(r);
