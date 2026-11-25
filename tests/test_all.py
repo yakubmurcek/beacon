@@ -881,7 +881,8 @@ class HubLoopsTest(unittest.TestCase):
     def test_loops_on_by_default(self):
         got = self.started(HUB_ALARMS='1')
         self.assertEqual(sorted(got), sorted(['Titles.loop', 'Narrator.loop', 'Progress.loop', 'Studio.loop',
-                                              'Notify.watch.<locals>.loop', 'Machines.watch.<locals>.loop',
+                                              'Notify.watch.<locals>.loop', 'Logins.watch.<locals>.loop',
+                                              'Machines.watch.<locals>.loop',
                                               'Questions.harvest_open', 'start_background.<locals>.warm']))
         self.assertEqual(self.started(HUB_LOOPS='1', HUB_ALARMS='1'), got)
 

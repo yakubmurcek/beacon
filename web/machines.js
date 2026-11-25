@@ -519,6 +519,96 @@ function deviceRow(m) {
     h('span', { class: 'dev-seen' }, seen + how + key));
 }
 
+// ------------------------------------------------------------------ Claude sign-ins (hub/logins.py)
+
+let logins = snap.get('logins');  // GET /api/logins: each box's Claude sign-in and a sign-in going on
+const codes = {};  // box -> the code he is typing, kept across redraws
+const FLOW_ON = new Set(['starting', 'waiting', 'checking']);
+const LOGIN_ST = { out: 'bad', soon: 'warn', ok: 'ok', unknown: 'offline' };
+let autoLogin = null;  // the box a notice's link (#/login/<box>) already started
+
+function daysLeft(ts) {
+  const d = Math.floor((ts - now()) / DAY);
+  if (d >= 3) return `${d} days left`;
+  return `ends ${new Date(ts * 1000).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`;
+}
+
+function loginText(b) {
+  const f = b.flow;
+  if (f?.state === 'done') return `✅ Signed in · ${daysLeft(f.ends_at)}`;
+  if (b.state === 'out') return 'signed out';
+  return b.ends_at ? daysLeft(b.ends_at) : 'not checked yet';
+}
+
+async function startLogin(box) {
+  try {
+    await api(`/api/logins/${encodeURIComponent(box)}/start`, {});
+  } catch (e) { showError(e); }
+  pollLogins();
+}
+
+async function sendCode(box) {
+  try {
+    await api(`/api/logins/${encodeURIComponent(box)}/code`, { code: codes[box] || '' });
+    delete codes[box];
+  } catch (e) { showError(e); }
+  pollLogins();
+}
+
+async function pollLogins() {
+  try {
+    logins = await api('/api/logins');
+    snap.set('logins', logins);
+  } catch (e) { showError(e); return; }
+  render();
+  // the page asks again while the box works (getting the link, checking the code), not while he copies the code
+  if ((logins.boxes || []).some((b) => ['starting', 'checking'].includes(b.flow?.state))) setTimeout(pollLogins, 1500);
+}
+
+function flowBlock(b) {
+  const f = b.flow;
+  if (!f) return null;
+  if (f.state === 'starting') return h('p', { class: 'login-step' }, 'Getting the sign-in link…');
+  if (f.state === 'checking') return h('p', { class: 'login-step' }, 'Signing in…');
+  if (f.state === 'failed') return h('p', { class: 'login-step bad-t' }, `Didn't work: ${f.error || 'unknown'}`);
+  if (f.state !== 'waiting') return null;
+  if (!f.url) return h('p', { class: 'login-step' }, 'Open this page on your own login to see the link.');
+  const input = /** @type {HTMLInputElement} */ (h('input', { class: 'login-code', type: 'text', autocomplete: 'off', spellcheck: 'false',
+    placeholder: 'Paste the code', value: codes[b.machine] || '' }));
+  input.addEventListener('input', () => { codes[b.machine] = input.value.trim(); });
+  return h('ol', { class: 'login-steps' },
+    h('li', {}, h('a', { href: f.url, target: '_blank', rel: 'noopener' }, 'Open the sign-in page ↗')),
+    h('li', {}, 'Approve, then copy the code it shows'),
+    h('li', {}, h('form', { class: 'login-form', onsubmit: (e) => { e.preventDefault(); sendCode(b.machine); } },
+      input, h('button', { type: 'submit', class: 'primary' }, 'Sign in'))));
+}
+
+function loginRow(b) {
+  const busy = FLOW_ON.has(b.flow?.state);
+  const st = b.flow?.state === 'done' ? 'ok' : LOGIN_ST[b.state] || 'offline';
+  return h('li', { class: `login st-${st}`, id: `login-${b.machine}` },
+    h('div', { class: 'login-head' }, h('span', { class: 'dot' }), h('strong', {}, b.machine),
+      h('span', { class: 'muted' }, loginText(b)),
+      busy ? null : h('button', { type: 'button', class: st === 'ok' ? 'login-go' : 'login-go primary', onclick: () => startLogin(b.machine) }, 'Sign in')),
+    flowBlock(b));
+}
+
+function openLogin(box) {  // a notice's link (#/login/<box>): straight to that box's sign-in, started once
+  document.getElementById(`login-${box}`)?.scrollIntoView({ block: 'center' });
+  const b = (logins?.boxes || []).find((x) => x.machine === box);
+  if (!b || autoLogin === box || FLOW_ON.has(b.flow?.state)) return;
+  autoLogin = box;
+  startLogin(box);
+}
+
+function loginsPanel() {
+  const boxes = logins?.boxes || [];
+  if (!boxes.length) return null;
+  return h('section', { class: 'panel logins', id: 'logins' },
+    h('div', { class: 'panel-head' }, h('h2', {}, 'Claude sign-ins')),
+    h('ul', {}, boxes.map(loginRow)));
+}
+
 // ------------------------------------------------------------------ views
 
 function overview(list) {
@@ -527,6 +617,7 @@ function overview(list) {
   const shown = full.filter((m) => matches(m.machine, m.role, ...(m.problems || []), ...(m.jobs || []).flatMap((j) => [j.name, j.desc, j.why])));
   return [
     mapPanel(list),
+    loginsPanel(),
     h('div', { class: 'cards' }, shown.map(card)),
     devices.length ? h('section', { class: 'panel devices' }, h('div', { class: 'panel-head' }, h('h2', {}, 'Phones and other devices')),
       h('ul', {}, devices.filter((m) => matches(m.machine, m.role)).map(deviceRow))) : null,
@@ -607,6 +698,7 @@ function namesView() {
 
 function route() {
   const hash = location.hash.replace(/^#\/?/, '');
+  if (hash.startsWith('login/')) return { view: 'map', machine: null, login: decodeURIComponent(hash.slice(6)) };
   return hash.startsWith('jobs') ? { view: 'jobs' } : hash.startsWith('names') ? { view: 'names' } : { view: 'map', machine: hash.startsWith('m/') ? decodeURIComponent(hash.slice(2)) : null };
 }
 
@@ -627,18 +719,23 @@ function render(scroll) {
     while (parts[0].nextSibling) parts[0].nextSibling.remove();
     view.append(...parts.slice(1));
   } else view.replaceChildren(...parts);
-  if (scroll && r.machine) {
-    const el = document.getElementById(`m-${r.machine}`);
-    if (el) { el.classList.add('flash'); el.scrollIntoView({ block: 'start' }); }
-  }
+  if (scroll) jumpTo(r);
+}
+
+function jumpTo(r) {  // a link into the page: one machine's card, or one box's Claude sign-in
+  if (r.login) openLogin(r.login);
+  const el = r.machine && document.getElementById(`m-${r.machine}`);
+  if (el) { el.classList.add('flash'); el.scrollIntoView({ block: 'start' }); }
 }
 
 let scrolled = false;
 async function load() {
   try {
-    const [d, n] = await Promise.all([api('/api/machines'), api('/api/names').catch(() => names)]);
+    const [d, n, l] = await Promise.all([api('/api/machines'), api('/api/names').catch(() => names), api('/api/logins').catch(() => logins)]);
     d.fetchedAt = Date.now() / 1000;
     names = n;
+    logins = l;
+    snap.set('logins', l);
     snap.set('names', n);
     data = d;
     snap.set('machines', d);
@@ -646,7 +743,8 @@ async function load() {
   } catch (e) {
     showError(e);
   }
-  render(!scrolled);
+  const typing = document.activeElement?.classList.contains('login-code');
+  if (!typing) render(!scrolled);
   scrolled = true;
 }
 

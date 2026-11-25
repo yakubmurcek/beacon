@@ -19,6 +19,10 @@
     "https": "",
     "agent_home": "devbox"
   },
+  "claude_logins": {
+    "_about": "Boxes whose Claude Code sign-in Beacon watches and can redo from a phone (hub/logins.py): the ssh target, the login command there, optional expiry (a command printing refreshTokenExpiresAt in ms; default reads ~/.claude/.credentials.json) and after (run there once signed in).",
+    "devbox": {"ssh": "root@devbox", "login": "claude auth login --claudeai", "after": "systemctl restart claude-remote-control"}
+  },
   "machines": {
     "cloud": {
       "role": "VPS: the hub",

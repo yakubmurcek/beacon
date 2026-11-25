@@ -36,6 +36,7 @@ from endings import Endings
 from feedback import Feedback
 from knowledge import Knowledge
 from labs import Labs
+from logins import Logins
 from machines import Machines
 from machines import telegram as machines_telegram
 from names import Names
@@ -174,6 +175,7 @@ class Handler(BaseHTTPRequestHandler):
     questions = None
     machines = None
     names = None
+    logins: Logins  # set in main(); a test server without it answers its routes 404
     knowledge = None
     rules = None
     endings = None
@@ -400,6 +402,29 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return None
         return self.send_json(200, out)
+
+    def get_logins(self, path, q):
+        """Every box's Claude sign-in: days left, and a sign-in going on (its link only for his own login)."""
+        return self.send_json(200, self.logins.view(with_url=self.task_writer() == 'owner'))
+
+    def post_logins(self, path):
+        """His tap on Sign in, or the code he pasted: POST /api/logins/<box>/start | /code. His login only."""
+        who, body = self.writer_body(4000)
+        if not who:
+            return None
+        if who != 'owner':
+            return self.send_json(403, {'error': 'forbidden: only he signs a box in'})
+        m = re.fullmatch(r'/api/logins/([\w.-]+)/(start|code)', path)
+        if not m:
+            return self.send_json(404, {'error': 'not found'})
+        box, act = m.groups()
+        try:
+            out = self.logins.start(box) if act == 'start' else self.logins.code(box, (body or {}).get('code'))
+            return self.send_json(200, out)
+        except KeyError:
+            return self.send_json(404, {'error': f'no sign-in set up for {box}'})
+        except ValueError as e:
+            return self.send_json(400, {'error': str(e)})
 
     def post_labs(self, path):
         """Labs spends his model budget and reads his own data: his login or the token only."""
@@ -1050,6 +1075,7 @@ GET_ROUTES = {
     # 0.2 s to build: served from the last build, rebuilt behind it
     '/api/meta': (None, lambda h, path, q: h.send_json(200, CACHE.get('meta', h.store.meta, fresh=10, stale=60))),
     '/api/machines': ('machines', _view('machines', 'view')),
+    '/api/logins': ('logins', Handler.get_logins),  # Claude sign-ins per box, and signing one in again
     # what a collector reports and which copies to update
     '/api/freshness': ('machines', lambda h, path, q: h.send_json(200, h.machines.freshness_for(q.get('machine') or ''))),
     '/api/names': ('names', _view('names', 'view')),
@@ -1149,6 +1175,7 @@ POST_PREFIXES = (
     ('/api/rules/', ('rules', Handler.post_rules)),
     ('/api/endings', ('endings', Handler.post_endings)),
     ('/api/labs/', (None, Handler.post_labs)),
+    ('/api/logins/', ('logins', Handler.post_logins)),
     ('/api/talk/', (None, Handler.post_talk)),
     ('/mcp/', (None, Handler.post_mcp)),  # the connector door: the key in the link is the login
 )
@@ -1214,6 +1241,7 @@ def outreach_link(body):
 def start_background():
     """The hub's own start-up jobs (HUB_LOOPS=0 skips them): the alarm watch, old cards' pictures, the warm-up."""
     Handler.machines.watch()  # alarms only where HUB_ALARMS=1 (the live hub)
+    Handler.logins.watch()  # the Claude sign-ins' end dates; the notice only where HUB_ALARMS=1
     threading.Thread(target=Handler.questions.harvest_open, daemon=True).start()
 
     def warm():
@@ -1261,6 +1289,10 @@ def main():
     Handler.talk = Talk(Handler.store, Handler.labs, Handler.questions, Handler.tasks)
     Handler.aijobs.extra.append(Handler.talk.aijob)  # the voice's own cost on /ai
     start_notify(os.environ.get('HUB_ALARMS') == '1', loops)
+    live = os.environ.get('HUB_ALARMS') == '1'
+    Handler.logins = Logins(notify=None, base=HUB.get('https') or HUB.get('url') or '')
+    if live:  # the notice that a sign-in ends soon goes where every alarm goes
+        Handler.logins.notify = lambda n: getattr(Handler, 'notify').post(n)  # noqa: B009 (set by start_notify)
     Handler.questions.harvesting = True  # screenshots a question links to (a PR body) land on its card
     if loops:
         start_background()

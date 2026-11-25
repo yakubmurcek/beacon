@@ -258,3 +258,15 @@ main .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--st)
 @media (max-width: 480px) { .nm-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .nm-flags li .job-m { white-space: nowrap; }
 .more summary.nm-sum { font: 600 12px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+
+/* Claude sign-ins: one row per box, the sign-in steps under it while one runs */
+.logins ul { list-style: none; margin: 0; padding: 0; display: grid; }
+.login { padding: var(--sp-2) 0; border-top: 1px solid var(--line); font-size: var(--fs-sm); }
+.logins li:first-child { border-top: 0; }
+.login-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.login-head .login-go { margin-left: auto; padding: 4px 12px; }
+.login-step { margin: var(--sp-2) 0 0; }
+.login-steps { margin: var(--sp-2) 0 0; padding-left: 1.4em; display: grid; gap: var(--sp-2); }
+.login-steps a { font-weight: 700; }
+.login-form { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+.login-code { flex: 1 1 220px; min-width: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); font-family: var(--mono); }
