@@ -18,6 +18,7 @@ sys.path[:0] = [os.path.join(ROOT, 'hub'), os.path.join(ROOT, 'scripts')]
 from store import Store  # noqa: E402
 from tasks import Tasks, split_paste  # noqa: E402
 from questions import Questions  # noqa: E402
+from settings import OWNER_ID  # noqa: E402
 
 DAY = 86400
 
@@ -219,6 +220,21 @@ class TasksServerTest(LiveHub, unittest.TestCase):
         code, t = self.call('/api/tasks', {'title': 'mine'}, self.me())
         self.assertEqual((code, t['title']), (201, 'mine'))
         self.assertEqual(self.call('/api/tasks', {'title': 'agent', 'body': '## Goal\nx\n## Done-test\ny\n## Steps\n1. z'}, {'Authorization': 'Bearer tok'})[0], 201)
+
+    def test_only_his_own_device_signs_as_him(self):
+        """A note or task under his name answers its task's open cards: an agent's token never signs with it."""
+        tok = {'Authorization': 'Bearer tok'}
+        dt = '## Goal\nx\n## Done-test\ny\n## Steps\n1. z'
+        _, t = self.call('/api/tasks', {'title': 'mine'}, self.me())
+        notes, ask = f"/api/tasks/{t['id']}/comments", {'question': 'Ship it?', 'options': ['Yes']}
+        for owner in (OWNER_ID, f' {OWNER_ID.upper()} '):
+            self.assertEqual(self.call(notes, {'text': 'merge', 'author': owner}, tok)[0], 403)
+            self.assertEqual(self.call('/api/tasks', {'title': 'Ship it', 'body': dt, 'author': owner}, tok)[0], 403)
+            self.assertEqual(self.call('/api/questions', dict(ask, author=owner), tok)[0], 403)
+        self.assertEqual(self.call(notes, {'text': 'started', 'author': 'Claude Code ab'}, tok)[0], 201)
+        self.assertEqual(self.call(notes, {'text': 'ok'}, self.me())[0], 201)
+        self.assertEqual([(c['author'], c['text']) for c in self.call(f"/api/tasks/{t['id']}")[1]['comments']],
+                         [('Claude Code ab', 'started'), (OWNER_ID, 'ok')])
 
     def test_another_site_cannot_write_with_his_login(self):
         me = self.me()

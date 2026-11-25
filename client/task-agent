@@ -26,10 +26,9 @@ never starts a second run while one is going, so one task at a time:
      so it is never retried blind: his reply (`reply` below) hands it back.
 
   task-agent              route new tasks, then work the next one (exits 0 when none is waiting)
-  task-agent reply ID TEXT   his Telegram reply, passed on by Hermes: `merge`, `drop`, `mine`,
+  task-agent reply ID TEXT   his answer to a task's question on http://beacon/decisions, passed on by
+                             answer-dispatcher (`--noted`: answered on the task): `merge`, `drop`, `mine`,
                              or an answer / change request (noted, and the task goes back to the agent).
-                             His answer to a task's question on http://beacon/decisions comes the same
-                             way, from answer-dispatcher (`reply --noted`: answered on the task).
   task-agent --dry-run    show the queue, the task it would take and the prompt
   task-agent sync-prs     only the PR check: a merged PR closes its task (own timer, any mode)
   task-agent pause|resume   stop / restart everything autonomous (routing and runs); the PR check,
@@ -91,6 +90,10 @@ WAITS = ('parked', 'needs-spec')  # needs-spec: open questions left, not ready t
 NOT_BEFORE = re.compile(r'not before:?\**\s*(\d{4}-\d{2}-\d{2})', re.I)
 ME = 'task-agent'
 OWNER, OWNER_NAME = settings.OWNER_ID, settings.OWNER_NAME  # his notes carry OWNER as their author
+# His answers from the Decisions page, applied here (`reply`): the hub refuses an agent signing as OWNER, so they carry
+# the page's own author, and every "his word" check reads both.
+RELAY = 'decisions'
+HIS = (OWNER, RELAY)
 AGENT = settings.CONFIG['agent']
 PROJECTS = os.environ.get('TASK_AGENT_PROJECTS', settings.p('projects'))
 WORK = os.environ.get('TASK_AGENT_WORK', settings.p('work'))
@@ -147,7 +150,7 @@ ROUTE_SCHEMA = json.dumps({'type': 'object', 'required': ['route', 'why'], 'prop
     'why': {'type': 'string', 'description': 'one short sentence'},
     'question': {'type': 'string', 'description': 'with route=ask: the one question for him'}}})
 
-# His Telegram replies (through Hermes: `task-agent reply ID "text"`).
+# His answers (`task-agent reply ID "text"`, from answer-dispatcher).
 MERGE = {'merge', 'merge it', 'yes merge', 'ok merge', 'merge pls', 'merge please', 'ship it', 'mergni', 'mergni to'}
 DROP = {'drop', 'drop it', 'cancel', 'forget it', 'zahod', 'zahoď'}  # not 'no': that answers a question
 MINE = {'mine', 'i do it', "i'll do it", 'ill do it', 'me', 'udělám', 'udelam', 'já', 'ja'}
@@ -1238,7 +1241,7 @@ def refix(task, conf, claimed):
     """The fixer's one retry after a reject: a fresh run on the same task (it reads the reject note first). Returns
     (out, err, sid, its notes, task, asked, left) or None when it could not start."""
     tid = task['id']
-    if any(c['author'] == OWNER and c['at'] >= claimed for c in cli.call(f'/api/tasks/{tid}', auth=False)['comments']):
+    if any(c['author'] in HIS and c['at'] >= claimed for c in cli.call(f'/api/tasks/{tid}', auth=False)['comments']):
         return None  # he answered meanwhile: his word, not a second try, decides what happens next
     try:
         where, repo = workdir(task)
@@ -1621,7 +1624,7 @@ def outcome(task, ok, why=''):
 def attempts(comments):
     """Fix attempts since his last word on the task (or the stale close): a pickup or an after-reject retry each,
     a run that could not start none. Counted from the task's own notes, so it holds across days and machines."""
-    start = max([i + 1 for i, c in enumerate(comments) if c['author'] == OWNER
+    start = max([i + 1 for i, c in enumerate(comments) if c['author'] in HIS
                  or (c['author'] == ME and c['text'].startswith(STALE))] or [0])
     n = 0
     for c in comments[start:]:
@@ -1636,7 +1639,7 @@ def attempts(comments):
 
 def tried(comments):
     """What the attempts since his last word did, one line each, for his phone."""
-    start = max([i + 1 for i, c in enumerate(comments) if c['author'] == OWNER
+    start = max([i + 1 for i, c in enumerate(comments) if c['author'] in HIS
                  or (c['author'] == ME and c['text'].startswith(STALE))] or [0])
     out = []
     for c in comments[start:]:
@@ -1684,8 +1687,8 @@ def criteria(task, conf, full=None):
             block += '\n' + OUT_OF_RUN
     else:  # a vague report he was asked about (needs_spec, the watcher's question): his answer is the definition
         notes = (full or {}).get('comments') or []
-        asked = [i for i, c in enumerate(notes) if SPEC_ASK in c['text'] and c['author'] != OWNER]
-        his = [c['text'].strip() for c in notes[asked[-1] + 1:] if c['author'] == OWNER] if asked else []
+        asked = [i for i, c in enumerate(notes) if SPEC_ASK in c['text'] and c['author'] not in HIS]
+        his = [c['text'].strip() for c in notes[asked[-1] + 1:] if c['author'] in HIS] if asked else []
         if not his:
             return ''
         block = '\n'.join(['## Hotovo když (z odpovědi vlastníka)', *[f'- {x}' for x in his],
@@ -1932,7 +1935,7 @@ def seed_scorecard():
         checks = [c['text'].splitlines()[0] for c in full['comments'] if c['author'] == ME and c['text'].startswith('🔎 Nezávislá')]
         if checks:
             row['verdict'] = 'ověřeno' if '✅' in checks[-1] else 'neověřeno'
-        his = [c['text'] for c in full['comments'] if c['author'] == OWNER]
+        his = [c['text'] for c in full['comments'] if c['author'] in HIS]
         if his:
             word = ' '.join(his[-1].lower().strip(' .!?').split())
             row['outcome'] = 'přijato' if word in OK_WORDS else 'zamítnuto' if word in DROP else None
@@ -2159,12 +2162,12 @@ def take_answers(tid):
 
 
 def reply(tid, text, noted=False):
-    """His Telegram reply about a task, passed on verbatim by Hermes. `merge` merges the PR the
+    """His answer about a task from the Decisions page, passed on verbatim by answer-dispatcher. `merge` merges the PR
     agent opened, `drop` drops the task, `mine` keeps it his; anything else is an answer or a
     change request: noted as his, and the task goes back to the agent. Prints one line for him."""
     word = ' '.join(text.lower().strip(' .!?`"\'').split())
     if word in STOP_WORDS:  # the kill switch: a reply to any of the agent's messages
-        stop_agent(f'his "{text.strip()[:40]}" on Telegram (#{tid})')
+        stop_agent(f'his "{text.strip()[:40]}" on Beacon (#{tid})')
         print('Zastaveno: agent nezačne nic nového (a běžící běh ukončil), dokud nenapíšeš start.')
         return 0
     if word in START_WORDS:
@@ -2189,33 +2192,33 @@ def reply(tid, text, noted=False):
         if r.returncode != 0:
             print(f"Couldn't merge #{tid}: {(r.stderr or r.stdout).strip().splitlines()[-1:] or ['no reason given']}"[:300])
             return 1
-        # His note first: it answers the task's open question, which closing would withdraw.
-        note(tid, f'✅ Merged {pr} (his reply on Telegram).', OWNER)
+        # The note first, then the claim: closing would withdraw a card still open on the task.
+        note(tid, f'✅ Merged {pr} (his answer on Beacon).', RELAY)
         take_answers(tid)
         cli.call(f'/api/tasks/{tid}', {'status': 'done', 'tags': [t for t in task['tags'] if t != TAG]})
         print(f'Merged. #{tid} is done.')
     elif word in DROP and re.search(rf'-- AGENT #{tid}\b', json.dumps(task.get('comments') or [], ensure_ascii=False)):
         # A repo agent's change is still in the game (marked `-- AGENT #id`): dropping the task would leave it there.
         # The agent takes it back and reverts its lines first, then closes the task itself.
-        note(tid, f'{text.strip()} (vrať změny agenta a zavři úkol)', OWNER)
+        note(tid, f'{text.strip()} (vrať změny agenta a zavři úkol)', RELAY)
         take_answers(tid)
         cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': [*[t for t in task['tags'] if t != TAG], TAG]})
         print(f'Understood. The agent reverts its change on #{tid}, then closes it.')
     elif word in DROP:
         if pr:
             subprocess.run([GH, 'pr', 'close', pr, '--delete-branch'], env=gh_env(), capture_output=True, timeout=60)
-        note(tid, '🗑️ Dropped (his reply on Telegram).' + (f' Closed {pr}.' if pr else ''), OWNER)
+        note(tid, '🗑️ Dropped (his answer on Beacon).' + (f' Closed {pr}.' if pr else ''), RELAY)
         take_answers(tid)
         cli.call(f'/api/tasks/{tid}', {'status': 'dropped', 'tags': [t for t in task['tags'] if t != TAG]})
         print(f'Dropped #{tid}' + (' and closed its PR.' if pr else '.'))
     elif word in MINE:
         cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': [t for t in task['tags'] if t != TAG]})
-        note(tid, '👉 He takes it himself (his reply on Telegram).', OWNER)
+        note(tid, '👉 He takes it himself (his answer on Beacon).', RELAY)
         take_answers(tid)
         print(f'Very well, #{tid} is yours.')
     else:
         if not noted:  # answered on the task itself: his note is there already
-            note(tid, text.strip(), OWNER)  # an answer: a `needs-spec` question is answered by it
+            note(tid, text.strip(), RELAY)  # an answer: the spec check reads it as his (HIS)
         cli.call(f'/api/tasks/{tid}', {'status': 'todo', 'tags': [*[t for t in task['tags'] if t not in (TAG, 'needs-spec')], TAG]})
         if allowed(task):  # this agent works it next; a task outside its scope is answer-dispatcher's to resume
             take_answers(tid)

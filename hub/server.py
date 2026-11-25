@@ -630,6 +630,16 @@ class Handler(BaseHTTPRequestHandler):
         body = self.read_json(limit) if who else None
         return (who, body) if body is not None else (None, None)
 
+    def signed_author(self, who, body):
+        """The name a write is signed with, or None once the 403 is sent. Only his own device signs as him: a note
+        or task under his name answers that task's open cards and counts as his OK, so an agent's token never
+        may (the Telegram bridge that once did is gone; task 1963, 2026-11-24)."""
+        author = str(body.get('author') or (OWNER_ID if who == 'owner' else 'agent')).strip()[:80]
+        if who != 'owner' and author.casefold() == OWNER_ID.casefold():
+            self.send_json(403, {'error': 'forbidden: only his own device signs as him'})
+            return None
+        return author
+
     def post_outreach_move(self, path):
         """A tap on a lead's next move (Write the draft, Drop it…): the hub files the task for the agent."""
         who, body = self.writer_body()
@@ -672,7 +682,9 @@ class Handler(BaseHTTPRequestHandler):
         who, body = self.writer_body()
         if not who:
             return
-        author = str(body.get('author') or (OWNER_ID if who == 'owner' else 'agent'))[:80]
+        author = self.signed_author(who, body)
+        if not author:
+            return
         m = TASK_PATH.match(path)
         if path != '/api/tasks' and not m:
             return self.send_json(404, {'error': 'not found'})
@@ -795,7 +807,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if path == '/api/questions':
-                author = str(body.get('author') or (OWNER_ID if who == 'owner' else 'agent'))[:80]
+                author = self.signed_author(who, body)
+                if not author:
+                    return None
                 return self.send_json(201, self.questions.create(body, author, hands=who == 'owner'))
             m = QUESTION_PATH.match(path)
             if not m or not m.group(2):
