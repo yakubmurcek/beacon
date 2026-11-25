@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Builds one release of the TypeScript app as a tarball: api/server.js and api/worker.js (bundled, no node_modules),
+# web/ (the Next.js static export), and release.env naming the commit. CI uploads it; the hub server's deploy step
+# unpacks it to /srv/beacon/releases/<commit> (docs/design/2026-11-ts-migration.md, section 9).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+commit="${BEACON_COMMIT:-$(git rev-parse HEAD)}"
+out="${1:-release}"
+export PATH="$PWD/node_modules/.bin:$PATH"
+(cd ts/apps/web && NEXT_TELEMETRY_DISABLED=1 next build >/dev/null)
+(cd ts/apps/api && node build.mjs)
+rm -rf "$out" && mkdir -p "$out/api"
+cp ts/apps/api/bundle/server.js ts/apps/api/bundle/worker.js ts/apps/api/bundle/*.map "$out/api/"
+cp -r ts/apps/web/out "$out/web"
+printf '{ "type": "module", "private": true }\n' > "$out/package.json"
+printf 'BEACON_COMMIT=%s\n' "$commit" > "$out/release.env"
+tar -czf "beacon-$commit.tar.gz" -C "$out" .
+sha256sum "beacon-$commit.tar.gz" > "beacon-$commit.tar.gz.sha256"
+echo "beacon-$commit.tar.gz"

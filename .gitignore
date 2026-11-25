@@ -16,3 +16,5 @@ bundle/
 out/
 *.tsbuildinfo
 coverage/
+release/
+beacon-*.tar.gz*
