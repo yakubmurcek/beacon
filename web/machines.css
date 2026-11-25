@@ -271,3 +271,5 @@ main .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--st)
 .login-form { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
 .login-code { flex: 1 1 220px; min-width: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); font-family: var(--mono); }
 #logins-slot .logins { margin-bottom: 0; }
+.login-one { list-style: none; margin: var(--sp-2) 0; padding: 0; }
+.login-one .login { border-top: 0; }

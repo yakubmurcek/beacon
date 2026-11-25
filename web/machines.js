@@ -298,11 +298,12 @@ function fillSheet(m) {
   const bad = badJobs(m), jobs = m.jobs || [];
   const running = jobs.filter((j) => j.status === 'running').length;
   map.sheet.className = `map-sheet st-${m.state}` + (map.sheet.classList.contains('open') ? ' open' : '');
-  map.sheet.replaceChildren(
+  map.sheet.replaceChildren(...[
     h('header', {}, h('span', { class: 'dot' }), h('h3', {}, m.machine), pill(m.state),
       h('button', { class: 'x', type: 'button', 'aria-label': 'Close', onclick: (e) => { e.stopPropagation(); select(null); } }, '×')),
     m.role ? h('p', { class: 'role' }, m.role) : null,
     m.problems && m.problems.length ? h('ul', { class: 'problems' }, m.problems.slice(0, 3).map((p) => h('li', {}, p))) : null,
+    loginFor(m.machine),
     st ? h('div', { class: 'meters' }, meter('RAM', st.mem_total - st.mem_avail, st.mem_total),
       ...disks(st).slice(0, 2).map((d) => meter(`Disk ${d.mount}`, d.size - d.free, d.size, `${gb(d.free)} free`))) : null,
     st ? h('p', { class: 'facts' }, [st.cpu_pct != null ? `CPU ${st.cpu_pct}%` : null, st.temp_c != null ? `${st.temp_c} °C` : null,
@@ -313,7 +314,7 @@ function fillSheet(m) {
         running ? ` · ${running} running now` : ''),
       bad.length ? h('ul', {}, bad.slice(0, 3).map((j) => h('li', {}, j.name))) : null) : null,
     h('a', { class: 'sheet-more', href: `#/m/${encodeURIComponent(m.machine)}`, onclick: (e) => e.stopPropagation() },
-      m.stats || m.seen_at || (m.always_on && m.role) ? 'Whole card ↓' : 'In the device list ↓'));
+      m.stats || m.seen_at || (m.always_on && m.role) ? 'Whole card ↓' : 'In the device list ↓')].filter(Boolean));
 }
 
 // ------------------------------------------------------------------ cards
@@ -496,6 +497,7 @@ function card(m) {
       h('span', { class: 'seen' }, reported)),
     m.role ? h('p', { class: 'role' }, m.role) : null,
     m.problems && m.problems.length ? h('ul', { class: 'problems' }, m.problems.map((p) => h('li', {}, p))) : null,
+    loginFor(m.machine),
     st ? h('div', { class: 'meters' },
       meter('RAM', st.mem_total - st.mem_avail, st.mem_total),
       ...disks(st).map((d) => meter(`Disk ${d.mount}`, d.size - d.free, d.size, `${gb(d.free)} free of ${gb(d.size)}`))) : null,
@@ -583,10 +585,10 @@ function flowBlock(b) {
       input, h('button', { type: 'submit', class: 'primary' }, 'Sign in'))));
 }
 
-function loginRow(b) {
+function loginRow(b, own = true) {
   const busy = FLOW_ON.has(b.flow?.state);
   const st = b.flow?.state === 'done' ? 'ok' : LOGIN_ST[b.state] || 'offline';
-  return h('li', { class: `login st-${st}`, id: `login-${b.machine}` },
+  return h('li', { class: `login st-${st}`, id: own ? `login-${b.machine}` : null },
     h('div', { class: 'login-head' }, h('span', { class: 'dot' }), h('strong', {}, b.machine),
       h('span', { class: 'muted' }, loginText(b)),
       busy ? null : h('button', { type: 'button', class: st === 'ok' ? 'login-go' : 'login-go primary', onclick: () => startLogin(b.machine) }, 'Sign in')),
@@ -603,6 +605,11 @@ function openLogin(box) {  // a notice's link (#/login/<box>): straight to that 
 
 function showLogins(view) {  // on top of the overview, above the map: a sign-in is the one thing here he acts on
   $('logins-slot').replaceChildren(...(view === 'map' ? [loginsPanel()].filter(Boolean) : []));
+}
+
+function loginFor(machine) {  // the box's own Claude sign-in, on its card and its map popup
+  const b = (logins?.boxes || []).find((x) => x.machine === machine);
+  return b ? h('ul', { class: 'login-one' }, loginRow(b, false)) : null;
 }
 
 function loginsPanel() {
