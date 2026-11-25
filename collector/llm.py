@@ -106,6 +106,10 @@ def code_of(text):
     return '\n'.join(x for x in text.splitlines() if not COMMENT_RE.match(x))
 
 
+# A script named by its file name alone, run from the same folder ('ui_review.py' next to the job that runs it).
+SIBLING_RE = re.compile(r"""["']([\w-]+\.(?:py|sh|mjs|js))["']""")
+
+
 def files_of(words, cache):
     """The scripts a command runs, then the scripts those name (one level), his own files only."""
     first = []
@@ -119,8 +123,10 @@ def files_of(words, cache):
         text = read_text(p, cache)
         if not text:
             continue
-        for m in PATH_RE.finditer(code_of(text)):
-            q = expand(m.group(1))
+        code = code_of(text)
+        named = [expand(m.group(1)) for m in PATH_RE.finditer(code)]
+        named += [os.path.join(os.path.dirname(p), m.group(1)) for m in SIBLING_RE.finditer(code)]
+        for q in named:
             if len(out) >= MAX_FILES:
                 break
             if q not in out and readable(q):
