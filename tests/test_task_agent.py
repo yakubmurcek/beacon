@@ -590,7 +590,7 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         log = open(self.gh_log).read()
         self.assertIn('pr merge https://github.com/o/r/pull/7 --squash --delete-branch', log)
         t = self.tasks.get(tid)
-        self.assertEqual((t['status'], t['comments'][-1]['author']), ('done', 'owner'))
+        self.assertEqual((t['status'], t['comments'][-1]['author']), ('done', 'decisions'))
 
     def test_a_failed_merge_leaves_the_task_open(self):
         tid = self.with_pr()
@@ -630,7 +630,8 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         self.agent.main([])
         self.agent.main(['reply', str(t['id']), 'yearly,', 'and', 'no', 'trial'])
         t = self.tasks.get(t['id'])
-        self.assertEqual((t['comments'][-1]['text'], t['comments'][-1]['author']), ('yearly, and no trial', 'owner'))
+        last = t['comments'][-1]
+        self.assertEqual((last['text'], last['author']), ('yearly, and no trial', 'decisions'))
         self.assertEqual([x['id'] for x in self.agent.queue()], [t['id']])
 
 
@@ -641,21 +642,25 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         self.assertEqual([(q['task_id'], q['question'], q['blocking']) for q in qs],
                          [(t['id'], 'which plan, monthly or yearly?', True)])
 
-    def test_a_telegram_reply_answers_the_tasks_question(self):
+    def test_a_relayed_answer_never_signs_as_him(self):
+        """The hub refuses an agent's token signing as the owner (task 1963): his page answer, applied here, is noted
+        under the Decisions page's name, and the agent still reads it as his word."""
+        A = self.agent
         t = self.hand('Pick a plan', 'ask')
         self.agent.main([])
         self.agent.main(['reply', str(t['id']), 'yearly'])
-        q = self.server.Handler.questions.list('all')[0]
-        self.assertEqual((q['status'], q['answer'], q['answered_via'], q['taken_by']), ('answered', 'yearly', 'task', 'task-agent'))
-        self.assertEqual(sum(c['text'] == 'yearly' for c in self.tasks.get(t['id'])['comments']), 1)
+        notes = self.tasks.get(t['id'])['comments']
+        self.assertEqual([c['author'] for c in notes if c['text'] == 'yearly'], ['decisions'])
+        self.assertNotIn(A.OWNER, [c['author'] for c in notes])
+        self.assertEqual(A.attempts([*notes, {'author': A.ME, 'text': A.PICKUP}]), 1)  # counted from his word on
 
-    def test_drop_on_telegram_answers_the_question_before_closing(self):
+    def test_drop_from_the_page_closes_the_task(self):
         t = self.hand('Pick a plan', 'ask')
         self.agent.main([])
         self.agent.main(['reply', str(t['id']), 'drop'])
-        q = self.server.Handler.questions.list('all')[0]
-        self.assertEqual((q['status'], q['answer'][:10]), ('answered', '🗑️ Dropped'))
-        self.assertEqual(self.tasks.get(t['id'])['status'], 'dropped')
+        t = self.tasks.get(t['id'])
+        self.assertEqual((t['status'], t['comments'][-1]['author'], t['comments'][-1]['text'][:10]),
+                         ('dropped', 'decisions', '🗑️ Dropped'))
 
     def test_long_words_are_cut_for_the_phone(self):
         long = 'because ' * 60
