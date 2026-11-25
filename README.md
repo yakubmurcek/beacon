@@ -126,6 +126,14 @@ project names, accounts) lives in a settings file, never in the code:
 - `timezone` sets the hub's days and clock times everywhere (store, collectors, pages); `USAGE_TZ` overrides it.
 - Pages get the part they need from `/config.js`. Secrets stay in the environment: `USAGE_TOKEN` (collectors),
   `TASKS_TOKEN` (agents), `TASKS_OWNER` (the tailnet login allowed to write from a browser).
+- Two switches set what the hub does by itself. `HUB_ALARMS=1` (the live hub only) sends alarms and phone pings.
+  `HUB_LOOPS=0` starts it with every job of its own off: the machines and notify watches, the titles, narrator,
+  studio and progress loops, the start-up picture harvest and warm-up. Then only HTTP requests write (work a
+  request starts, like a card's reword, still runs); the TypeScript move's data harness and cut-over rely on it.
+  Unset or `1`, everything runs as before.
+- The `tasks` CLI waits out a `503` with `Retry-After` (the hub frozen for a move): each wait at most 120 s, five
+  minutes in all (`TASKS_RETRY_BUDGET` seconds), one line on stderr per wait. Other gateway errors keep the short
+  1/3/8 s retries.
 
 The hub binds to loopback and is meant to sit behind `tailscale serve`: reads need no login, so it must never be
 exposed to the public internet.

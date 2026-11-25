@@ -845,5 +845,46 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(self.req('/api/range?from=2026-01-01&to=2026-01-02')[0], 500)
 
 
+# Runs the hub's main() in a child process with every thread start recorded instead of run and the HTTP server
+# stubbed: the real loops call models and send alarms, and main() rewrites the Handler class a test run shares.
+HUB_START = """
+import json, os, sys, threading
+sys.path.insert(0, sys.argv[1])
+started = []
+threading.Thread.start = lambda t: started.append(getattr(t._target, '__qualname__', None) or t.name)
+import server
+class Stub:
+    daemon_threads = False
+    def __init__(self, *a): pass
+    def serve_forever(self): pass
+server.ThreadingHTTPServer = Stub
+server.main()
+print(json.dumps(started))
+"""
+
+
+class HubLoopsTest(unittest.TestCase):
+    """HUB_LOOPS=0 starts the hub with no job of its own (only HTTP requests write); unset, they all start."""
+
+    def started(self, **env):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            e = {k: v for k, v in os.environ.items() if k not in ('HUB_LOOPS', 'HUB_ALARMS')}
+            e.update(env, USAGE_DB=os.path.join(tmp, 'u.db'), HOME=tmp)
+            out = subprocess.run([sys.executable, '-c', HUB_START, os.path.join(ROOT, 'hub')], env=e,
+                                 capture_output=True, text=True, timeout=120, check=True).stdout
+        return json.loads(out.strip().splitlines()[-1])
+
+    def test_loops_off_starts_nothing_even_on_the_live_hub(self):
+        self.assertEqual(self.started(HUB_LOOPS='0', HUB_ALARMS='1'), [])
+
+    def test_loops_on_by_default(self):
+        got = self.started(HUB_ALARMS='1')
+        self.assertEqual(sorted(got), sorted(['Titles.loop', 'Narrator.loop', 'Progress.loop', 'Studio.loop',
+                                              'Notify.watch.<locals>.loop', 'Machines.watch.<locals>.loop',
+                                              'Questions.harvest_open', 'start_background.<locals>.warm']))
+        self.assertEqual(self.started(HUB_LOOPS='1', HUB_ALARMS='1'), got)
+
+
 if __name__ == '__main__':
     unittest.main()

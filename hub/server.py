@@ -1153,7 +1153,13 @@ POST_PREFIXES = (
     ('/mcp/', (None, Handler.post_mcp)),  # the connector door: the key in the link is the login
 )
 
-def start_notify(live):
+def loops_on():
+    """HUB_LOOPS=0 starts the hub with every job of its own off (watches, model loops, start-up work): then only
+    HTTP requests write, which the TS move's data harness and cut-over rely on. Unset or 1: everything runs."""
+    return os.environ.get('HUB_LOOPS') != '0'
+
+
+def start_notify(live, loops=True):
     """Notices (hub/notify.py): every alarm and finished move lands in /inbox; only the live hub pushes to the phone,
     through Beacon's own home-screen app (hub/webpush.py), Telegram while no phone has subscribed."""
     import machines as machines_mod  # after the sys.path line above, like every hub module
@@ -1173,7 +1179,8 @@ def start_notify(live):
     Handler.tasks.on_close = outreach_done(Handler.tasks, Handler.notify, Handler.tasks.on_close)
     if live:  # the live hub tells him when talk loses its own voice
         Handler.talk.send = lambda text: machines_telegram(text, 'talk-voice')
-        Handler.notify.watch()
+        if loops:
+            Handler.notify.watch()
 
 
 def outreach_done(tasks, notices, then=None):
@@ -1204,20 +1211,37 @@ def outreach_link(body):
     return '/outreach#leads?l=' + slug  # the page's leadId()
 
 
+def start_background():
+    """The hub's own start-up jobs (HUB_LOOPS=0 skips them): the alarm watch, old cards' pictures, the warm-up."""
+    Handler.machines.watch()  # alarms only where HUB_ALARMS=1 (the live hub)
+    threading.Thread(target=Handler.questions.harvest_open, daemon=True).start()
+
+    def warm():
+        # After a deploy the pages he opens most come back first: usage history and meta, AI jobs, then Labs' 60 days.
+        Handler.store.warm()
+        CACHE.get('meta', Handler.store.meta, fresh=10)
+        Handler.aijobs.view()
+        Handler.labs.warm(wait=True)
+    threading.Thread(target=warm, daemon=True).start()
+
+
 def main():
     # One line per record on stdout: journald keeps the time, so the format doesn't.
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(levelname)s %(name)s: %(message)s')
     db = os.environ.get('USAGE_DB') or os.path.join(ROOT, 'data', 'usage.db')
     os.makedirs(os.path.dirname(db), exist_ok=True)
+    loops = loops_on()
+    if not loops:
+        log.info('HUB_LOOPS=0: no background jobs, only HTTP requests write')
     Handler.store = Store(db, TIMEZONE)
     Handler.tasks = Tasks(Handler.store)
     Handler.questions = Questions(Handler.store, Handler.tasks)
     Handler.feedback = Feedback(Handler.tasks, Handler.questions)
     Handler.rules = Rules(Handler.store, Handler.questions)
-    Handler.titles = Titles(Handler.store)
-    Handler.narrator = Narrator(Handler.store)
-    Handler.progress = Progress(Handler.store)
-    Handler.studio = Studio(Handler.store, Handler.narrator, progress=Handler.progress)
+    Handler.titles = Titles(Handler.store, background=loops)
+    Handler.narrator = Narrator(Handler.store, background=loops)
+    Handler.progress = Progress(Handler.store, background=loops)
+    Handler.studio = Studio(Handler.store, Handler.narrator, progress=Handler.progress, background=loops)
     Handler.machines = Machines(Handler.store)
     Handler.names = Names(Handler.store)
     Handler.outreach = Outreach(questions=Handler.questions, machines=Handler.machines, tasks=Handler.tasks, live=Handler.store.live_now)
@@ -1236,18 +1260,11 @@ def main():
     Handler.labs.aijobs = Handler.aijobs  # its ai_jobs sources
     Handler.talk = Talk(Handler.store, Handler.labs, Handler.questions, Handler.tasks)
     Handler.aijobs.extra.append(Handler.talk.aijob)  # the voice's own cost on /ai
-    start_notify(os.environ.get('HUB_ALARMS') == '1')
-    Handler.machines.watch()  # alarms only where HUB_ALARMS=1 (the live hub)
+    start_notify(os.environ.get('HUB_ALARMS') == '1', loops)
     Handler.questions.harvesting = True  # screenshots a question links to (a PR body) land on its card
-    threading.Thread(target=Handler.questions.harvest_open, daemon=True).start()
+    if loops:
+        start_background()
     port = int(os.environ.get('USAGE_PORT', '4829'))
-    def warm():
-        # After a deploy the pages he opens most come back first: usage history and meta, AI jobs, then Labs' 60 days.
-        Handler.store.warm()
-        CACHE.get('meta', Handler.store.meta, fresh=10)
-        Handler.aijobs.view()
-        Handler.labs.warm(wait=True)
-    threading.Thread(target=warm, daemon=True).start()
     httpd = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     httpd.daemon_threads = True
     log.info('agent usage hub on http://127.0.0.1:%s/ (db %s)', port, db)

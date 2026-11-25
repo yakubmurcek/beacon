@@ -226,3 +226,67 @@ class SameQuestionTest(unittest.TestCase):
         self.assertTrue(cli.same_question(card, 'Build the twice-daily relevance check? A cheap model reads each card.',
                                           ['Build it (Recommended)', 'Cards only']))
         self.assertFalse(cli.same_question(card, 'Something else?', ['Build it (Recommended)', 'Tasks only']))
+
+
+class RetryAfterTest(unittest.TestCase):
+    """A 503 with Retry-After (the hub frozen for a move) is waited out, for up to TASKS_RETRY_BUDGET in all."""
+
+    def serve(self, answers):
+        """A real local hub: each GET takes the next (status, body) from answers; the last one repeats."""
+        import http.server
+        import threading
+        hits = []
+
+        class Hub(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                code, body = answers[min(len(hits), len(answers) - 1)]
+                hits.append(code)
+                data = json.dumps(body).encode()
+                self.send_response(code)
+                if code == 503:
+                    self.send_header('Retry-After', '1')
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        httpd = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Hub)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        cli = load_cli()
+        cli.URL = f'http://127.0.0.1:{httpd.server_address[1]}'
+        return cli, hits
+
+    def setUp(self):
+        env = mock.patch.dict(os.environ, {'TASKS_TOKEN': 'x'})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_waits_out_a_busy_hub(self):
+        cli, hits = self.serve([(503, {'error': 'moving'}), (200, {'tasks': []})])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(cli.call('/api/tasks'), {'tasks': []})
+        self.assertEqual(hits, [503, 200])
+        self.assertIn('hub busy (503), trying again in 1 s', err.getvalue())
+
+    def test_gives_up_cleanly_past_the_budget(self):
+        import time
+        cli, hits = self.serve([(503, {'error': 'moving'})])
+        start = time.monotonic()
+        with (mock.patch.dict(os.environ, {'TASKS_RETRY_BUDGET': '2'}), contextlib.redirect_stderr(io.StringIO()),
+              self.assertRaises(SystemExit) as e):
+            cli.call('/api/tasks')
+        self.assertIn('moving', str(e.exception.code))
+        self.assertGreaterEqual(len(hits), 2)
+        self.assertLess(time.monotonic() - start, 6)
+
+    def test_a_503_without_the_header_keeps_the_short_retries(self):
+        e = mock.Mock(code=503, headers={})
+        self.assertIsNone(load_cli().retry_after(e))
+        self.assertEqual(load_cli().retry_after(mock.Mock(code=503, headers={'Retry-After': '30'})), 30)
+        self.assertIsNone(load_cli().retry_after(mock.Mock(code=502, headers={'Retry-After': '30'})))

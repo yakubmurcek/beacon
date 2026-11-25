@@ -1029,6 +1029,8 @@ PRIORITY = {1: 'urgent', 2: 'high', 3: 'normal', 4: 'low'}
 # (2026-10-30: one timed-out read killed the task agent's whole run).
 RETRY_WAITS = (1, 3, 8)
 GATEWAY = (502, 503, 504)  # tailscale serve while the hub (re)starts: the hub never saw the request
+RETRY_BUDGET = 300  # a 503 with Retry-After (the hub frozen for a cut-over): waited out this long in all
+RETRY_AFTER_MAX = 120  # one wait at most, whatever the header asks
 _vault = None
 
 
@@ -1051,20 +1053,45 @@ def unsent(e):
     return isinstance(reason, (ConnectionRefusedError, socket.gaierror))
 
 
+def retry_after(e):
+    """Seconds a 503 asks us to wait (the hub busy, e.g. frozen for a move), or None: then the short retries apply."""
+    if e.code != 503:
+        return None
+    try:
+        return max(0, int((e.headers.get('Retry-After') or '').strip()))
+    except ValueError:  # missing, or an HTTP date: treated like a plain gateway error
+        return None
+
+
 def call(path, body=None, auth=True):
-    """The hub's JSON answer; a gateway error or a lost connection is retried, anything else exits with why."""
+    """The hub's JSON answer; a gateway error or a lost connection is retried, anything else exits with why.
+    A 503 with Retry-After is waited out for up to TASKS_RETRY_BUDGET seconds (5 min) in all."""
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(URL + path, data=data, headers=_headers(data is not None, auth),
                                  method='POST' if data is not None else 'GET')
-    for wait in (*RETRY_WAITS, None):
+    deadline = time.monotonic() + float(os.environ.get('TASKS_RETRY_BUDGET') or RETRY_BUDGET)
+    waits = iter(RETRY_WAITS)
+    while True:
+        wait = next(waits, None)
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            if e.code in GATEWAY and wait is not None:
+            after, left = retry_after(e), deadline - time.monotonic()
+            if after is not None and left > 0:
+                e.close()
+                pause = min(max(after, 1), RETRY_AFTER_MAX, left)
+                print(f'tasks: hub busy (503), trying again in {pause:.0f} s', file=sys.stderr)
+                time.sleep(pause)
+                waits = iter(RETRY_WAITS)  # the hub answered: a gateway blip after this starts a fresh short series
+                continue
+            if after is None and e.code in GATEWAY and wait is not None:
+                e.close()
                 time.sleep(wait)
                 continue
-            sys.exit(_http_error(e, path))
+            msg = _http_error(e, path)
+            e.close()
+            sys.exit(msg)
         except (OSError, http.client.HTTPException, ValueError) as e:
             # Unreachable, timed out, cut off mid-answer. A write that may have landed is not sent
             # twice (a second note, a second task); a read always is.
