@@ -7,6 +7,7 @@
     },
     "ts/apps/api": { "entry": ["src/server.ts", "src/worker.ts", "test/**/*.test.ts"], "project": ["src/**/*.ts", "test/**/*.ts"] },
     "ts/apps/web": { "entry": ["app/**/*.tsx"], "project": ["app/**/*.{ts,tsx}"] },
-    "ts/packages/*": { "entry": ["test/**/*.test.ts"], "project": ["src/**/*.ts", "test/**/*.ts"] }
+    "ts/packages/db": { "entry": ["src/bin.ts", "test/**/*.test.ts"], "project": ["src/**/*.ts", "test/**/*.ts"] },
+    "ts/packages/*": { "project": ["src/**/*.ts"] }
   }
 }

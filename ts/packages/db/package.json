@@ -10,13 +10,20 @@
     }
   },
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "bundle": "node build.mjs",
+    "generate": "drizzle-kit generate --dialect postgresql --schema src/schema.ts --out drizzle",
+    "test": "vitest run"
   },
   "dependencies": {
-    "pg": "8.23.1"
+    "drizzle-orm": "0.45.4",
+    "pg": "8.23.1",
+    "pg-copy-streams": "7.0.0"
   },
   "devDependencies": {
+    "@types/node": "24.19.2",
     "@types/pg": "8.23.1",
-    "@types/node": "24.19.2"
+    "@types/pg-copy-streams": "1.2.5",
+    "drizzle-kit": "0.31.11"
   }
 }

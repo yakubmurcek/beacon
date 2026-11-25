@@ -28,8 +28,9 @@ step "ts tests, with coverage floors that may only rise (vitest.config.ts)"
 vitest run --coverage --coverage.reporter=text-summary
 
 if [ "${1:-}" != "--fast" ]; then
-  step "ts build: the Next.js static export and the api/worker bundles"
+  step "ts build: the Next.js static export, the api/worker bundles and the copy tools' bundle"
   (cd ts/apps/web && NEXT_TELEMETRY_DISABLED=1 next build >/dev/null)
   (cd ts/apps/api && node build.mjs)
+  (cd ts/packages/db && node build.mjs)
 fi
 printf '\n✓ ts check passed\n'

@@ -32,3 +32,6 @@ export async function ping(pool: pg.Pool, timeoutMs = 2_000): Promise<"ok" | "do
     clearTimeout(timer);
   }
 }
+
+/** The mirror's tables, for the api and the worker's queries (Drizzle). */
+export * from "./schema.js";
