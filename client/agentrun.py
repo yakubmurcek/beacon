@@ -22,7 +22,7 @@ from typing import Any, cast
 
 J = dict[str, Any]  # one task or one check as JSON gives it
 
-USD = float(os.environ.get('TASK_AGENT_RUN_USD', '10'))  # one run's ceiling: a runaway stops here
+USD = float(os.environ.get('TASK_AGENT_RUN_USD', '40'))  # one run's ceiling, API prices (his call 2026-11-25: 10 too low)
 
 # What each trigger gets. mode: --permission-mode. settings: whose settings load ('user' = his full setup with the
 # studio rules and skills; 'project' = only the repo's own; 'none' = nothing). rules: text appended to the system
