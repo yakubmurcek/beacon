@@ -70,6 +70,12 @@ class Logins(unittest.TestCase):
         self.assertEqual(self.l.view(with_url=True)['boxes'][0]['flow']['url'], 'https://x/oauth/authorize?a=1')
         self.assertNotIn('pid', self.l.view(with_url=True)['boxes'][0]['flow'])
 
+    def test_just_asked_for_reads_starting_and_is_not_started_twice(self):
+        self.l.start('devbox')  # the fake spawn starts nothing: like the moment before the runner writes its pid
+        self.assertEqual(self.l.view()['boxes'][0]['flow']['state'], 'starting')
+        self.l.start('devbox')
+        self.assertEqual(self.spawned, ['devbox'])
+
     def test_dead_sign_in_reads_failed(self):
         logins.write_status('devbox', state='waiting', pid=2 ** 22 + 7)
         self.assertEqual(self.l.view()['boxes'][0]['flow']['state'], 'failed')

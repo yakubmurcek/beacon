@@ -77,6 +77,15 @@ def write_status(box: str, **st: Any) -> None:
     os.replace(tmp, os.path.join(box_dir(box), 'status.json'))
 
 
+def going(flow: Status | None, now: float) -> bool:
+    """A sign-in still under way: its process answers, or it was asked for a moment ago and has no process yet."""
+    if not flow or flow.get('state') not in RUNNING:
+        return False
+    if flow.get('pid') is None:
+        return now - float(flow.get('at') or 0) < 60
+    return alive(flow.get('pid'))
+
+
 def alive(pid: object) -> bool:
     try:
         os.kill(int(cast('int', pid)), 0)
@@ -196,7 +205,7 @@ class Logins:
     def _box(self, box: str, now: float, with_url: bool) -> dict[str, Any]:
         ends, checked = self.ends.get(box, (None, None))
         flow = read_status(box)
-        if flow and flow.get('state') in RUNNING and not alive(flow.get('pid')):
+        if flow and flow.get('state') in RUNNING and not going(flow, now):
             flow = dict(flow, state='failed', error='the sign-in stopped')
         if flow and flow.get('state') in ('done', 'failed') and now - float(flow.get('at') or 0) > 3600:
             flow = None  # an old finished sign-in is not news
@@ -211,7 +220,7 @@ class Logins:
             raise KeyError(box)
         with self.lock:
             flow = read_status(box)
-            if flow and flow.get('state') in RUNNING and alive(flow.get('pid')):
+            if going(flow, time.time()):
                 return flow
             shutil.rmtree(box_dir(box), ignore_errors=True)
             write_status(box, state='starting', pid=None)
