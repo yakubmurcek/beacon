@@ -158,6 +158,7 @@ def run(box: str, limit: int = LIMIT_SEC) -> int:
             sent = True
             write_status(box, state='checking', pid=os.getpid())
     rc = finish(pid, deadline)
+    os.close(fd)  # a login still waiting on it hangs up
     tail = ' '.join(seen.split())[-300:]
     if rc != 0 or not sent:
         why = 'nobody finished it in 15 minutes' if not sent and time.time() >= deadline else (
