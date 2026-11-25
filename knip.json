@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    ".": {
+      "project": ["*.{ts,mjs}"],
+      "ignoreDependencies": ["@biomejs/biome", "jscpd", "playwright-core", "pyright"]
+    },
+    "ts/apps/api": { "entry": ["src/server.ts", "src/worker.ts", "test/**/*.test.ts"], "project": ["src/**/*.ts", "test/**/*.ts"] },
+    "ts/apps/web": { "entry": ["app/**/*.tsx"], "project": ["app/**/*.{ts,tsx}"] },
+    "ts/packages/*": { "entry": ["test/**/*.test.ts"], "project": ["src/**/*.ts", "test/**/*.ts"] }
+  }
+}

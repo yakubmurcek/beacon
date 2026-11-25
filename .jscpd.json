@@ -3,7 +3,9 @@
   "minLines": 8,
   "format": [
     "python",
-    "javascript"
+    "javascript",
+    "typescript",
+    "tsx"
   ],
   "ignore": [
     "**/tests/**",
@@ -12,7 +14,11 @@
     "**/__pycache__/**",
     "**/node_modules/**",
     "**/.venv/**",
-    "data/**"
+    "data/**",
+    "**/dist/**",
+    "**/bundle/**",
+    "**/.next/**",
+    "**/out/**"
   ],
   "reporters": [
     "console"

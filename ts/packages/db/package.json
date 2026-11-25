@@ -1,0 +1,22 @@
+{
+  "name": "@beacon/db",
+  "private": true,
+  "description": "Postgres access for the api and worker: the connection pool, the Drizzle schema, migrations, and the SQLite copy and reverse-copy tools.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "@types/node": "24.19.2"
+  }
+}

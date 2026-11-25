@@ -1,0 +1,19 @@
+{
+  "name": "@beacon/api",
+  "private": true,
+  "description": "The new hub backend: the Fastify API (server.ts) and the background worker (worker.ts), two processes, one package.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "bundle": "node build.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@beacon/contracts": "*",
+    "@beacon/db": "*",
+    "fastify": "5.12.8"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  }
+}

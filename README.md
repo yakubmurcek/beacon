@@ -10,8 +10,8 @@ reports in; the hub turns that into the few things a product owner needs on a ph
   <img src="docs/decisions.png" width="300" alt="Decisions on a phone: one question, its options as buttons">
 </p>
 
-- **No dependencies.** The hub is a Python standard library HTTP server over SQLite; the pages are plain JS and CSS
-  with no build step.
+- **No dependencies (for now).** The live hub is a Python standard library HTTP server over SQLite; the pages are
+  plain JS and CSS with no build step. It is moving to TypeScript and Postgres in stages (see Test, below).
 - **Agents are first-class users.** They write tasks and ask questions through the same JSON API (and the `tasks`
   CLI in `client/`); an approval gate holds risky actions (sends, deploys, deletes) until the owner says yes.
 - **Collectors, not scrapers.** `collector/collect.py` runs on each machine, reads local agent logs (Claude Code,
@@ -55,6 +55,26 @@ git config core.hooksPath .githooks # once per clone: every push runs `scripts/c
 | Checks not loosened | git diff against `origin/main` | a change may not delete or skip tests, add `noqa` / `biome-ignore` / `type: ignore` / `pyright: ignore`, edit a check's config or loosen the baseline (a count up, a score down), unless a commit line `Quality-exception: <why>` puts the reason on record |
 | Tests and coverage | `coverage run -m unittest discover -s tests` (`.coveragerc`, pinned in `requirements-dev.txt`), then `scripts/scores.py coverage` | runs on `config.example.json` only; line and branch coverage per area (hub, collector, client) in `quality-baseline.json` `at_least`, may only go up |
 | Layout | `scripts/layout_check.py`: a throwaway hub with `scripts/demo.py` data, every page drawn in Chrome (`playwright-core`, pinned in `package.json`) at 390 px and 1280 px, Paper + English and Night + Czech, with the shell's run-time states forced (a three-digit Decisions count, its pulse) | the shared header has the same boxes on every page; no header pill wider than its text; no sideways scroll; no text in a system font (it differs per device, so wrapping does too); no progress bar that disagrees with its "N of M"; no missing value drawn as a word (`null`, `undefined`, `NaN`). `tests/test_shell_isolation.py` adds the static half: a page's own sheet may not style the shared header's classes by accident |
+
+### The TypeScript workspace (`ts/apps/`, `ts/packages/`)
+
+Beacon is moving to TypeScript and Postgres in stages ([design note](docs/design/2026-11-ts-migration.md)). Until the
+move ends, the Python hub above is the live app; the new one grows beside it in one npm workspace:
+
+| Folder | What |
+|---|---|
+| `ts/apps/web` | Next.js pages, built as a static export (`out/`, served under `/next/` until a page switches) |
+| `ts/apps/api` | the Fastify API (`src/server.ts`, `127.0.0.1:4832`) and the background worker (`src/worker.ts`, `:4833`); each answers `GET /healthz` |
+| `ts/packages/contracts` | Zod schemas of every request and response, shared by pages and API |
+| `ts/packages/db` | the Postgres pool (`BEACON_DATABASE_URL`; unset = no database, health says `db: "off"`) |
+
+```sh
+npm ci --ignore-scripts             # the whole workspace, lockfile only, nothing newer than 7 days
+scripts/check-ts                    # tsc strict, typescript-eslint strictTypeChecked, Biome format, knip, Vitest + coverage floors, the builds
+node ts/apps/api/build.mjs && node ts/apps/api/bundle/server.js   # http://127.0.0.1:4832/healthz
+```
+
+`scripts/check` runs `scripts/check-ts --fast` locally; CI runs it as its own job.
 
 CI runs the same `scripts/check` on every push and pull request (`.github/workflows/ci.yml`); Dependabot keeps
 the Actions current.

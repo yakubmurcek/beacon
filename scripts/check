@@ -49,6 +49,12 @@ else
   npx -y -p typescript@5.9.3 tsc -p web/tsconfig.workers.json
 fi
 
+step "TypeScript workspace (ts/): scripts/check-ts; CI runs it as its own job"
+if [ -n "${CI:-}" ]; then echo "in CI: its own job"
+elif ! command -v npm >/dev/null; then echo "warning: no Node here, the TypeScript workspace is not checked (CI checks it)"
+else scripts/check-ts --fast >/dev/null || scripts/check-ts --fast
+fi
+
 step "the checks themselves were not loosened"
 # What an agent stuck on a red check is tempted to do instead of fixing the code. Each needs a commit
 # line `Quality-exception: <why>` in this change, so the reason is on record for the owner.
@@ -65,7 +71,7 @@ if git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
     head -c 40 "$f" | grep -q python3 || [[ "$f" == *.py ]] || continue
     head -n 5 "$f" | grep -q '^# pyright: strict' || problems+=("adds $f without '# pyright: strict' in its first 5 lines")
   done
-  [ -n "$(git diff --name-only "$BASE" -- ruff.toml ruff.strict.toml biome.json .jscpd.json \
+  [ -n "$(git diff --name-only "$BASE" -- ruff.toml ruff.strict.toml biome.json .jscpd.json eslint.config.mjs knip.json vitest.config.mts tsconfig.base.json scripts/check-ts \
       pyrightconfig.json .coveragerc requirements-dev.in requirements-dev.txt uv.toml package.json package-lock.json .npmrc .gitleaksignore .github \
       scripts/ratchet.py scripts/scores.py scripts/check scripts/supply-chain scripts/canaries.py scripts/nightly canaries.json .githooks)" ] \
     && problems+=("changes a check's configuration")

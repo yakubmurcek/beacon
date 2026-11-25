@@ -1,0 +1,4 @@
+{
+  "files": [],
+  "references": [{ "path": "ts/packages/contracts" }, { "path": "ts/packages/db" }, { "path": "ts/apps/api" }]
+}

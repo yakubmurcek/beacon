@@ -10,3 +10,9 @@ CLAUDE.local.md
 node_modules/
 .venv/
 .tools/
+dist/
+bundle/
+.next/
+out/
+*.tsbuildinfo
+coverage/

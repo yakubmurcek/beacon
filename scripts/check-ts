@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# The TypeScript workspace's gates (ts/apps/, ts/packages/): strict types, lint, format, dead code, tests with coverage
+# floors, and the static export build. scripts/check runs it locally; CI runs it as its own job.
+# Red means not done: fix the code, never lower a limit or add a suppression.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+step() { printf '\n› %s\n' "$1"; }
+if ! cmp -s package-lock.json node_modules/.synced 2>/dev/null; then
+  npm ci --ignore-scripts --no-audit --no-fund --silent && cp package-lock.json node_modules/.synced
+fi
+export PATH="$PWD/node_modules/.bin:$PATH"
+
+step "ts types: tsc strict, noUncheckedIndexedAccess, exactOptionalPropertyTypes (tsconfig.base.json)"
+tsc -b
+tsc -p ts/apps/web --noEmit
+tsc -p ts/packages/db/test
+
+step "ts lint: typescript-eslint strictTypeChecked, zero findings (eslint.config.mjs)"
+eslint --max-warnings 0 ts
+
+step "ts format: Biome (biome.json)"
+biome format ts
+
+step "ts dead code and unused dependencies: knip (knip.json)"
+knip --no-progress
+
+step "ts tests, with coverage floors that may only rise (vitest.config.ts)"
+vitest run --coverage --coverage.reporter=text-summary
+
+if [ "${1:-}" != "--fast" ]; then
+  step "ts build: the Next.js static export and the api/worker bundles"
+  (cd ts/apps/web && NEXT_TELEMETRY_DISABLED=1 next build >/dev/null)
+  (cd ts/apps/api && node build.mjs)
+fi
+printf '\n✓ ts check passed\n'

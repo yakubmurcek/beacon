@@ -1,13 +1,56 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.2.4/schema.json",
-  "files": { "includes": ["web/**/*.js", "!web/vendor/**"] },
+  "files": {
+    "includes": [
+      "web/**/*.js",
+      "!web/vendor/**",
+      "ts/apps/**/*.{ts,tsx}",
+      "ts/packages/**/*.ts",
+      "!**/dist/**",
+      "!**/.next/**",
+      "!**/out/**",
+      "!**/bundle/**",
+      "!**/next-env.d.ts"
+    ]
+  },
   "linter": {
     "enabled": true,
     "rules": {
       "recommended": true,
-      "complexity": { "noExcessiveCognitiveComplexity": { "level": "warn", "options": { "maxAllowedComplexity": 20 } } }
+      "complexity": {
+        "noExcessiveCognitiveComplexity": {
+          "level": "warn",
+          "options": {
+            "maxAllowedComplexity": 20
+          }
+        }
+      }
+    },
+    "domains": {
+      "test": "none"
     }
   },
-  "formatter": { "enabled": false },
-  "assist": { "enabled": false }
+  "formatter": {
+    "enabled": false
+  },
+  "assist": {
+    "enabled": false
+  },
+  "overrides": [
+    {
+      "includes": [
+        "ts/apps/**",
+        "ts/packages/**"
+      ],
+      "linter": {
+        "enabled": false
+      },
+      "formatter": {
+        "enabled": true,
+        "indentStyle": "space",
+        "indentWidth": 2,
+        "lineWidth": 120
+      }
+    }
+  ]
 }

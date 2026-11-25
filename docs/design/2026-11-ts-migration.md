@@ -1,7 +1,6 @@
 # Design note: Beacon moves to TypeScript and Postgres, in stages
 
-Status: proposed, 2026-11-24; revised the same day after a cold outside review (its findings and what changed: section 14).
-Waiting for the owner's go before any app code.
+Status: accepted 2026-11-25 (the owner's go); stage 0 under way. Revised 2026-11-24 after a cold outside review (its findings and what changed: section 14).
 Inventory of what exists today: [2026-11-ts-migration-inventory.md](2026-11-ts-migration-inventory.md).
 
 ## 1. Problem
@@ -31,7 +30,7 @@ same address, never a second thing to open.
 | Question | Options looked at | Pick and why |
 |---|---|---|
 | Rewrite at all | fix in place (JSDoc types are already checked by `tsc`, the loops could move to a second Python process, a migrations table is a day) · move the stack | **Move**, the owner's decision of 2026-11-24, made knowing the cheaper path: the hub is also the proof of working on the stack a TypeScript/React/Node employer runs, which fixing Python cannot show. The cost is real (estimates in section 6), so each stage ends in a coherent state and there is a stop rule. |
-| Where the code lives | new repo · same repo | **Same repo**, a pnpm workspace beside `hub/`. One history, the inventory and the old tests sit next to the new code, the parity harness can start both apps from one checkout, and the end state is "the Python hub folder deleted", not two repos to reconcile. The kit's gates apply to the workspace from its first commit (own CI job). |
+| Where the code lives | new repo · same repo | **Same repo**, an npm workspace beside `hub/` (stage 0 chose npm over the pnpm first written here: the repo's lockfile, its 7-day release cooldown in `.npmrc`, Dependabot and the osv-scan already run on npm, and one package manager beats two). One history, the inventory and the old tests sit next to the new code, the parity harness can start both apps from one checkout, and the end state is "the Python hub folder deleted", not two repos to reconcile. The kit's gates apply to the workspace from its first commit (own CI job). |
 | Backend shape | Next.js route handlers for the API and loops started from `instrumentation.ts` · a separate Node API + worker beside the pages · Hono or Express | **Fastify API + a worker process.** Request serving and background loops are separate processes (today one stuck loop slows every page). Fastify with a Zod type provider gives typed routes and an OpenAPI file for free, which the request fuzzing needs. |
 | How pages are served | Next.js server (`next start`) · Next.js static export served by Caddy · Vite + React static build | **Next.js with `output: 'export'`, served by Caddy as files.** Pages fetch from the browser anyway (row below), so a Node page server would be a ~400 MB process serving a shell on a box that already swaps. The static export keeps Next.js (routing, layouts, the stack the job runs) at zero runtime memory and no third unit; if a page ever needs server rendering, `next start` can be added then. |
 | Typed queries | Drizzle · Kysely · Prisma · pgtyped | **Drizzle.** The schema is TypeScript, so row types come from one place; `drizzle-kit` generates plain SQL migration files that can be reviewed and linted (Squawk). Kysely is as good at queries, but its schema lives elsewhere; Prisma adds a query engine and hides SQL. Comparisons put their runtime cost within a few ms of each other ([Neon](https://neon.com/blog/orms-vs-query-builders-for-your-typescript-application), [Marmelab](https://marmelab.com/blog/2025/06/26/kysely-vs-drizzle)). |
@@ -57,10 +56,10 @@ Workspace layout:
 
 | Folder | What |
 |---|---|
-| `apps/web` | Next.js (App Router, static export), one route per page, the shared header; reads `web/tokens.css` and the Czech dictionary from their current files until the old pages are gone (one source, no double edits) |
-| `apps/api` | Fastify server (`server.ts`) and the worker (`worker.ts`): two entry points, one package, one set of services |
-| `packages/contracts` | Zod schemas of every request and response; the pages' typed client and the API's route types both come from here |
-| `packages/db` | Drizzle schema, generated migrations, the SQLite copy and reverse-copy tools |
+| `ts/apps/web` | Next.js (App Router, static export), one route per page, the shared header; reads `web/tokens.css` and the Czech dictionary from their current files until the old pages are gone (one source, no double edits) |
+| `ts/apps/api` | Fastify server (`server.ts`) and the worker (`worker.ts`): two entry points, one package, one set of services |
+| `ts/packages/contracts` | Zod schemas of every request and response; the pages' typed client and the API's route types both come from here |
+| `ts/packages/db` | Drizzle schema, generated migrations, the SQLite copy and reverse-copy tools |
 | `tests/parity` | the harness that runs the old and the new app on the same data and compares answers |
 
 **Memory on the hub server** (2 cores, 3.8 GB, about 2.35 GB available today, swap already in use; the old hub
@@ -90,7 +89,7 @@ code rounds); "today" and day boundaries come from the deployment's time zone se
 REPLACE` (used only on natural-key tables) becomes `ON CONFLICT … DO UPDATE`; any order the
 old code took from `rowid` gets an explicit `ORDER BY`.
 
-**The copy tool** (`packages/db`, run by hand and in CI on a fixture). Reads a `.backup` snapshot of `usage.db`
+**The copy tool** (`ts/packages/db`, run by hand and in CI on a fixture). Reads a `.backup` snapshot of `usage.db`
 read-only, loads Postgres with `COPY` inside one transaction (truncate and load, so a rerun gives the same result),
 then compares per table the row count and a checksum of the normalized rows on both sides; any difference fails
 the run. **The reverse tool** writes Postgres back into a fresh SQLite file: the old hub's own code creates
@@ -256,7 +255,7 @@ and whatever the kit becomes is proven here. Most of it is config that comes wit
 | Database | Squawk on every migration file ([sbdchd/squawk](https://github.com/sbdchd/squawk)); migrations are immutable once merged (hash check); empty → head and fixture → head give the same schema dump; committed `schema.sql` must match; expand/contract only (every migration works with the running release and the next) |
 | Races | one connection pool; writes that read-then-write in a transaction with the right isolation or `SELECT … FOR UPDATE`; a 16-way concurrent write test on the API against a real Postgres (no 5xx, no lost or doubled rows) |
 | UI | Playwright over every page at 390 / 1440 px, EN / CS: no horizontal overflow, no clipped text, tap targets ≥ 44 px, no console errors or failed requests; axe |
-| Supply chain | pnpm lockfile, `--frozen-lockfile`, install scripts off except an allowlist, a release-age cooldown on new versions (pnpm setting; exact name verified in stage 0), osv-scanner, Dependabot, Actions pinned by SHA, zizmor, CodeQL, gitleaks |
+| Supply chain | the npm lockfile, `npm ci`, install scripts off (`.npmrc`), a 7-day release-age cooldown (`min-release-age`), osv-scanner, Dependabot, Actions pinned by SHA, zizmor, CodeQL, gitleaks |
 | Anti-gaming | the not-loosened guard and the canaries: one known-bad patch per check must turn it red, nightly |
 
 CI runs the Python checks and the TypeScript checks as two jobs; both must be green.
@@ -283,7 +282,7 @@ Other agents keep working on Beacon during the move; the move adds no features o
 - Shared files have one source: the new pages read `web/tokens.css` and `web/i18n-cs.js` directly, so a colour or
   a Czech line is changed once. Only page markup and page scripts exist twice, and only until that page switches.
 - From the day the first page moves, Beacon's `CLAUDE.md` gets a "Moved" table: a moved page changes only in
-  `apps/web`. The same for the API at the cut-over.
+  `ts/apps/web`. The same for the API at the cut-over.
 - No session touches another session's work in progress; a feature freeze applies only to the page being switched,
   only for the hours of its switch, announced on its task.
 - The nightly parity run surfaces any change to the old API as a diff the porting session has to carry over.
