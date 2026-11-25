@@ -4,7 +4,8 @@
 
 Since 2026-11-22 an answer he gave on http://beacon/decisions ran in a hidden copy of the chat that asked
 (`claude -p --resume`, `--fork-session` while open): the chat he looked at never showed it. Here every agent is
-ONE live, interactive Claude Code session, started by Beacon in a tmux pane inside a systemd unit of its own,
+ONE live, interactive Claude Code session, started by Beacon in a herdr-core terminal (task 2034: it shows in his
+Herdr app, Mac and phone, under the space "Beacon agents") watched by a systemd unit of its own,
 with Remote Control on (so it is also a chat in his Claude app) and a Beacon channel (Claude Code Channels,
 https://code.claude.com/docs/en/channels): his answers are pushed INTO that live session. Typing in the app reaches
 the same session. One agent, two windows, no copies.
@@ -15,7 +16,7 @@ the same session. One agent, two windows, no copies.
   beacon-agent stop SID             end one (its conversation is kept; an answer reopens it)
   beacon-agent reap                 end agents idle past IDLE_H hours (answer-dispatcher calls it every tick)
   beacon-agent live SID             exit 0 when a live agent holds that session (answer-dispatcher asks)
-  beacon-agent run SID              inside the unit: tmux, the dev-channel confirm, then watch it
+  beacon-agent run SID              inside the unit: the hc terminal, the dev-channel confirm, then watch it
   beacon-agent channel              the MCP channel server Claude Code spawns (stdio)
   beacon-agent hook-ask             PreToolUse hook: a question dialog becomes a Beacon card plus plain text
 
@@ -59,6 +60,9 @@ PROJECTS = os.environ.get('BEACON_AGENTS_PROJECTS', cast(str, settings.p('projec
 CLAUDE = os.environ.get('BEACON_AGENTS_CLAUDE') or shutil.which('claude') or os.path.expanduser('~/.local/bin/claude')
 CLAUDE_HOME = os.environ.get('BEACON_AGENTS_CLAUDE_HOME', os.path.expanduser('~/.claude'))
 TELL = os.environ.get('BEACON_AGENTS_TELL', 'telegram-alarm')
+HC = os.environ.get('BEACON_AGENTS_HC') or shutil.which('hc') or '/usr/local/bin/hc'
+SPACE = 'beacon-agents'  # the Herdr app space every agent's tab sits in (labels herdr.space / herdr.tab)
+KEYS = {'Enter': 'enter', 'Down': 'down'}
 UNIT = 'beacon-agent-'  # the usage brake never holds these (linux-setup claude-usage-brake HIS)
 MAX_LIVE = int(os.environ.get('BEACON_AGENTS_MAX', 5))  # ~460 MB each (measured) on a 10 GB box
 IDLE_H = float(os.environ.get('BEACON_AGENTS_IDLE_H', 2))
@@ -113,7 +117,7 @@ def bare(sid: str | None) -> str:
 
 
 def is_live(sid: str | None) -> bool:
-    """A live agent holds this session: its tmux session exists (survives no reboot, unlike a pid), it is not
+    """A live agent holds this session: its hc terminal is live (survives no reboot, unlike a pid), it is not
     broken, and its channel beats (a channel that died while the chat lives would swallow every answer)."""
     sid = bare(sid)
     if not sid or not read(sid, 'meta.json') or os.path.exists(os.path.join(folder(sid), 'broken')):
@@ -135,7 +139,7 @@ def agents() -> list[str]:
 
 
 def live_count() -> int:
-    """Agents holding a tmux session, broken or not: each one costs its memory until reap ends it."""
+    """Agents holding a live terminal, broken or not: each one costs its memory until reap ends it."""
     return sum(1 for s in agents() if has_session(s))
 
 
@@ -144,13 +148,23 @@ def transcript(sid: str) -> str | None:
     return hits[0] if hits else None
 
 
-def tmux(sid: str) -> list[str]:
-    """Each agent its own tmux server (a socket in its folder): one ending never takes the others with it."""
-    return ['tmux', '-S', os.path.join(folder(sid), 'tmux.sock')]
+def term(sid: str) -> str:
+    """Its herdr-core terminal's name (unique among live terminals)."""
+    return f'beacon-{sid[:8]}'
+
+
+def hc(*args: str, timeout: float = 30) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run([HC, *args], capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError) as e:
+        return subprocess.CompletedProcess([HC, *args], 1, '', str(e))
 
 
 def has_session(sid: str) -> bool:
-    return subprocess.run(tmux(sid) + ['has-session', '-t', 'agent'], capture_output=True).returncode == 0
+    try:
+        return json.loads(hc('get', '--json', term(sid)).stdout or '{}').get('state') == 'live'
+    except ValueError:
+        return False
 
 
 def age(sid: str, name: str) -> float:
@@ -214,15 +228,15 @@ def start(task: int | None = None, brief: str | None = None, resume: str | None 
 
 
 def screen(sid: str) -> str:
-    return subprocess.run(tmux(sid) + ['capture-pane', '-pt', 'agent'], capture_output=True, text=True).stdout
+    return hc('read', term(sid), '--lines', '0').stdout
 
 
 def keys(sid: str, *k: str) -> None:
-    subprocess.run(tmux(sid) + ['send-keys', '-t', 'agent', *k])
+    hc('keys', term(sid), *(KEYS.get(x, x.lower()) for x in k))
 
 
 def run(sid: str) -> int:
-    """Inside the unit: the live session in tmux; answer the dev-channel confirm; alarm on a screen it does not
+    """Inside the unit: the live session in an hc terminal; answer the dev-channel confirm; alarm on a screen it does not
     know; then stay while the session lives (the unit is how /machines sees it)."""
     meta: J | None = read(sid, 'meta.json')
     if not meta:
@@ -233,15 +247,19 @@ def run(sid: str) -> int:
            '--permission-mode', 'bypassPermissions', '--settings', os.path.join(f, 'settings.json')]
     env: dict[str, str] = {'BEACON_AGENT': '1', 'BEACON_AGENT_SID': sid, 'BEACON_TASK': str(meta.get('task') or ''),
            'BEACON_AGENTS_DIR': STATE, 'IS_SANDBOX': '1', 'BEACON_ENDINGS': '1'}
-    subprocess.run(tmux(sid) + ['kill-server'], capture_output=True)
-    args = tmux(sid) + ['new-session', '-d', '-s', 'agent', '-x', '200', '-y', '50', '-c', meta['cwd']]
-    for k, v in env.items():
-        args += ['-e', f'{k}={v}']
-    subprocess.run(args + [shlex.join(cmd)], check=True)
+    stop(sid)
+    hc('rm', term(sid))  # a finished one under the same name
+    r = hc('run', '--bg', '--json', '--name', term(sid), '--cwd', meta['cwd'], '--no-parent', '--outlive-parent',
+           '--label', f'herdr.space={SPACE}', '--label', f'herdr.tab={SPACE}-{sid[:8]}',
+           '--', 'env', *(f'{k}={v}' for k, v in env.items()), *cmd, timeout=60)
+    if r.returncode:
+        mark(sid, 'broken')
+        tell(f"⚠️ A Beacon agent didn't start: {meta['name']}\nherdr-core refused it: {(r.stderr or r.stdout).strip()[:300]}")
+        return 1
     write(sid, 'live.json', {'pid': os.getpid(), 'unit': os.environ.get('INVOCATION_ID'), 'at': time.time()})
     if not get_ready(sid, meta['cwd']):
         tail = '\n'.join(x for x in screen(sid).splitlines() if x.strip())[-400:]
-        subprocess.run(tmux(sid) + ['kill-server'], capture_output=True)
+        stop(sid)
         mark(sid, 'broken')
         tell(f"⚠️ A Beacon agent didn't start: {meta['name']}\nits screen was one it doesn't know\n{tail}")
         return 1
@@ -275,7 +293,7 @@ def get_ready(sid: str, cwd: str) -> bool:
 
 
 def stop(sid: str) -> None:
-    subprocess.run(tmux(bare(sid)) + ['kill-server'], capture_output=True)
+    hc('kill', term(bare(sid)))
 
 
 def reap() -> None:

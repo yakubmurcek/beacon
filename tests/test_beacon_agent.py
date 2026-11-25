@@ -118,7 +118,7 @@ class AnswersTest(unittest.TestCase):
                 mock.patch.object(agent.cli, 'other_work', return_value=True):
             self.assertEqual([q['id'] for q in agent.mine(SID, qs)], [4])
 
-    def test_live_means_its_tmux_session_and_a_beating_channel(self):
+    def test_live_means_its_hc_terminal_and_a_beating_channel(self):
         sid = 'aaaaaaaa-0000-0000-0000-000000000000'
         agent.write(sid, 'meta.json', {'sid': sid})
         with mock.patch.object(agent, 'has_session', return_value=True):
@@ -134,7 +134,7 @@ class AnswersTest(unittest.TestCase):
             self.assertTrue(agent.broken_lately(sid))
         with mock.patch.object(agent, 'has_session', return_value=False):
             os.remove(os.path.join(agent.folder(sid), 'broken'))
-            self.assertFalse(agent.is_live(sid))  # rebooted: no tmux, whatever the files say
+            self.assertFalse(agent.is_live(sid))  # rebooted: no live terminal, whatever the files say
         self.assertFalse(agent.is_live('../etc'))
 
 

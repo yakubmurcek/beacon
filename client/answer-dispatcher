@@ -674,13 +674,13 @@ def asker_takes(q, task, now, dry):
     within seconds (the watchdog still alarms if it never lands), an ended Beacon agent is reopened live for it."""
     if q.get('waited_at') and now - q['waited_at'] < BEAT:
         return True
-    term = hc_askers().get(q.get('session_id') or '')
-    if term:
-        return hc_deliver(q, term, now, dry)
-    if agent.is_live(q.get('session_id')):
+    if agent.is_live(q.get('session_id')):  # a live Beacon agent (in hc too): its channel pushes it, never typed twice
         if not dry:
             watchdog(q, now)
         return True
+    term = hc_askers().get(q.get('session_id') or '')
+    if term:
+        return hc_deliver(q, term, now, dry)
     return not dry and was_agent(q) and reopen(q, task)
 
 

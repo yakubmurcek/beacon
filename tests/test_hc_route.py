@@ -110,3 +110,36 @@ class AskerIdTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AgentInHcTest(unittest.TestCase):
+    """Beacon's own live agents run in a herdr-core terminal his Herdr app shows (task 2034)."""
+
+    def test_run_starts_it_in_hc_under_the_beacon_space(self):
+        from test_beacon_agent import agent
+        sid = '22222222-0000-0000-0000-000000000000'
+        agent.write(sid, 'meta.json', {'sid': sid, 'task': 4, 'cwd': '/x', 'name': 'Fix it', 'resume': False})
+        calls = []
+
+        def fake(*args, timeout=30):
+            calls.append(args)
+            return mock.Mock(returncode=0, stdout='{}', stderr='')
+        with mock.patch.object(agent, 'hc', side_effect=fake), mock.patch.object(agent, 'get_ready', return_value=True), \
+                mock.patch.object(agent, 'has_session', return_value=False):
+            self.assertEqual(agent.run(sid), 0)
+        launch = next(c for c in calls if c[0] == 'run')
+        self.assertIn('herdr.space=beacon-agents', launch)
+        self.assertIn('--outlive-parent', launch)
+        self.assertEqual(launch[launch.index('--name') + 1], 'beacon-22222222')
+        rest = launch[launch.index('--') + 1:]
+        self.assertEqual(rest[0], 'env')
+        self.assertIn('BEACON_AGENT=1', rest)
+        self.assertIn('--dangerously-load-development-channels', rest)
+
+    def test_a_live_beacon_agent_is_left_to_its_channel(self):
+        d = load_dispatcher()
+        q = {'id': 1, 'session_id': f'Claude Code:{SID}', 'answered_at': time.time() - 120}
+        with mock.patch.object(d.agent, 'is_live', return_value=True), mock.patch.object(d, 'watchdog'), \
+                mock.patch.object(d, 'hc_deliver') as deliver:
+            self.assertTrue(d.asker_takes(q, None, time.time(), False))
+        deliver.assert_not_called()

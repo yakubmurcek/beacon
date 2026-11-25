@@ -827,7 +827,8 @@ until a phone has subscribed.
 Until now his answer on Decisions ran in a hidden copy of the asking chat (`claude -p --resume`, a fork while it was
 open), so the chat he looked at never showed it. Beacon's hand-off agents on the home server are now **live chats
 Beacon starts itself** ([client/beacon-agent](client/beacon-agent)): one interactive Claude Code session per agent,
-in a tmux pane inside a systemd unit of its own (`beacon-agent-<task>-<id>`, listed on /machines, never held by the
+in a herdr-core terminal (`hc`, task 2034: his Herdr app shows it under the space "Beacon agents", Mac and phone)
+watched by a systemd unit of its own (`beacon-agent-<task>-<id>`, listed on /machines, never held by the
 usage brake), with Remote Control on (it is also a chat in his Claude app, named after the task) and a **Beacon
 channel** ([Claude Code Channels](https://code.claude.com/docs/en/channels)): an MCP server that pushes his answers
 into the running session. Typing in the app reaches the same session. One agent, two windows, no copies.
