@@ -171,7 +171,7 @@ def versions():
     here = os.path.dirname(os.path.abspath(__file__))
     v = {'os': os_name(), 'python': platform.python_version(),
          'collector': first_line(['git', '-C', here, 'log', '-1', '--format=%h %cs'])}
-    for name, cmd in (('claude', ['claude', '--version']), ('codex', ['codex', '--version']),
+    for name, cmd in (('claude', ['claude', '--version']), ('codex', ['codex', '--version']), ('hc', ['hc', '--version']),
                       ('tailscale', ['tailscale', 'version'])):
         exe = shutil.which(cmd[0]) or (os.path.expanduser('~/.local/bin/' + cmd[0])
                                        if os.path.exists(os.path.expanduser('~/.local/bin/' + cmd[0])) else None)
