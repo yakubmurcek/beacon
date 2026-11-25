@@ -1,7 +1,7 @@
 // Outreach: every lead and business we researched or scraped (Leads), and every research report (Research).
 // Data: /api/outreach, read by the hub from ai-brain (hub/outreach.py). The last answer paints at once from
 // localStorage, then the fresh one replaces it.
-import { $, h, showError, snap } from './shared.js';
+import { $, copyText, h, showError, snap } from './shared.js';
 let painted = '';  // the JSON last drawn: a refresh with the same data keeps the list, scroll and search as they are
 const STEP = { leads: 25, research: 30 };
 const STATUS = [  // order, colour and plain word for each lead status (the legend under the bar says the same)
@@ -450,8 +450,8 @@ function mailBlock(title, m, r) {
   const formUrl = ((m.where || '').match(/https?:\/\/\S+/) || [])[0];
   const copy = h('button', { type: 'button' }, ic('copy'), 'Copy text');
   copy.onclick = async () => {
-    try { await navigator.clipboard.writeText((m.subject ? m.subject + '\n\n' : '') + text); copy.lastChild.textContent = 'Copied'; }
-    catch { copy.lastChild.textContent = 'Copy failed'; }
+    const ok = await copyText((m.subject ? m.subject + '\n\n' : '') + text);
+    copy.lastChild.textContent = ok ? 'Copied' : 'Copy failed';
     setTimeout(() => { copy.lastChild.textContent = 'Copy text'; }, 1800);
   };
   const mailto = m.to ? 'mailto:' + m.to.split(/[\s;,]/)[0] + '?subject=' + encodeURIComponent(m.subject || '') + '&body=' + encodeURIComponent(text) : '';
