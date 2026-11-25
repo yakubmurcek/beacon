@@ -643,7 +643,7 @@ def hc_askers():
         for t in hc('ls').get('terminals') or []:
             if t.get('state') != 'live' or not t.get('address'):
                 continue
-            term = t['address']  # `t3` here, `hetzner/t3` on a machine this core added (`hc machine add`)
+            term = t['address']  # `t3` here, `<machine>/t3` on a machine this core added (`hc machine add`)
             askers[f'hc:{term}' if '/' in term else f'hc:{MACHINE}/{term}'] = term
             if '/' not in term:  # a Claude Code here: its session file is on this machine
                 sid = claude_session_of((hc('get', term).get('foreground') or {}).get('pid'))
