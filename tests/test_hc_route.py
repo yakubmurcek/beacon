@@ -29,10 +29,12 @@ class HcRouteTest(unittest.TestCase):
     def fake_hc(self, *args, timeout=30):
         if args[0] == 'ls':
             return {'terminals': [{'address': 't3', 'state': 'live'}, {'address': 't4', 'state': 'live'},
-                                  {'address': 't5', 'state': 'finished'}]}
+                                  {'address': 't5', 'state': 'finished'},
+                                  {'address': 'pc/t2', 'state': 'live'}]}
         if args[0] == 'get':
             return {'t3': {'foreground': {'pid': 7}, 'status': {'state': self.state}},
-                    't4': {'foreground': {'pid': 42}, 'status': {'state': 'idle'}}}[args[1]]
+                    't4': {'foreground': {'pid': 42}, 'status': {'state': 'idle'}},
+                    'pc/t2': {'status': {'state': 'idle'}}}[args[1]]
         if args[0] == 'send':
             self.sent.append(args[1:])
             self.screen += args[2]
@@ -66,6 +68,12 @@ class HcRouteTest(unittest.TestCase):
         took, *_ = self.run_takes()
         self.assertTrue(took)
         self.assertEqual(self.sent[0][0], 't4')
+
+    def test_an_agent_on_an_added_machine_gets_it_too(self):
+        self.q['session_id'] = 'hc:pc/t2'
+        took, *_ = self.run_takes()
+        self.assertTrue(took)
+        self.assertEqual(self.sent[0][0], 'pc/t2')
 
     def test_mid_turn_it_waits_for_the_next_tick(self):
         self.state = 'working'

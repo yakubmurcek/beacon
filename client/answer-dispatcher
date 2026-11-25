@@ -626,18 +626,20 @@ def claude_session_of(pid):
 
 
 def hc_askers():
-    """This machine's live hc terminals by the id their asker files cards under: `hc:<machine>/<t>` for any agent
-    (`tasks` outside Claude Code), and `Claude Code:<sid>` for a Claude Code running in one."""
+    """Live hc terminals, this machine's and those of the machines its core added, by the id their asker files cards
+    under: `hc:<machine>/<t>` for any agent (`tasks` outside Claude Code), and `Claude Code:<sid>` for a Claude Code
+    running in one here."""
     if 'askers' not in _hc:
         _hc['askers'] = askers = {}
         for t in hc('ls').get('terminals') or []:
             if t.get('state') != 'live' or not t.get('address'):
                 continue
-            term = t['address']
-            askers[f'hc:{MACHINE}/{term}'] = term
-            sid = claude_session_of((hc('get', term).get('foreground') or {}).get('pid'))
-            if sid:
-                askers[f'Claude Code:{sid}'] = term
+            term = t['address']  # `t3` here, `hetzner/t3` on a machine this core added (`hc machine add`)
+            askers[f'hc:{term}' if '/' in term else f'hc:{MACHINE}/{term}'] = term
+            if '/' not in term:  # a Claude Code here: its session file is on this machine
+                sid = claude_session_of((hc('get', term).get('foreground') or {}).get('pid'))
+                if sid:
+                    askers[f'Claude Code:{sid}'] = term
     return _hc['askers']
 
 

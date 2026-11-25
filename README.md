@@ -865,7 +865,8 @@ into that same terminal, whatever the harness: Claude Code on his subscription, 
 - answer-dispatcher checks this machine's live hc terminals first: an idle or done agent gets
   `[Beacon ?ID] <his answer>` via `hc send`; mid-turn or in a dialog it waits for the next tick (the watchdog
   alarms if it never goes). The mark is read off the terminal before every send, so nothing is typed twice.
-- A terminal that is gone, or on another machine, falls back to the existing routes (live Beacon agent, resume,
+- Agents on machines the home server's core added (`hc machine add <box>`) are reached as `<machine>/<t>` too.
+- A terminal that is gone falls back to the existing routes (live Beacon agent, resume,
   fresh run). A plain shell is never typed into.
 
 ## Endings: every session ending is a card (task 1857)
