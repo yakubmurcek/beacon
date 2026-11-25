@@ -2776,7 +2776,7 @@ def ask_parser(sub):
                          '(sign, pay, top up, turn on a setting, make a key, send a mail: then one "Firm :: mailto:…?subject=…&body=…" '
                          'step per recipient, and the mail text itself in -c): then ids, error codes and script names go '
                          'after a "---" line in -c, never in the question or the options')
-    ak.add_argument('--no-see', metavar='WHY', help='a look-sounding question with truly nothing to see, and why')
+    ak.add_argument('--no-see', metavar='WHY', help='a look-sounding question with truly nothing to see or open (no link exists), and why')
     ak.add_argument('--json', action='store_true')
     ak.set_defaults(run=cmd_ask)
 
@@ -3007,6 +3007,18 @@ def refuse_unfit_ask(a, opts):
     refuse_unseen(a, opts)
 
 
+SOUND_EXT = ('.mp3', '.m4a', '.wav', '.ogg')
+
+
+def picture_ok(see):
+    """A `--see` picture comes with a `--see` link to what it shows (a step's link was not enough for him: ?307,
+    2026-11-24); a sound sample needs none."""
+    refs = [(v.rpartition('::')[2] if '::' in v else v).strip() for v in see]
+    if any(re.match(r'^https?://', r) for r in refs):
+        return True
+    return all(r.lower().endswith(SOUND_EXT) for r in refs)
+
+
 def ask_words(a, opts):
     """The ask's question and options as one text, and its kind as a slug: what the look and hands rules read."""
     text = '\n'.join([a.question, *[o if isinstance(o, str) else o['label'] + ' ' + (o.get('detail') or '') for o in opts]])
@@ -3023,6 +3035,11 @@ def refuse_unseen(a, opts):
                  'the tailnet, or a public Vercel preview that opens logged out) and/or --see <screenshot.png> '
                  '(390 px wide, cropped to the part he decides on; a frame for a video). Several --see are fine. Nothing to see at all? '
                  '--no-see "why".')
+    if a.see and not a.no_see and not picture_ok(a.see):
+        sys.exit('tasks: refused: the card has a picture but no link. A picture shows how it looks; he decides on '
+                 'the thing itself, so add its link too: --see "Open :: <link to the page, artifact, PR or preview>" '
+                 '(the picture stays as a preview). Nothing to open at all (a game in the editor, a sound)? '
+                 '--no-see "why" (his 👎 four times on 2026-11-23..24: "nedal jsi mi zase link").')
     hands = needs_hands(text, kind)
     if hands and not any(x.get('url') for x in step_items(a.step)):
         sys.exit(f'tasks: refused: "{hands}" means he has to do something by hand, on his phone, without opening '

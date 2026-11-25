@@ -568,6 +568,12 @@ class QuestionsCliTest(LiveHub, unittest.TestCase):
         # Nothing to see is said out loud; a link found later is added with `tasks see`.
         self.run_cli('ask', 'Merge the README typo fix?', '-o', 'Yes', '--no-see', 'one word in a README')
         self.assertFalse(self.server.Handler.questions.get(2)['needs_see'])
+        # A picture alone is refused: he wants the link to the thing itself (four 👎, 2026-11-23..24).
+        with self.assertRaises(SystemExit) as e:
+            self.run_cli('ask', 'Put the leaving card live on the site?', '-o', 'Yes', '--see', png)
+        self.assertIn('no link', str(e.exception.code))
+        self.run_cli('ask', 'Fly in the editor: is up/down right?', '-o', 'Yes', '--see', png, '--no-see', 'a game in the editor')
+        self.assertEqual(len(self.server.Handler.questions.get(3)['see']), 1)
         self.run_cli('see', '2', 'https://github.com/x/y/pull/3', 'http://beacon/shot.png')
         self.assertEqual(self.server.Handler.questions.get(2)['see'],
                          [{'url': 'https://github.com/x/y/pull/3'}, {'picture': 'http://beacon/shot.png'}])
@@ -578,7 +584,7 @@ class QuestionsCliTest(LiveHub, unittest.TestCase):
         with open(mp3, 'wb') as f:
             f.write(b'ID3fake')
         self.run_cli('ask', 'Keep this voice?', '-o', 'Keep it', '--see', 'Voice :: ' + mp3, '--see', 'https://x.example/v.m4a')
-        see = self.server.Handler.questions.get(3)['see']
+        see = self.server.Handler.questions.get(4)['see']
         self.assertRegex(see[0]['audio'], r'^/api/questions/file/[0-9a-f]{16}\.mp3$')
         self.assertEqual(see[0]['label'], 'Voice')
         self.assertEqual(see[1], {'audio': 'https://x.example/v.m4a'})
