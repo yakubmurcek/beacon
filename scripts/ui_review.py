@@ -39,6 +39,7 @@ MODEL = os.environ.get('UI_REVIEW_MODEL', 'claude-sonnet-5-5')
 CAP = int(os.environ.get('UI_REVIEW_CAP', '60'))  # model calls per run, each 2-3 pictures
 TIMEOUT = 240
 PARALLEL = 5
+FAILED_OK = 3  # failed calls (after their retry) a run may have before it counts as broken
 STATE_DIR = Path(os.environ.get('QUALITY_STATE', os.path.expanduser('~/.local/state/beacon-quality')))
 # (state, demo.py arguments or None for an empty hub, ui_states.mjs flags)
 STATES: list[tuple[str, list[str] | None, list[str]]] = [
@@ -82,7 +83,9 @@ def groups(out: Path) -> list[dict[str, Any]]:
 def message(g: dict[str, Any]) -> dict[str, Any]:
     content: list[dict[str, Any]] = []
     page, _, moment = g['page'].partition('~')
-    head = (f"PAGE {page} · data state: {g['state']}" + (f" · moment: {moment} (after a tap)" if moment else '')
+    head = (f"PAGE {page} · data state: {g['state']}"
+            + (f' · moment: {moment} (after a tap; phone and desktop each tapped their own first item, so the item may'
+               ' differ between them)' if moment else '')
             + f" · look: {g['look']} (theme-language)")
     content.append({'type': 'text', 'text': head})
     for size in ('phone', 'desktop'):
@@ -103,6 +106,12 @@ def message(g: dict[str, Any]) -> dict[str, Any]:
 
 
 def ask(g: dict[str, Any]) -> dict[str, Any]:
+    """One review; a call that fails is tried once more (a single flaky call should not alarm anyone)."""
+    first = ask_once(g)
+    return ask_once(g) if first['error'] else first
+
+
+def ask_once(g: dict[str, Any]) -> dict[str, Any]:
     started = time.time()
     proc = subprocess.run([CLAUDE, '-p', '--model', MODEL, '--setting-sources', '', '--tools', '', '--strict-mcp-config',
                            '--no-chrome', '--no-session-persistence', '--input-format', 'stream-json',
@@ -163,7 +172,7 @@ def main() -> int:
               f"{f.get('confidence', ''):<4} {f.get('what', '')}")
     print(f"\n{len(findings)} finding(s) from {len(reviews)} reviews, ${report['cost_usd']}; "
           f"{len(errors)} failed call(s); {out / 'findings.json'}")
-    return 1 if errors else 0
+    return 1 if len(errors) > FAILED_OK else 0  # more than a few failed calls: the login or the model is down
 
 
 if __name__ == '__main__':

@@ -76,8 +76,12 @@ scripts/ui_review_seeded.py key.json         # plant known bugs (patches + a key
 ```
 
 - Seeded test (2026-11-24): 5 bugs planted blind by an agent that never saw the brief (dark-look contrast, a
-  heading count off, clipped text, an English button in Czech, buttons under a card at 390 px): 4 caught, twice.
-  The miss: a heading count that needs adding up the rows under it.
+  heading count off, clipped text, an English button in Czech, buttons under a card at 390 px): 4 caught, twice,
+  each hit checked by eye against its planted bug (the scorer matches page + kind, so it also credits a finding of
+  that kind that was there before). The miss: a heading count that needs adding up the rows under it.
+- False alarms: of 20 sure findings sampled evenly from a run on main and checked by eye against the pictures and
+  page text, 17 were real (the 3 others: two deliberate "…" shortenings on the phone graph, a toast that shows for a
+  moment). Low-confidence findings are not posted.
 - First run on main: 199 findings (71 sure), among them the Outreach page printing "nullnull", the header's
   language button wrapping to a second row at 1280 px on System pages, English text left on Rank, Team and Usage in
   Czech, a hint pointing to an "Up next" section that no longer exists.
