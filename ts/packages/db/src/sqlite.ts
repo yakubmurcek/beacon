@@ -103,19 +103,19 @@ export function summarize(db: DatabaseSync, classes = true): Map<string, Summary
   return out;
 }
 
-/** The whole file as sorted normalized text, table by table: two files hold the same data when these are equal. */
-export function dump(db: DatabaseSync): string {
+/** The whole file as sorted normalized lines, table by table: two files hold the same data when these are equal. */
+export function* dumpLines(db: DatabaseSync): Generator<string> {
   checkSchema(db);
-  const parts: string[] = [];
   for (const spec of [...TABLES].sort((a, b) => (a.name < b.name ? -1 : 1))) {
-    parts.push(
-      `-- ${spec.name} (${spec.columns.map((c) => c.name).join(", ")})`,
-      ...[...sqliteLines(db, spec, true)].sort(),
-    );
+    yield `-- ${spec.name} (${spec.columns.map((c) => c.name).join(", ")})`;
+    yield* [...sqliteLines(db, spec, true)].sort();
   }
-  const seq = [...sqliteSequence(db)].map(([name, v]) => rowLine([name, v.toString()]));
-  parts.push(`-- ${SEQUENCE}`, ...seq.sort());
-  return `${parts.join("\n")}\n`;
+  yield `-- ${SEQUENCE}`;
+  yield* [...sqliteSequence(db)].map(([name, v]) => rowLine([name, v.toString()])).sort();
+}
+
+export function dump(db: DatabaseSync): string {
+  return `${[...dumpLines(db)].join("\n")}\n`;
 }
 
 /** The differences between two summaries, one line each; empty means equal. */

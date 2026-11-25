@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { copyToPostgres, verify } from "./copy.js";
 import type { Pg } from "./pg.js";
 import { reverseToSqlite } from "./reverse.js";
-import { differences, dump, openSnapshot, summarize } from "./sqlite.js";
+import { differences, dumpLines, openSnapshot, summarize } from "./sqlite.js";
 
 const USAGE = `beacon-db: the SQLite <-> Postgres copy tools (docs/design/2026-11-ts-migration.md, "Data")
 
@@ -124,7 +124,9 @@ async function run(argv: readonly string[], deps: Deps): Promise<number> {
       }
       const db = openSnapshot(a);
       try {
-        deps.out(dump(db).trimEnd());
+        for (const line of dumpLines(db)) {
+          deps.out(line);
+        }
       } finally {
         db.close();
       }
