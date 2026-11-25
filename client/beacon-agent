@@ -47,6 +47,8 @@ from typing import Any, TextIO, cast
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(os.path.dirname(HERE), 'hub'))
+sys.path.insert(0, HERE)
+agentrun: Any = importlib.import_module('agentrun')  # the one policy every Beacon agent starts under (task 2043)
 settings: Any = importlib.import_module('settings')  # hub/settings.py: the deployment's names
 
 _spec = cast(ModuleSpec, importlib.util.spec_from_loader(
@@ -244,7 +246,7 @@ def run(sid: str) -> int:
     f = folder(sid)
     cmd: list[str] = [CLAUDE, '--resume' if meta['resume'] else '--session-id', sid, '--remote-control', meta['name'],
            '--mcp-config', os.path.join(f, 'mcp.json'), '--dangerously-load-development-channels', 'server:beacon',
-           '--permission-mode', 'bypassPermissions', '--settings', os.path.join(f, 'settings.json')]
+           *agentrun.flags('live', printed=False), '--settings', os.path.join(f, 'settings.json')]
     env: dict[str, str] = {'BEACON_AGENT': '1', 'BEACON_AGENT_SID': sid, 'BEACON_TASK': str(meta.get('task') or ''),
            'BEACON_AGENTS_DIR': STATE, 'IS_SANDBOX': '1', 'BEACON_ENDINGS': '1'}
     stop(sid)

@@ -46,6 +46,8 @@ import time
 import uuid
 
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'hub'))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import agentrun  # the one policy every Beacon agent starts under (task 2043)
 import settings  # noqa: E402  (hub/settings.py: the deployment's names)
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -76,7 +78,6 @@ RUNS_PER_HOUR = int(os.environ.get('APPLIER_RUNS_PER_HOUR', 30))  # each answer 
 AT_ONCE = int(os.environ.get('DISPATCH_AT_ONCE', 5))  # 2 queued 15 answers for 2 h (2026-11-24)
 QUEUED_ALARM = 2 * 3600  # answers wait and no run started this long (not the brake): he hears once, for the queue
 COLD_BIG = 100_000  # a session this big, idle past the cache life, resumes at full price: a fresh run is cheaper
-MAX_TURNS = 80
 UNIT = 'answer-run-'
 ENDING = 'ending'  # a tap on a session's card in the feed (hub/endings.py)
 CLAUDE_HOME = os.environ.get('DISPATCH_CLAUDE_HOME', os.path.expanduser('~/.claude'))
@@ -436,7 +437,7 @@ def resume(q):
     if not cwd or not os.path.isdir(cwd):  # its worktree went (merged and removed): --resume can't find it there
         return "the session that asked worked in a folder that is gone (merged and removed)"
     text = ending_prompt(q) if q.get('kind') == ENDING else answer_prompt(q)
-    cmd = [CLAUDE, '-p', text, '--resume', sid, '--permission-mode', 'bypassPermissions', '--max-turns', str(MAX_TURNS)]
+    cmd = [CLAUDE, '-p', text, '--resume', sid, *agentrun.flags('answer')]
     run_sid = sid
     if session_open(q['session_id']):
         run_sid = str(uuid.uuid4())  # named up front, so the task page can follow the copy while it works
@@ -508,7 +509,7 @@ def carry_out(q):
     env = dict(os.environ, IS_SANDBOX='1', BEACON_ENDINGS='1')  # its result is a card in the feed too
     try:
         name = (task or {}).get('title') or f"Answer: {q.get('question') or ''}"
-        r = subprocess.run([CLAUDE, '-p', prompt(q, task), '--session-id', sid, '--permission-mode', 'bypassPermissions',
+        r = subprocess.run([CLAUDE, '-p', prompt(q, task), '--session-id', sid, *agentrun.flags('answer'),
                             '--name', name[:60]],
                            cwd=cwd, env=env, capture_output=True, text=True, timeout=RUN_TIMEOUT)
         out = (r.stdout or '').strip() or f'⚠️ no reply (exit {r.returncode}): {(r.stderr or "").strip()[:300]}'

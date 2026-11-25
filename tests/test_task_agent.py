@@ -15,6 +15,13 @@ from test_tasks import ROOT, LiveHub  # noqa: E402
 
 STUB = r'''#!/usr/bin/env python3
 import json, os, subprocess, sys
+if any('"pass"' in a for a in sys.argv):  # the merge gate's fresh reviewer
+    with open(os.environ['STUB_SEEN'] + '.review', 'a') as f:
+        f.write(sys.stdin.read() + '\n---\n')
+    bad = os.environ.get('STUB_REVIEW') == 'fail'
+    verdict = {'pass': not bad, 'findings': ['it breaks login'] if bad else []}
+    print(json.dumps({'result': json.dumps(verdict), 'structured_output': verdict, 'is_error': False}))
+    sys.exit(0)
 if '--session-id' not in sys.argv and '--resume' not in sys.argv:  # the router's call
     with open(os.environ['STUB_SEEN'] + '.route', 'a') as f:
         f.write(sys.argv[sys.argv.index('-p') + 1] + '\n---\n')
@@ -60,6 +67,10 @@ PROVEN = {'reproduced_without_fix': True, 'criteria': [{'line': 'Klíč po reset
 GH_STUB = r'''#!/bin/sh
 echo "$@" >> "$STUB_GH_LOG"
 [ "$1 $2" = "pr merge" ] && echo MERGED > "$STUB_GH_LOG.merged"
+run="{\"__typename\": \"CheckRun\", \"name\": \"ci\", \"status\": \"${STUB_GH_RUN:-COMPLETED}\""
+[ "$1 $2 $5" = "pr view statusCheckRollup" ] && {
+  echo "{\"statusCheckRollup\": [$run, \"conclusion\": \"${STUB_GH_CHECK:-SUCCESS}\"}]}"; exit 0; }
+[ "$1 $2" = "pr diff" ] && echo "+the fix"
 [ "$1 $2" = "pr view" ] && [ -f "$STUB_GH_LOG.merged" ] && { cat "$STUB_GH_LOG.merged"; exit 0; }
 [ "$1 $2" = "pr view" ] && [ -n "$STUB_GH_STATE" ] && echo "$STUB_GH_STATE"
 exit "${STUB_GH_EXIT:-0}"
@@ -105,7 +116,8 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         self.systemctl_log = os.path.join(self.dir.name, 'systemctl.log')
         os.environ.update(TASK_AGENT_SYSTEMCTL=systemctl, STUB_SYSTEMCTL_LOG=self.systemctl_log,
                           TASK_AGENT_SOCK_DIR=os.path.join(self.dir.name, 'socks'))
-        for k in ('CLAUDE_CODE_SESSION_ID', 'STUB_ROUTE', 'STUB_GH_EXIT', 'TASK_AGENT_MAX_RUNS', 'STUB_PHONE', 'STUB_GH_STATE',
+        for k in ('CLAUDE_CODE_SESSION_ID', 'STUB_ROUTE', 'STUB_GH_EXIT', 'STUB_GH_CHECK', 'STUB_GH_RUN', 'STUB_REVIEW',
+                  'TASK_AGENT_MAX_RUNS', 'STUB_PHONE', 'STUB_GH_STATE',
                   'STUB_NOTE', 'STUB_RETRY', 'STUB_WRITES'):
             os.environ.pop(k, None)
         loader = importlib.machinery.SourceFileLoader('task_agent', os.path.join(ROOT, 'client', 'task-agent'))
@@ -563,6 +575,21 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         self.assertNotIn('/app/pull/7', log)  # not a notes repo: the PR waits for review
         self.assertEqual(self.tasks.get(other['id'])['status'], 'doing')
 
+    def test_a_tapped_move_whose_review_fails_goes_back_to_his_list_unmerged(self):
+        self.agent.TAPPED_ONLY = True
+        self.agent.AGENT['self_merge'] = ['notes']
+        mine = self.tasks.create({'title': 'Write the draft', 'tags': ['claude'], 'status': 'doing', 'project': 'notes',
+                                  'body': 'Beacon move: draft'})
+        self.tasks.comment(mine['id'], '👉 PR https://github.com/o/notes/pull/7 (draft → main): the draft',
+                           'Claude Code 1234abcd')
+        os.environ.update(STUB_GH_STATE='OPEN', STUB_REVIEW='fail')
+        self.assertEqual(self.agent.main([]), 0)
+        with open(self.gh_log) as f:
+            self.assertNotIn('pr merge', f.read())
+        t = self.tasks.get(mine['id'])
+        self.assertEqual((t['status'], t['tags']), ('todo', []))
+        self.assertIn('not merged: the independent review found: it breaks login', t['comments'][-1]['text'])
+
     def test_paused_it_neither_routes_nor_works_but_still_tidies(self):
         self.assertEqual(self.agent.main(['pause']), 0)
         new = self.tasks.create({'title': 'Renew the domain'})
@@ -592,6 +619,45 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         self.assertIn('pr merge https://github.com/o/r/pull/7 --squash --delete-branch', log)
         t = self.tasks.get(tid)
         self.assertEqual((t['status'], t['comments'][-1]['author']), ('done', 'owner'))
+
+    def test_merge_waits_for_green_checks(self):
+        tid = self.with_pr()
+        os.environ['STUB_GH_CHECK'] = 'FAILURE'
+        self.assertEqual(self.agent.main(['reply', str(tid), 'merge']), 1)
+        with open(self.gh_log) as f:
+            self.assertNotIn('pr merge', f.read())
+        t = self.tasks.get(tid)
+        self.assertEqual(t['status'], 'doing')
+        self.assertIn('checks not green: ci', t['comments'][-1]['text'])
+        self.assertFalse(os.path.exists(self.seen + '.review'))  # red checks: no review spent
+
+    def test_a_move_whose_checks_still_run_waits_in_doing(self):
+        self.agent.TAPPED_ONLY = True
+        self.agent.AGENT['self_merge'] = ['notes']
+        mine = self.tasks.create({'title': 'Write the draft', 'tags': ['claude'], 'status': 'doing', 'project': 'notes',
+                                  'body': 'Beacon move: draft'})
+        self.tasks.comment(mine['id'], '👉 PR https://github.com/o/notes/pull/7 (draft → main): the draft',
+                           'Claude Code 1234abcd')
+        os.environ.update(STUB_GH_STATE='OPEN', STUB_GH_RUN='IN_PROGRESS', STUB_GH_CHECK='')
+        self.assertEqual(self.agent.main([]), 0)
+        with open(self.gh_log) as f:
+            self.assertNotIn('pr merge', f.read())
+        self.assertEqual(self.tasks.get(mine['id'])['status'], 'doing')  # the next tick looks again
+        self.assertFalse(os.path.exists(self.seen + '.review'))
+
+    def test_merge_waits_for_a_fresh_review_that_passes(self):
+        tid = self.with_pr()
+        os.environ['STUB_REVIEW'] = 'fail'
+        self.assertEqual(self.agent.main(['reply', str(tid), 'merge']), 1)
+        with open(self.gh_log) as f:
+            log = f.read()
+        self.assertNotIn('pr merge', log)
+        self.assertIn('pr comment https://github.com/o/r/pull/7 --body Independent review: not passed.', log)
+        self.assertIn('it breaks login', self.tasks.get(tid)['comments'][-1]['text'])
+        with open(self.seen + '.review') as f:
+            seen = f.read()
+        self.assertIn('+the fix', seen)  # the reviewer saw the diff
+        self.assertIn('Fix login', seen)  # and the task, not the run's notes
 
     def test_a_failed_merge_leaves_the_task_open(self):
         tid = self.with_pr()

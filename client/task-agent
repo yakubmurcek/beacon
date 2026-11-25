@@ -79,6 +79,8 @@ import uuid
 import zoneinfo
 
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'hub'))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import agentrun  # the one policy every Beacon agent starts under (task 2043)
 import settings  # noqa: E402  (hub/settings.py: the deployment's names)
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -485,16 +487,6 @@ you live. Work the way a senior engineer ships, in this order; no step is option
 """
 
 
-def core_rules():
-    """His global core rules (~/.claude/CLAUDE.md), HTML comments stripped: a repo's own run skips his
-    user settings, so without this it never saw them. Empty when the file is missing."""
-    try:
-        with open(os.path.join(os.path.expanduser('~'), '.claude', 'CLAUDE.md'), encoding='utf-8') as f:
-            return re.sub(r'<!--.*?-->', '', f.read(), flags=re.S).strip()
-    except OSError:
-        return ''
-
-
 def tasks_in_jail():
     """Where `tasks` resolves inside the jail (/usr/local/bin/tasks links into the ro-bound client checkout)."""
     found = shutil.which('tasks')
@@ -690,8 +682,9 @@ def login_lasts(seconds):
 def run_claude(task, sid, where, text, conf=None, proof=None):
     env = gh_env()
     env.pop('CLAUDE_CODE_SESSION_ID', None)  # its own id comes from --session-id
-    cmd = [CLAUDE, '-p', text, '--session-id', sid, '--permission-mode', 'auto', '--output-format', 'json',
-           '--json-schema', CONF_SCHEMA if conf else PHONE_SCHEMA, '--max-budget-usd', f'{RUN_USD:g}',
+    trigger = 'repo' if conf else 'move' if tapped(task) else 'task'
+    cmd = [CLAUDE, '-p', text, '--session-id', sid, *agentrun.flags(trigger), '--output-format', 'json',
+           '--json-schema', CONF_SCHEMA if conf else PHONE_SCHEMA,
            '--name', task['title'][:60]]  # the session is called by its task, like `tasks doing` names one
     timeout = TIMEOUT
     began = time.time()
@@ -699,14 +692,12 @@ def run_claude(task, sid, where, text, conf=None, proof=None):
     unit = proxy = None
     if conf:  # the repo's own run: only its MCP servers, its guard hooks on top of the repo's, no browser
         if conf.get('mcp_config'):
-            cmd += ['--mcp-config', os.path.join(where, conf['mcp_config']), '--strict-mcp-config']
+            cmd += ['--mcp-config', os.path.join(where, conf['mcp_config'])]
         if conf.get('settings'):
             cmd += ['--settings', os.path.join(where, conf['settings'])]
         if conf.get('tools'):
             cmd += ['--tools', ','.join(conf['tools'])]
-        cmd += ['--no-chrome', '--setting-sources', 'project']  # never his user settings (they authorize push, ssh)
-        if core_rules():  # ...but his global core rules (code quality, nothing personal in repos) still apply
-            cmd += ['--append-system-prompt', core_rules()]
+        # never his user settings (they authorize push, ssh), but his core rules: the 'repo' policy
         # Pinned per repo, so a default change in the CLI never silently changes who fixes his bugs.
         if conf.get('model'):
             cmd += ['--model', conf['model']]
@@ -1119,10 +1110,9 @@ def verify(task, conf, claimed, proof, round_no):
             brief = f.read().replace('{id}', str(tid)).replace('{input}', os.path.join(where, CHECK_INPUT))
         csid = str(uuid.uuid4())
         log_run()
-        cmd = [CLAUDE, '-p', brief, '--session-id', csid, '--permission-mode', 'auto', '--output-format', 'json',
+        cmd = [CLAUDE, '-p', brief, '--session-id', csid, *agentrun.flags('check'), '--output-format', 'json',
                '--json-schema', CHECK_SCHEMA, '--mcp-config', os.path.join(where, cconf['mcp_config']),
-               '--strict-mcp-config', '--tools', ','.join(cconf.get('tools') or ['Read', 'Glob', 'Grep', 'ToolSearch']),
-               '--no-chrome', '--setting-sources', 'project', '--max-budget-usd', f'{RUN_USD:g}']
+               '--tools', ','.join(cconf.get('tools') or ['Read', 'Glob', 'Grep', 'ToolSearch'])]
         if cconf.get('model'):
             cmd += ['--model', cconf['model']]
         if cconf.get('effort'):
@@ -1477,7 +1467,6 @@ def tell(task, text, hint='', icon='🤖', sender='', photos=(), limit=TELL_CHAR
 # use them; the kill switch and the spend cap stop every run.
 MAX_ATTEMPTS = 2  # fix attempts per bug (a run and its after-reject retry are 2); each reply of his allows 2 more
 DAILY_USD = float(os.environ.get('TASK_AGENT_DAILY_USD', '25'))  # API-price estimate of the day's runs (8 runs ~$1-3)
-RUN_USD = float(os.environ.get('TASK_AGENT_RUN_USD', '10'))  # --max-budget-usd of one run (a runaway's ceiling)
 WEEK_PCT = 90  # his plan's weekly quota: past this the agent leaves the rest to him
 FAILS_IN_A_ROW = 3  # failed runs in a row before it pauses itself (circuit breaker)
 USAGE = os.environ.get('TASK_AGENT_USAGE', '/var/lib/claude-usage/usage.json')  # the claude-usage poller's snapshot
@@ -2148,6 +2137,13 @@ def land_moves():
             continue  # a PR in another repo is not ours to merge
         for pr in prs:
             if pr_state(pr, env) == 'OPEN':
+                ok, why = agentrun.merge_gate(pr, full, GH, CLAUDE, env)
+                if ok is None:  # its checks still run: the next tick looks again
+                    break
+                if not ok:  # never an agent's own unreviewed PR (studio rule): the task says why, his list gets it
+                    cli.call(f"/api/tasks/{t['id']}", {'status': 'todo', 'tags': [x for x in full['tags'] if x != TAG]})
+                    note(t['id'], f"⚠️ #{pr.rsplit('/', 1)[-1]} not merged: {why}. Back on his list.")
+                    break
                 r = subprocess.run([GH, 'pr', 'merge', pr, '--squash', '--delete-branch'], env=env,
                                    capture_output=True, text=True, timeout=120, check=False)
                 if r.returncode:
@@ -2204,6 +2200,11 @@ def reply(tid, text, noted=False):
             print(f"There's nothing to merge on #{tid} yet.")
             return 1
         env = gh_env()
+        ok, why = agentrun.merge_gate(pr, task, GH, CLAUDE, env)
+        if not ok:  # his word, but merging stays behind green checks and a fresh review (studio rule, 2026-11-25)
+            note(tid, f"⚠️ Not merged on his reply: {why}.{' Say merge again once they finish.' if ok is None else ''}")
+            print(f"Not merged #{tid}: {why}"[:300])
+            return 1
         subprocess.run([GH, 'pr', 'ready', pr], env=env, capture_output=True, text=True, timeout=60)
         r = subprocess.run([GH, 'pr', 'merge', pr, '--squash', '--delete-branch'], env=env,
                            capture_output=True, text=True, timeout=120)
