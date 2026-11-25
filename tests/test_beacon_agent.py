@@ -246,5 +246,117 @@ class LiveHandoffTest(unittest.TestCase):
         start.assert_not_called()
 
 
+def done(code=0, out=''):
+    return mock.Mock(returncode=code, stdout=out)
+
+
+class StartTest(unittest.TestCase):
+    """start(): one systemd unit per agent, its files written, never a second copy of a live chat."""
+
+    def test_a_new_agent_gets_its_files_and_unit(self):
+        task = {'id': 9, 'title': 'Fix login', 'project': 'nowhere-xyz'}
+        with mock.patch.object(agent.cli, 'call', side_effect=[task, {}]) as call, \
+                mock.patch.object(agent, 'live_count', return_value=0), \
+                mock.patch.object(agent.subprocess, 'run', return_value=done()) as run:
+            sid = agent.start(task=9, brief='do it')
+        self.assertEqual(agent.read(sid, 'meta.json')['name'], 'Fix login')
+        self.assertEqual(agent.read(sid, 'brief.txt'), 'do it')
+        self.assertIn('beacon', agent.read(sid, 'mcp.json')['mcpServers'])
+        self.assertIn('PreToolUse', agent.read(sid, 'settings.json')['hooks'])
+        unit = next(c.args[0] for c in run.call_args_list if c.args[0][0] == 'systemd-run')
+        self.assertIn('--description=Beacon agent: Fix login', unit)
+        self.assertEqual(call.call_args_list[-1].args[0], '/api/tasks/9/sessions')
+
+    def test_a_live_chat_is_never_started_twice(self):
+        sid = str(uuid.uuid4())
+        with mock.patch.object(agent, 'is_live', return_value=True), mock.patch.object(agent.subprocess, 'run') as run:
+            self.assertEqual(agent.start(resume=f'Claude Code:{sid}'), sid)
+        run.assert_not_called()
+
+    def test_at_the_cap_it_refuses(self):
+        with mock.patch.object(agent, 'live_count', return_value=agent.MAX_LIVE), self.assertRaises(SystemExit):
+            agent.start(brief='x')
+
+
+class ReadyTest(unittest.TestCase):
+    """get_ready(): confirms the dev channel, trusts only folders inside his projects, waits for the prompt."""
+
+    def ready(self, screens, cwd):
+        sid = str(uuid.uuid4())
+        with mock.patch.object(agent.time, 'sleep'), mock.patch.object(agent, 'screen', side_effect=screens), \
+                mock.patch.object(agent, 'keys') as keys:
+            return agent.get_ready(sid, cwd), keys, sid
+
+    def test_confirm_then_trust_then_prompt(self):
+        inside = os.path.join(agent.PROJECTS, 'x')
+        ok, keys, sid = self.ready([agent.CONFIRM_TEXT, agent.TRUST_TEXT, '? for shortcuts'], inside)
+        self.assertTrue(ok)
+        self.assertEqual([c.args[1:] for c in keys.call_args_list], [('Enter',), ('Down', 'Enter')])
+        self.assertLess(agent.age(sid, 'ready'), 60)
+
+    def test_a_folder_outside_his_projects_is_never_trusted(self):
+        ok, keys, _ = self.ready([agent.CONFIRM_TEXT, agent.TRUST_TEXT], '/somewhere/else')
+        self.assertFalse(ok)
+        self.assertEqual(len(keys.call_args_list), 1)
+
+
+class RunTest(unittest.TestCase):
+    def test_a_screen_it_does_not_know_marks_it_broken_and_tells(self):
+        sid = str(uuid.uuid4())
+        agent.write(sid, 'meta.json', {'sid': sid, 'resume': False, 'name': 'X', 'cwd': '/', 'task': None})
+        with mock.patch.object(agent.subprocess, 'run', return_value=done()), \
+                mock.patch.object(agent, 'get_ready', return_value=False), \
+                mock.patch.object(agent, 'screen', return_value='weird screen'), \
+                mock.patch.object(agent, 'tell') as tell:
+            self.assertEqual(agent.run(sid), 1)
+        self.assertTrue(os.path.exists(os.path.join(agent.folder(sid), 'broken')))
+        self.assertIn('weird screen', tell.call_args.args[0])
+
+    def test_it_stays_while_the_session_lives(self):
+        sid = str(uuid.uuid4())
+        agent.write(sid, 'meta.json', {'sid': sid, 'resume': True, 'name': 'X', 'cwd': '/', 'task': 3})
+        with mock.patch.object(agent.subprocess, 'run', return_value=done()), \
+                mock.patch.object(agent, 'get_ready', return_value=True), \
+                mock.patch.object(agent, 'has_session', side_effect=[True, False]), \
+                mock.patch.object(agent.time, 'sleep'):
+            self.assertEqual(agent.run(sid), 0)
+        self.assertIsNone(agent.read(sid, 'live.json'))
+
+    def test_an_unknown_agent_is_refused(self):
+        with self.assertRaises(SystemExit):
+            agent.run(str(uuid.uuid4()))
+
+
+class ReapTest(unittest.TestCase):
+    def setUp(self):
+        self.sid = str(uuid.uuid4())
+        agent.write(self.sid, 'meta.json', {'sid': self.sid, 'name': 'Reaped'})
+        self.others = mock.patch.object(agent, 'agents', return_value=[self.sid])
+        self.others.start()
+        self.addCleanup(self.others.stop)
+
+    def test_a_quiet_channel_is_marked_broken_and_ended(self):
+        with mock.patch.object(agent, 'has_session', return_value=True), mock.patch.object(agent, 'stop') as stop, \
+                mock.patch.object(agent, 'tell') as tell, mock.patch('sys.stdout', io.StringIO()):
+            agent.reap()
+        stop.assert_called_once_with(self.sid)
+        self.assertIn('went quiet', tell.call_args.args[0])
+
+    def test_an_idle_chat_ends_but_never_mid_turn(self):
+        agent.mark(self.sid, 'ready')
+        agent.mark(self.sid, 'beat')
+        log = agent.write(self.sid, 'log.jsonl', '')
+        os.utime(log, (0, 0))
+        with mock.patch.object(agent, 'has_session', return_value=True), \
+                mock.patch.object(agent, 'transcript', return_value=log), \
+                mock.patch.object(agent, 'stop') as stop, mock.patch('sys.stdout', io.StringIO()):
+            with mock.patch.object(agent, 'screen', return_value=agent.BUSY_TEXT):
+                agent.reap()
+            stop.assert_not_called()
+            with mock.patch.object(agent, 'screen', return_value='idle'):
+                agent.reap()
+        stop.assert_called_once_with(self.sid)
+
+
 if __name__ == '__main__':
     unittest.main()
