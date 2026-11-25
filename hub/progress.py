@@ -21,6 +21,7 @@ try:
     from .store import bursts_of
 except ImportError:  # run as a script from hub/
     from store import bursts_of
+from settings import OWNER, OWNER_NAME
 
 log = logging.getLogger('beacon.progress')
 
@@ -51,6 +52,7 @@ NEXT_HEAD = re.compile(r'^#{1,6}\s', re.M)
 STEP_LINE = re.compile(r'^\s*(\d+)[.)]\s+(.+)$')
 DONE_MARK = re.compile(r'^(✅|☑️|\[x\]|~~)', re.I)
 OWNER_MARK = '👤'
+OWNER_NAMES = {n.lower() for n in (OWNER.get('names') or [OWNER_NAME])}
 
 
 def steps_of(body):
@@ -75,6 +77,10 @@ def label_of(text):
     """A step's few plain words for the card: no markers, no markdown, the first clause."""
     t = re.sub(r'[🤖👤✅☑️]|\[x\]|~~|\*\*|`', '', text, flags=re.I).strip()
     t = re.sub(r'^[^:]{1,24}:\s+', '', t) if re.match(r'^\S+( \S+)?:\s', t) else t  # "Owner: look at …" -> "look at …"
+    # A who/where/when lead-in ("Alex at home (said tonight): run …") is not the move: the card shows what to do.
+    lead = re.match(r'^([^:`]{1,80}):\s+(?=\S)', t)
+    if lead and ('(' in lead.group(1) or lead.group(1).split()[0].strip(',').lower() in OWNER_NAMES):
+        t = t[lead.end():]
     t = re.split(r'\s*[(;]|\s+[–—-]\s+|(?<=\w)[.:]\s|,\s(?=(?:then|and)\b)', t)[0].strip().rstrip('.:,')
     if len(t) > 48:
         t = t[:47].rsplit(' ', 1)[0].rstrip(',;:') + '…'

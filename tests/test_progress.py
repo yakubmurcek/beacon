@@ -46,6 +46,11 @@ class StepsTest(unittest.TestCase):
 
     def test_labels_and_times_read_plainly(self):
         self.assertEqual(label_of('🤖 **Draw it** on the card; test, ship'), 'Draw it on the card')
+        # A who/where lead-in before the colon is never the headline (a card read "<owner> at home", 2026-11-25).
+        self.assertEqual(label_of('👤 Alex at home (said tonight, ?147): on the box run `gh auth login`'),
+                         'On the box run gh auth login')
+        self.assertEqual(label_of('👤 Alex, at the desk: sign the form'), 'Sign the form')
+        self.assertEqual(label_of('🤖 Check the logs: look for errors'), 'Check the logs')
         self.assertEqual([coarse(m) for m in (5, 30, 60, 120, 200, 600)],
                          ['~15 min', '~30 min', '~1 h', '~2 h', 'a few hours', 'most of a day'])
 
