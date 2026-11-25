@@ -602,7 +602,7 @@ _hc_askers = None  # this tick's {asker id: terminal}, read once per tick
 def hc(*args, timeout=30):
     """One hc call's JSON; {} when hc is missing, its core is down or the reply is not JSON."""
     try:
-        r = subprocess.run([HC_BIN, *args, '--json'], capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run([HC_BIN, *args, '--json'], capture_output=True, text=True, timeout=timeout, check=False)
         return json.loads(r.stdout or '{}')
     except (OSError, subprocess.SubprocessError, ValueError):
         return {}
@@ -611,7 +611,7 @@ def hc(*args, timeout=30):
 def hc_screen(term):
     try:
         return subprocess.run([HC_BIN, 'read', term, '--lines', '300'], capture_output=True, text=True,
-                              timeout=30).stdout
+                              timeout=30, check=False).stdout
     except (OSError, subprocess.SubprocessError):
         return ''
 
