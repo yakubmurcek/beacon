@@ -24,5 +24,10 @@
   ],
   "scripts": {
     "check:ts": "scripts/check-ts"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "$esbuild"
+    }
   }
 }
