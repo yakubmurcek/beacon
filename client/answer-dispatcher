@@ -443,6 +443,8 @@ def resume(q):
         run_sid = str(uuid.uuid4())  # named up front, so the task page can follow the copy while it works
         cmd += ['--fork-session', '--session-id', run_sid]  # still open in the app: a copy, never two writers on one log
     link_run(q.get('task_id'), run_sid)
+    view = agentrun.show(run_sid, f"Answer: {q.get('question') or ''}"[:60], 'answer', q.get('task_id'),
+                         CLAUDE_HOME)  # his Herdr app follows it (task 2043)
     # BEACON_QID: an old habit of `tasks wait N` in its history sees the answer as its own to carry out, not "done elsewhere"
     env = dict(os.environ, IS_SANDBOX='1', BEACON_ENDINGS='1', BEACON_QID=str(q['id']))
     try:
@@ -452,6 +454,8 @@ def resume(q):
         out = (r.stdout or '').strip() or '(it ended with no reply text)'  # exit 0, no text: it was told it may
     except subprocess.TimeoutExpired:
         out = f'⚠️ still not done after {RUN_TIMEOUT // 60} min, stopped'
+    finally:
+        agentrun.ended(view)
     if q.get('task_id'):
         try:
             what = 'tap' if q.get('kind') == ENDING else f"answer ?{q['id']}"
@@ -506,6 +510,8 @@ def carry_out(q):
         return 0
     sid = str(uuid.uuid4())
     link_run((task or {}).get('id'), sid)
+    view = agentrun.show(sid, ((task or {}).get('title') or f"Answer: {q.get('question') or ''}")[:60], 'answer',
+                         (task or {}).get('id'), CLAUDE_HOME)  # his Herdr app follows it (task 2043)
     env = dict(os.environ, IS_SANDBOX='1', BEACON_ENDINGS='1')  # its result is a card in the feed too
     try:
         name = (task or {}).get('title') or f"Answer: {q.get('question') or ''}"
@@ -515,6 +521,8 @@ def carry_out(q):
         out = (r.stdout or '').strip() or f'⚠️ no reply (exit {r.returncode}): {(r.stderr or "").strip()[:300]}'
     except subprocess.TimeoutExpired:
         out = f'⚠️ still not done after {RUN_TIMEOUT // 60} min, stopped'
+    finally:
+        agentrun.ended(view)
     if task:
         try:
             note(task['id'], f"🤖 Resumed after his answer ?{qid} („{q['answer'][:80]}“):\n{out[:3000]}")

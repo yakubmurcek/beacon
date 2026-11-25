@@ -717,6 +717,7 @@ def run_claude(task, sid, where, text, conf=None, proof=None):
             proxy = TaskProxy(task['id'], sid, os.path.join(SOCK_DIR, f"{task['id']}.sock")).start()
             cmd = jailed(cmd, env, where, conf['jail'], timeout, unit, proxy.path)
     out = None
+    view = agentrun.show(sid, task['title'], trigger, task['id'], home)  # his Herdr app follows it (task 2043)
     try:
         r = run_timed(cmd, timeout, unit, cwd=where, env=env)
     except subprocess.TimeoutExpired:
@@ -726,6 +727,7 @@ def run_claude(task, sid, where, text, conf=None, proof=None):
             stop_unit(unit)
         if proxy:
             proxy.stop()
+        agentrun.ended(view)
         with contextlib.suppress(Exception):  # the ledger never breaks a run
             try:
                 out = json.loads(r.stdout)

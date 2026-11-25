@@ -97,12 +97,13 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
             f.write('#!/bin/sh\nfor last; do :; done\nprintf "%s\\n===\\n" "$last" >> "$STUB_TOLD"\n')
         os.chmod(tell, 0o755)
         self.env = {k: os.environ.get(k) for k in (
+            'BEACON_AGENT_VIEW',
             'TASKS_URL', 'TASKS_TOKEN', 'CLAUDE_CODE_SESSION_ID', 'GH_TOKEN', 'TASK_AGENT_CLAUDE', 'TASK_AGENT_TELL',
             'TASK_AGENT_PROJECTS', 'TASK_AGENT_WORK', 'STUB_MODE', 'STUB_TASK', 'STUB_CLI', 'STUB_SEEN',
             'TASK_AGENT_GH', 'TASK_AGENT_STATE', 'TASK_AGENT_ROUTE_SINCE', 'TASK_AGENT_MAX_RUNS',
             'STUB_ROUTE', 'STUB_GH_LOG', 'STUB_GH_EXIT', 'STUB_TOLD', 'TASK_AGENT_ROUTE_GRACE', 'STUB_PHONE', 'STUB_GH_STATE',
             'TASK_AGENT_SYSTEMCTL', 'STUB_SYSTEMCTL_LOG', 'STUB_NOTE', 'STUB_RETRY', 'STUB_WRITES', 'TASK_AGENT_SOCK_DIR')}
-        os.environ.update(TASKS_URL=self.base, TASKS_TOKEN='tok', GH_TOKEN='x', TASK_AGENT_CLAUDE=stub,
+        os.environ.update(TASKS_URL=self.base, BEACON_AGENT_VIEW='0', TASKS_TOKEN='tok', GH_TOKEN='x', TASK_AGENT_CLAUDE=stub,
                           TASK_AGENT_TELL=tell, STUB_TOLD=self.told, TASK_AGENT_GH=gh, STUB_GH_LOG=self.gh_log,
                           TASK_AGENT_STATE=os.path.join(self.dir.name, 'state'), TASK_AGENT_ROUTE_SINCE='0',
                           TASK_AGENT_ROUTE_GRACE='0',
@@ -1233,7 +1234,7 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         t = self.conf_run(mode='ask')
         self.agent.main([])
         argv = json.load(open(self.seen))['argv']
-        self.assertEqual(argv[argv.index('--max-budget-usd') + 1], '10')
+        self.assertEqual(argv[argv.index('--max-budget-usd') + 1], '40')  # agentrun.USD, his call 2026-11-25
         rows = self.agent.ledger()
         self.assertEqual([(r['task'], r['kind']) for r in rows], [(t['id'], 'fixer')])
         self.assertEqual(self.agent.scorecard()[str(t['id'])]['runs'], 1)

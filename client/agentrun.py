@@ -12,12 +12,22 @@ Merging is never an agent's own call: `merge_gate` passes a PR only when its che
 reviewer, a separate model run that sees only the diff and the task's done-test, says it holds (his studio rule,
 2026-11-25: merge only after an independent review, never your own unreviewed PR).
 
+Every headless run also shows in his Herdr app (Mac and phone), in the space "Beacon agents" next to the live
+chats: `show` opens a herdr-core terminal that follows the run's transcript (`agentrun.py watch`). The run itself
+stays in its own systemd unit (jail, timeout, /machines and /ai keep seeing it); the tab only watches.
+
 Standard library only. Imported by the launchers next to this file.
 """
+import contextlib
+import datetime
+import glob
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
+import time
 from typing import Any, cast
 
 J = dict[str, Any]  # one task or one check as JSON gives it
@@ -154,3 +164,131 @@ def merge_gate(pr: str, task: J, gh: str, claude: str, env: dict[str, str]) -> t
     if not passed:
         return False, 'the independent review found: ' + ('; '.join(findings)[:300] or 'no reason given')
     return True, why + ', independent review passed'
+
+
+# ------------------------------------------------------------------ the Herdr tab of a headless run
+
+HC = os.environ.get('BEACON_AGENTS_HC') or shutil.which('hc') or '/usr/local/bin/hc'
+SPACE = 'beacon-agents'  # the Herdr space of every Beacon agent (client/beacon-agent's live chats too)
+WATCH_MAX = 6 * 3600  # a tab never outlives this
+LINGER = 10 * 60  # an ended run's tab stays this long, so its last lines can be read
+# A new Herdr space takes its name from its first terminal's folder: a viewer that opens it names it right.
+VIEW_DIR = os.path.join(os.environ.get('BEACON_AGENTS_DIR', '/var/lib/beacon-agents'), 'Beacon agents')
+
+
+def view_name(sid: str) -> str:
+    """The viewer's terminal, one per run: never `beacon-<sid8>`, the live chat's own name that answers are typed
+    into, and never the name of an earlier run's tab that still lingers (two answers resume one session)."""
+    return f'view-{sid[:8]}-{int(time.time() * 1000) % 10**8:08d}'
+
+
+def marker(name: str) -> str:
+    return os.path.join(os.path.dirname(VIEW_DIR), '.views', name)
+
+
+def show(sid: str, title: str, trigger: str, task: int | str | None, home: str) -> str:
+    """A Herdr tab following this run from now on (a resumed session's history is not replayed); returns its name
+    for `ended`. Never in the way: hc missing, down or slow only means no tab ('')."""
+    if os.environ.get('BEACON_AGENT_VIEW', '1') != '1' or not os.path.exists(HC):
+        return ''
+    name = view_name(sid)
+    try:
+        os.makedirs(VIEW_DIR, exist_ok=True)
+        os.makedirs(os.path.dirname(marker(name)), exist_ok=True)
+    except OSError:
+        return ''
+    cmd = [HC, 'run', '--bg', '--json', '--rm', '--name', name, '--cwd', VIEW_DIR, '--no-parent', '--outlive-parent',
+           '--label', f'herdr.space={SPACE}', '--label', f'herdr.tab={SPACE}-{name}',
+           '--label', f'beacon.trigger={trigger}', '--label', f'beacon.task={task or ""}',
+           '--', sys.executable, os.path.realpath(__file__), 'watch', sid, home, str(os.getpid()),
+           f"{title} · {trigger}" + (f' · task {task}' if task else ''), f'{time.time() - 5:.0f}', marker(name)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    return name if r.returncode == 0 else ''
+
+
+def ended(name: str) -> None:
+    """The run behind this tab is over: the tab says so (and goes after LINGER), even if its launcher goes on."""
+    if name:
+        with contextlib.suppress(OSError), open(marker(name), 'w'):
+            pass  # an empty mark
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def lines_of(entry: J) -> list[str]:
+    """What a person reads of one transcript line: the agent's words and the tools it reaches for."""
+    msg: J = entry.get('message') or {}
+    content: Any = msg.get('content')
+    if entry.get('type') != 'assistant' or not isinstance(content, list):
+        return []
+    out: list[str] = []
+    for c in cast(list[J], content):
+        if c.get('type') == 'text' and str(c.get('text') or '').strip():
+            out.append('💬 ' + str(c['text']).strip()[:600])
+        elif c.get('type') == 'tool_use':
+            inp: J = c.get('input') or {}
+            what = inp.get('command') or inp.get('file_path') or inp.get('pattern') or inp.get('description') or ''
+            out.append(f"🔧 {c.get('name')}: {' '.join(str(what).split())[:160]}")
+    return out
+
+
+def at(entry: J) -> float:
+    """A transcript line's time (epoch s); 0 when it has none."""
+    try:
+        return datetime.datetime.fromisoformat(str(entry.get('timestamp')).replace('Z', '+00:00')).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def watch(sid: str, home: str, pid: int, title: str, since: float = 0.0, done: str = '') -> int:
+    """Inside the Herdr tab: the run's transcript as it grows (lines from `since` on: a resumed or forked session's
+    history stays out), until the run is marked ended or the launcher waiting on it is gone."""
+    print(f'\033]0;{title[:60]}\007🤖 {title}', flush=True)  # the terminal title
+    began, path, pos = time.time(), None, 0
+    while time.time() - began < WATCH_MAX:
+        if path is None:
+            hits = glob.glob(os.path.join(home, 'projects', '*', sid + '.jsonl'))
+            path = hits[0] if hits else None
+        if path:
+            try:
+                with open(path, 'rb') as f:
+                    f.seek(pos)
+                    for raw in f:
+                        if not raw.endswith(b'\n'):
+                            break  # a line still being written: the next look takes it whole
+                        pos += len(raw)
+                        try:
+                            got: Any = json.loads(raw)
+                        except ValueError:
+                            continue
+                        entry = cast(J, got) if isinstance(got, dict) else {}
+                        if not entry or (since and at(entry) and at(entry) < since):
+                            continue
+                        for line in lines_of(entry):
+                            print(line, flush=True)
+            except OSError:
+                path = None
+        if (done and os.path.exists(done)) or not alive(pid):
+            print('■ The run ended. Its result is on the task in Beacon.', flush=True)
+            with contextlib.suppress(OSError):
+                if done:
+                    os.remove(done)
+            time.sleep(LINGER)
+            return 0
+        time.sleep(2)
+    return 0
+
+
+if __name__ == '__main__' and len(sys.argv) == 8 and sys.argv[1] == 'watch':
+    sys.exit(watch(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], float(sys.argv[6]), sys.argv[7]))
