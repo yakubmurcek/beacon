@@ -39,6 +39,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -588,11 +589,92 @@ def watchdog(q, now):
     return True
 
 
+# ---------------------------------------------------------------- herdr-core (task 2034)
+# Any agent, any harness (oh-my-pi, Codex, Claude Code …) running in a herdr-core terminal on this machine gets his
+# answer typed into that same terminal (`hc send`), never a copy. Delivery is confirmed by its mark on the terminal's
+# screen, read before every send, so a crash between send and claim never types it twice.
+HC_BIN = os.environ.get('HC_BIN') or shutil.which('hc') or '/usr/local/bin/hc'
+MACHINE = socket.gethostname().split('.')[0]
+IDLE = ('idle', 'done')  # hc's agent states that take input; a plain shell has none and is never typed into
+_hc_askers = None  # this tick's {asker id: terminal}, read once per tick
+
+
+def hc(*args, timeout=30):
+    """One hc call's JSON; {} when hc is missing, its core is down or the reply is not JSON."""
+    try:
+        r = subprocess.run([HC_BIN, *args, '--json'], capture_output=True, text=True, timeout=timeout)
+        return json.loads(r.stdout or '{}')
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+
+
+def hc_screen(term):
+    try:
+        return subprocess.run([HC_BIN, 'read', term, '--lines', '300'], capture_output=True, text=True,
+                              timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ''
+
+
+def claude_session_of(pid):
+    """The Claude Code session a process runs (Claude registers each live one in ~/.claude/sessions/<pid>.json)."""
+    try:
+        with open(os.path.join(CLAUDE_HOME, 'sessions', f'{int(pid)}.json'), encoding='utf-8') as f:
+            return json.load(f).get('sessionId')
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def hc_askers():
+    """This machine's live hc terminals by the id their asker files cards under: `hc:<machine>/<t>` for any agent
+    (`tasks` outside Claude Code), and `Claude Code:<sid>` for a Claude Code running in one."""
+    global _hc_askers
+    if _hc_askers is None:
+        _hc_askers = {}
+        for t in hc('ls').get('terminals') or []:
+            if t.get('state') != 'live' or not t.get('address'):
+                continue
+            term = t['address']
+            _hc_askers[f'hc:{MACHINE}/{term}'] = term
+            sid = claude_session_of((hc('get', term).get('foreground') or {}).get('pid'))
+            if sid:
+                _hc_askers[f'Claude Code:{sid}'] = term
+    return _hc_askers
+
+
+def hc_mark(q):
+    return f"[Beacon ?{q['id']}]"
+
+
+def hc_deliver(q, term, now, dry):
+    """Type his answer into the asker's own terminal. True = handled here: sent and claimed, or it waits there
+    (mid-turn, a dialog open) and goes once the agent is idle; the watchdog alarms if it never does."""
+    if dry:
+        print(f"?{q['id']}: typed into hc terminal {term}")
+        return True
+    if hc_mark(q) not in hc_screen(term):  # not there yet: send (a doubtful earlier send shows its mark, never resent)
+        state = (hc('get', term).get('status') or {}).get('state')
+        sent = hc('send', term, f"{hc_mark(q)} {agent.message(q)}", timeout=120) if state in IDLE else {}
+        if not sent.get('started') and hc_mark(q) not in hc_screen(term):
+            watchdog(q, now)
+            print(f"?{q['id']}: hc terminal {term} is {state or 'unreachable'}, next tick")
+            return True
+    if claim(q):
+        print(f"?{q['id']}: typed into hc terminal {term}")
+        if q.get('task_id'):
+            with contextlib.suppress(SystemExit):
+                note(q['task_id'], f"📨 His answer „{q['answer'][:80]}“ went into the asking agent's terminal (herdr-core {term}).")
+    return True
+
+
 def asker_takes(q, task, now, dry):
     """The asker carries his answer itself: a live `tasks wait` claims it, a live Beacon agent's channel pushes it
     within seconds (the watchdog still alarms if it never lands), an ended Beacon agent is reopened live for it."""
     if q.get('waited_at') and now - q['waited_at'] < BEAT:
         return True
+    term = hc_askers().get(q.get('session_id') or '')
+    if term:
+        return hc_deliver(q, term, now, dry)
     if agent.is_live(q.get('session_id')):
         if not dry:
             watchdog(q, now)
@@ -630,6 +712,8 @@ def reopen(q, task):
 
 
 def tick(dry=False):
+    global _hc_askers
+    _hc_askers = None  # terminals come and go: read them afresh each tick
     now = time.time()
     pending = cli.call('/api/questions?status=answered&pending=1&limit=5000', auth=False).get('questions') or []
     pending.sort(key=lambda q: q.get('answered_at') or 0)  # oldest first: a busy hour never starves an answer

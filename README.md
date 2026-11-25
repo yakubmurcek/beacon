@@ -853,6 +853,21 @@ into the running session. Typing in the app reaches the same session. One agent,
 - Not covered yet: chats he opens himself in the desktop app run as `claude --print --sdk-url`, where channels are
   ignored; their answers still go the old way.
 
+## Any agent, any harness: answers typed into its herdr-core terminal (task 2034)
+
+Beacon is not tied to the Claude app. Agents running in a [herdr-core](https://herdr.dev/core/) terminal (`hc`, a
+systemd unit on the home server; the Herdr desktop and phone apps attach to it over SSH) get his answers typed
+into that same terminal, whatever the harness: Claude Code on his subscription, oh-my-pi, Codex, any model.
+
+- `tasks` outside Claude Code files cards under its terminal: `session_id` `hc:<machine>/<terminal>` (from
+  `$HC_TERMINAL_ID`). A Claude Code running in hc keeps its `Claude Code:<sid>` id; the dispatcher finds its
+  terminal through `~/.claude/sessions/<pid>.json`.
+- answer-dispatcher checks this machine's live hc terminals first: an idle or done agent gets
+  `[Beacon ?ID] <his answer>` via `hc send`; mid-turn or in a dialog it waits for the next tick (the watchdog
+  alarms if it never goes). The mark is read off the terminal before every send, so nothing is typed twice.
+- A terminal that is gone, or on another machine, falls back to the existing routes (live Beacon agent, resume,
+  fresh run). A plain shell is never typed into.
+
 ## Endings: every session ending is a card (task 1857)
 
 The owner runs dozens of sessions an hour and never opens them to learn what they did. Every Claude Code reply is posted

@@ -1126,14 +1126,27 @@ def _http_error(e, path):
     return f'tasks: {msg or e}'
 
 
+def hc_terminal():
+    """The herdr-core terminal this agent runs in, as `<machine>/<terminal>`: any harness (oh-my-pi, Codex, …) gets
+    his answers typed back into it by answer-dispatcher (task 2034). None outside herdr-core."""
+    tid = os.environ.get('HC_TERMINAL_ID')
+    return f"{socket.gethostname().split('.')[0]}/{tid}" if tid else None
+
+
 def session_id():
     sid = os.environ.get('CLAUDE_CODE_SESSION_ID')
-    return f'Claude Code:{sid}' if sid else None
+    if sid:
+        return f'Claude Code:{sid}'
+    hc = hc_terminal()
+    return f'hc:{hc}' if hc else None
 
 
 def author():
     sid = os.environ.get('CLAUDE_CODE_SESSION_ID')
-    return f'Claude Code {sid[:8]}' if sid else None
+    if sid:
+        return f'Claude Code {sid[:8]}'
+    hc = hc_terminal()
+    return f'agent in hc {hc}' if hc else None
 
 
 def current_project():
