@@ -1321,17 +1321,17 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         A = self.agent
         A.ONLY = [('app', 'discord')]
         t = self.tasks.create({'title': 'Bug', 'project': 'app', 'tags': ['discord']})
-        at = self.prague(12) - 100  # noon today, so "2 days later at noon" is 2 days whatever the hour the test runs
+        at = self.prague(12, days=-8) - 100  # 8 days ago: all in the past, so its notes sort last
         A.NOW = lambda: at + 100
         self.tasks.comment(t['id'], '⏳ Needs you: Otestuj: Play → F8 → Key', 'Claude Code 1234abcd', at=at)
         A.stale_reports()
         self.assertEqual(self.messages(), [])
-        A.NOW = lambda: self.prague(12, days=2)  # daytime: the reminder is not held for the morning
+        A.NOW = lambda: self.prague(12, days=-6)  # daytime: the reminder is not held for the morning
         A.stale_reports()
         A.stale_reports()
         self.assertEqual(len(self.messages()), 1)
         self.assertIn('⏰ Čeká na tebe 2 dny: Otestuj', self.messages()[0])
-        A.NOW = lambda: self.prague(12, days=7)
+        A.NOW = lambda: self.prague(12, days=-1)
         A.stale_reports()
         got = self.tasks.get(t['id'])
         self.assertEqual(got['status'], 'dropped')
@@ -1341,7 +1341,7 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         A = self.agent
         A.ONLY = [('app', 'discord')]
         t = self.tasks.create({'title': 'Bug', 'project': 'app', 'tags': ['discord']})
-        at = self.prague(12) - 100  # noon today, so "2 days later at noon" is 2 days whatever the hour the test runs
+        at = self.prague(12, days=-8) - 100  # 8 days ago: all in the past, so its notes sort last
         A.NOW = lambda: at + 100
         self.tasks.comment(t['id'], 'Boosts: old -> new -- AGENT #%d' % t['id'], 'Claude Code 1234abcd', at=at - 5)
         self.tasks.comment(t['id'], '⏳ Needs you: Otestuj: Play → F8', 'Claude Code 1234abcd', at=at)
