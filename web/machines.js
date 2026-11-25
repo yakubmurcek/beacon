@@ -601,6 +601,10 @@ function openLogin(box) {  // a notice's link (#/login/<box>): straight to that 
   startLogin(box);
 }
 
+function showLogins(view) {  // on top of the overview, above the map: a sign-in is the one thing here he acts on
+  $('logins-slot').replaceChildren(...(view === 'map' ? [loginsPanel()].filter(Boolean) : []));
+}
+
 function loginsPanel() {
   const boxes = logins?.boxes || [];
   if (!boxes.length) return null;
@@ -617,7 +621,6 @@ function overview(list) {
   const shown = full.filter((m) => matches(m.machine, m.role, ...(m.problems || []), ...(m.jobs || []).flatMap((j) => [j.name, j.desc, j.why])));
   return [
     mapPanel(list),
-    loginsPanel(),
     h('div', { class: 'cards' }, shown.map(card)),
     devices.length ? h('section', { class: 'panel devices' }, h('div', { class: 'panel-head' }, h('h2', {}, 'Phones and other devices')),
       h('ul', {}, devices.filter((m) => matches(m.machine, m.role)).map(deviceRow))) : null,
@@ -707,6 +710,7 @@ const openMore = new Set();  // folds he opened (id) or closed (-id) stay so acr
 function render(scroll) {
   const r = route();
   for (const a of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#tabs a'))) a.classList.toggle('on', a.dataset.view === r.view);
+  showLogins(r.view);
   if (!data) return;
   const list = data.machines || [];
   const bad = list.reduce((sum, m) => sum + badJobs(m).length, 0);
