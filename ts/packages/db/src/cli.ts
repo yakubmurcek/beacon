@@ -8,11 +8,13 @@ const USAGE = `beacon-db: the SQLite <-> Postgres copy tools (docs/design/2026-1
 
   copy    --sqlite <snapshot.db> [--database <url>] [--replace]   load Postgres from a snapshot, then verify it
   reverse --sqlite <new.db> [--database <url>]                    write Postgres back into a fresh SQLite file
+                                                                  (via <new.db>.partial, renamed once verified)
   compare <a.db> <b.db>                                           same rows, values and storage classes?
   dump    <file.db>                                               the normalized text the compare is about
   migrate [--database <url>]                                      apply the committed migrations
 
---database defaults to BEACON_DATABASE_URL. Any difference exits 1, a usage or data error 2.`;
+--database defaults to BEACON_DATABASE_URL. A file with a non-empty -wal beside it is refused (copy from a
+.backup snapshot) unless --allow-wal. Any difference exits 1, a usage or data error 2: gate each step on exit 0.`;
 
 export interface Deps {
   readonly connect: (url: string) => Promise<Pg>;
@@ -41,6 +43,7 @@ async function run(argv: readonly string[], deps: Deps): Promise<number> {
       sqlite: { type: "string" },
       database: { type: "string" },
       replace: { type: "boolean", default: false },
+      "allow-wal": { type: "boolean", default: false },
     },
   });
   const [command, ...rest] = positionals;
@@ -66,7 +69,7 @@ async function run(argv: readonly string[], deps: Deps): Promise<number> {
   };
   switch (command) {
     case "copy": {
-      const db = openSnapshot(file());
+      const db = openSnapshot(file(), values["allow-wal"]);
       const pg = await deps.connect(url());
       try {
         let t = deps.now();
@@ -85,21 +88,13 @@ async function run(argv: readonly string[], deps: Deps): Promise<number> {
     case "reverse": {
       const path = file();
       const pg = await deps.connect(url());
-      let read;
       try {
         const t = deps.now();
-        read = await reverseToSqlite(pg, path);
+        const { read, problems } = await reverseToSqlite(pg, path);
         deps.out(`reverse: ${String(read.size)} tables, ${String(total(read))} rows in ${seconds(deps.now() - t)}`);
+        return report(problems, `verify: the new file matches Postgres, sqlite_sequence included; written to ${path}`);
       } finally {
         await pg.end();
-      }
-      const t = deps.now();
-      const db = openSnapshot(path);
-      try {
-        const problems = differences(read, summarize(db, false), "Postgres", path);
-        return report(problems, `verify: the new file matches Postgres (${seconds(deps.now() - t)})`);
-      } finally {
-        db.close();
       }
     }
     case "compare": {
@@ -108,7 +103,7 @@ async function run(argv: readonly string[], deps: Deps): Promise<number> {
         throw new UsageError("compare needs two files");
       }
       const t = deps.now();
-      const [x, y] = [openSnapshot(a), openSnapshot(b)];
+      const [x, y] = [openSnapshot(a, values["allow-wal"]), openSnapshot(b, values["allow-wal"])];
       try {
         const problems = differences(summarize(x), summarize(y), a, b);
         return report(problems, `compare: identical (${seconds(deps.now() - t)})`);
@@ -122,7 +117,7 @@ async function run(argv: readonly string[], deps: Deps): Promise<number> {
       if (a === undefined) {
         throw new UsageError("dump needs a file");
       }
-      const db = openSnapshot(a);
+      const db = openSnapshot(a, values["allow-wal"]);
       try {
         for (const line of dumpLines(db)) {
           deps.out(line);

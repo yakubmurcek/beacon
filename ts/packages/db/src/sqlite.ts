@@ -1,12 +1,19 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { columnList, quote, type TableSpec, TABLES } from "./tables.js";
 import { DataError, Digest, fromSqlite, rowLine, type SqliteValue, storageClass } from "./values.js";
 
-/** A snapshot opened read-only: the tools never write the file they copy from. */
-export function openSnapshot(path: string): DatabaseSync {
+/**
+ * A snapshot opened read-only: the tools never write the file they copy from. A non-empty -wal beside it means a
+ * live file, not a `.backup` snapshot (writes may still land), so it is refused unless `allowWal` says otherwise.
+ */
+export function openSnapshot(path: string, allowWal = false): DatabaseSync {
   if (!existsSync(path)) {
     throw new DataError(`${path}: no such SQLite file`);
+  }
+  const wal = `${path}-wal`;
+  if (!allowWal && existsSync(wal) && statSync(wal).size > 0) {
+    throw new DataError(`${wal} holds writes: copy from a .backup snapshot (or pass --allow-wal)`);
   }
   return new DatabaseSync(path, { readOnly: true });
 }

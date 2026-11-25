@@ -52,7 +52,8 @@ describe.skipIf(admin === undefined || admin === "")(
       const loaded = await copyToPostgres(source, db);
       expect(await verify(db, loaded)).toEqual([]);
       const out = join(s.dir, "reversed.db");
-      const read = await reverseToSqlite(db, out);
+      const { read, problems } = await reverseToSqlite(db, out);
+      expect(problems).toEqual([]);
       const back = openSnapshot(out);
       expect(differences(read, summarize(back, false))).toEqual([]);
       expect(dump(back)).toBe(dump(source));
@@ -124,6 +125,36 @@ describe.skipIf(admin === undefined || admin === "")(
       source.close();
       const { rows } = await db.query("SELECT count(*)::int AS n FROM tasks");
       expect(rows[0]?.["n"]).toBe(38); // the failed run changed nothing: the rerun above is still there
+    });
+
+    it("survives a copy the client aborts mid-COPY: the earlier load stays and the connection still answers", async () => {
+      const path = fixtureDb(join(s.dir, "blob.db"));
+      const { DatabaseSync } = await import("node:sqlite");
+      const w = new DatabaseSync(path);
+      w.exec(
+        "INSERT INTO events (id, machine, agent, session, ts, kind, text) VALUES ('blob', 'm', 'a', 's', 1, 'prompt', X'00ff')",
+      );
+      w.close();
+      const source = openSnapshot(path);
+      await expect(copyToPostgres(source, db, true)).rejects.toThrow("events.text: a blob value in a text column");
+      source.close();
+      expect((await db.query("SELECT 1 AS one")).rows).toEqual([{ one: 1 }]);
+      expect((await db.query("SELECT count(*)::int AS n FROM tasks")).rows[0]?.["n"]).toBe(38);
+      expect((await db.query("SELECT count(*)::int AS n FROM events WHERE id = 'blob'")).rows[0]?.["n"]).toBe(0);
+    });
+
+    it("compares a Postgres -0 equal to SQLite's 0.0 (SQLite cannot store -0)", async () => {
+      const source = openSnapshot(fixtureDb(join(s.dir, "zero.db")));
+      const loaded = await copyToPostgres(source, db, true);
+      await db.query("UPDATE talk_usage SET cost = '-0'::float8 WHERE kind = 'say'");
+      expect((await db.query("SELECT cost::text AS c FROM talk_usage WHERE kind = 'say'")).rows[0]?.["c"]).toBe("-0");
+      expect(await verify(db, loaded)).toEqual([]);
+      const out = join(s.dir, "zero-back.db");
+      expect((await reverseToSqlite(db, out)).problems).toEqual([]);
+      const back = openSnapshot(out);
+      expect(dump(back)).toBe(dump(source));
+      back.close();
+      source.close();
     });
   },
 );

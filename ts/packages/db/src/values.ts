@@ -7,9 +7,12 @@ export type SqliteValue = null | bigint | number | string | Uint8Array;
 /** A value the mirror cannot carry exactly: the copy stops rather than change it. */
 export class DataError extends Error {}
 
-/** JS's shortest round-trip form, which Postgres float8 input reads back to the same double. */
+/**
+ * JS's shortest round-trip form, which Postgres float8 input reads back to the same double. -0 is written 0 on both
+ * sides: SQLite cannot keep it (it stores an integral REAL as an integer and reads back 0.0).
+ */
 export function formatReal(n: number): string {
-  return Object.is(n, -0) ? "-0" : String(n);
+  return String(n);
 }
 
 /**
@@ -56,8 +59,13 @@ export function toSqlite(value: string | null, kind: Kind): bigint | number | st
   switch (kind) {
     case "int":
       return BigInt(value);
-    case "real":
-      return Number(value);
+    case "real": {
+      const n = Number(value);
+      if (Number.isNaN(n)) {
+        throw new DataError("a NaN, which SQLite stores as NULL");
+      }
+      return n;
+    }
     case "text":
       return value;
   }

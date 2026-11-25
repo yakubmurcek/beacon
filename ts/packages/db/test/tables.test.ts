@@ -1,6 +1,7 @@
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 import { tables } from "../src/schema.js";
+import { SQLITE_DDL } from "../src/sqlite-ddl.js";
 import { columnList, kindOf, quote, TABLES } from "../src/tables.js";
 
 describe("the mirrored tables", () => {
@@ -23,6 +24,26 @@ describe("the mirrored tables", () => {
         .sort(),
     ).toEqual(["endings", "notices", "pushes"]);
   });
+  it("mark AUTOINCREMENT exactly where the hub's own CREATE statements say it", () => {
+    const declared = SQLITE_DDL.flatMap((sql) => {
+      const name = /^CREATE TABLE (\w+)/.exec(sql)?.[1];
+      return name !== undefined && /\bAUTOINCREMENT\b/i.test(sql) ? [name] : [];
+    });
+    expect(declared).toHaveLength(3);
+    expect(
+      TABLES.filter((t) => t.autoincrement)
+        .map((t) => t.name)
+        .sort(),
+    ).toEqual(declared.sort());
+  });
+  it("read back in the old insertion order: the integer key, else the row's time then its key", () => {
+    const by = new Map(TABLES.map((t) => [t.name, t.order.join()]));
+    expect(by.get("tasks")).toBe("id");
+    expect(by.get("events")).toBe("ts,id");
+    expect(by.get("labs_calls")).toBe("at");
+    expect(by.get("rank_meta")).toBe("k");
+    expect(by.get("job_runs")).toBe("first_seen,machine,run");
+  });
   it("map Postgres types to SQLite kinds", () => {
     expect(["bigint", "integer", "double precision", "text"].map(kindOf)).toEqual(["int", "int", "real", "text"]);
     expect(() => kindOf("jsonb")).toThrow("jsonb");
@@ -38,6 +59,7 @@ describe("the mirrored tables", () => {
         ],
         identity: undefined,
         autoincrement: false,
+        order: [],
       }),
     ).toBe('"a", "b"');
   });

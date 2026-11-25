@@ -217,6 +217,25 @@ quiet week is a **schema freeze**: the deploy timer refuses any release with a n
 exists, and the reverse copy runs every night against the live database and must give a file the old hub opens and
 whose answers match. Rehearsed with the cut-over, so the writes made since are kept.
 
+**Runbook rules for the copy tools** (`node bundle/beacon-db.js`, `ts/packages/db`):
+- Gate every step on exit code 0: 1 means a difference, 2 a usage or data error, and either stops the runbook
+  (the abort rule above), never "looks fine".
+- Copy only from a `.backup` snapshot. The tool refuses a file with a non-empty `-wal` beside it, and a read-only
+  open still creates empty `-wal`/`-shm` files, so the snapshot's folder must be writable by the user running copy.
+- Reverse writes `<file>.partial` and renames it only once it matches Postgres, sqlite_sequence included. When the
+  reversed file replaces `usage.db`, first delete the old `usage.db-wal` and `usage.db-shm` (SQLite would replay
+  the old WAL onto the new file), then `chown` the file to the hub's user: it comes out owned by `beacon`.
+- Reverse cannot rebuild the rowid order of tables keyed by text or with no key (events, live, hosts, labs_calls …):
+  it inserts them by their time column, then their key. The 2026-11-25 rehearsal kept 4,827 of 340,881 events in
+  their old relative order. The old hub must not take any order from rowid there.
+
+**Rehearsals on copies of the live database** (hetzner, 2 cores, into `beacon_rehearsal`, truncated afterwards):
+
+| Date | Rows | `.backup` | copy | verify | reverse (+ its verify) | compare | Result |
+|---|---|---|---|---|---|---|---|
+| 2026-11-25, first | 359,925 | 0.75 s | 14.5 s | 10.0 s | 17.0 s + 7.1 s | 24 s | identical dumps, peak 237 MB |
+| 2026-11-25, after the review fixes | 360,046 | 0.61 s | 21.4 s (with `--replace`) | 8.0 s | 22.8 s | 21.5 s | identical dumps, peak 235 MB |
+
 **Stage 4: quiet week, then retire (one week, then half a day).** Seven days of the owner's normal use with the
 fallback counter at zero, then: the old hub's unit is removed, `hub/` and `web/` are deleted in one commit (history
 keeps them), the SQLite backup unit is replaced, the README rewritten, the removal recorded. Collectors and the CLI

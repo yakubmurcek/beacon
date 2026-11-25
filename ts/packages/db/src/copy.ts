@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { decodeLine, encodeLine } from "./copytext.js";
 import type { Pg } from "./pg.js";
 import { checkSchema, type Summary, sqliteRows, sqliteSequence } from "./sqlite.js";
-import { columnList, quote, type TableSpec, TABLES } from "./tables.js";
+import { columnList, kindOf, quote, type TableSpec, TABLES } from "./tables.js";
 import { DataError, Digest, fromCopy, fromSqlite, rowLine } from "./values.js";
 
 export interface CopyResult {
@@ -12,9 +12,77 @@ export interface CopyResult {
   readonly sequences: Map<string, string | null>;
 }
 
-async function rollback(pg: Pg, error: unknown): Promise<never> {
-  await pg.query("ROLLBACK");
+/** Rethrows `error` after undo(); an undo that fails too is attached as the cause, never thrown in its place. */
+export async function undoing(error: unknown, undo: () => unknown): Promise<never> {
+  try {
+    await undo();
+  } catch (failed) {
+    if (error instanceof Error && error.cause === undefined) {
+      Object.defineProperty(error, "cause", { value: failed, configurable: true, writable: true });
+    }
+  }
   throw error;
+}
+
+async function rollback(pg: Pg, error: unknown): Promise<never> {
+  return undoing(error, () => pg.query("ROLLBACK"));
+}
+
+function kindOrNone(type: string): string | undefined {
+  try {
+    return kindOf(type);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The database really holds the mirror: every table and column of the schema with its kind, and nothing more in
+ * schema public (Drizzle keeps its own bookkeeping in schema drizzle). Checked before every copy and reverse.
+ */
+export async function checkPostgres(pg: Pg): Promise<void> {
+  const { rows } = await pg.query(
+    "SELECT table_name, column_name, data_type FROM information_schema.columns " +
+      "WHERE table_schema = 'public' AND table_name <> '__drizzle_migrations' ORDER BY table_name, column_name",
+  );
+  const have = new Map<string, Map<string, string>>();
+  for (const r of rows) {
+    const table = String(r["table_name"]);
+    const columns = have.get(table) ?? new Map<string, string>();
+    columns.set(String(r["column_name"]), String(r["data_type"]));
+    have.set(table, columns);
+  }
+  const problems: string[] = [];
+  for (const table of have.keys()) {
+    if (!TABLES.some((s) => s.name === table)) {
+      problems.push(`table ${table} is not in the mirror schema`);
+    }
+  }
+  for (const spec of TABLES) {
+    const columns = have.get(spec.name);
+    if (columns === undefined) {
+      problems.push(`table ${spec.name} is missing`);
+      continue;
+    }
+    for (const name of columns.keys()) {
+      if (!spec.columns.some((c) => c.name === name)) {
+        problems.push(`${spec.name}.${name} is not in the mirror schema`);
+      }
+    }
+    for (const c of spec.columns) {
+      const type = columns.get(c.name);
+      if (type === undefined) {
+        problems.push(`${spec.name}.${c.name} is missing`);
+      } else if (kindOrNone(type) !== c.kind) {
+        problems.push(`${spec.name}.${c.name} is ${type}, the schema says ${c.kind}`);
+      }
+    }
+  }
+  if (problems.length > 0) {
+    throw new DataError(
+      `the Postgres database does not match the mirror schema (run migrate?): ${problems.join("; ")}`,
+    );
+  }
 }
 
 /**
@@ -24,11 +92,19 @@ async function rollback(pg: Pg, error: unknown): Promise<never> {
  */
 export async function copyToPostgres(db: DatabaseSync, pg: Pg, replace = false): Promise<CopyResult> {
   checkSchema(db);
-  const marks = sqliteSequence(db);
+  await checkPostgres(pg);
+  // One read transaction on the snapshot: every table and sqlite_sequence come from the same moment.
+  db.exec("BEGIN");
   const tables = new Map<string, Summary>();
   const sequences = new Map<string, string | null>();
-  await pg.query("BEGIN");
   try {
+    await pg.query("BEGIN");
+  } catch (error) {
+    db.exec("COMMIT");
+    throw error;
+  }
+  try {
+    const marks = sqliteSequence(db);
     if (!replace) {
       for (const spec of TABLES) {
         if ((await pg.query(`SELECT 1 FROM ${quote(spec.name)} LIMIT 1`)).rows.length > 0) {
@@ -70,14 +146,18 @@ export async function copyToPostgres(db: DatabaseSync, pg: Pg, replace = false):
     }
     await pg.query("COMMIT");
   } catch (error) {
-    return rollback(pg, error);
+    return await rollback(pg, error);
+  } finally {
+    db.exec("COMMIT");
   }
   return { tables, sequences };
 }
 
-/** One table read back from Postgres as the same normalized lines the SQLite side made. */
+/** One table read back from Postgres as the same normalized lines the SQLite side made, in the spec's order. */
 export async function* postgresLines(pg: Pg, spec: TableSpec): AsyncGenerator<(string | null)[]> {
-  for await (const line of pg.copyOut(`COPY ${quote(spec.name)} (${columnList(spec)}) TO STDOUT`)) {
+  const order = spec.order.map(quote).join(", ");
+  const select = `SELECT ${columnList(spec)} FROM ${quote(spec.name)}${order === "" ? "" : ` ORDER BY ${order}`}`;
+  for await (const line of pg.copyOut(`COPY (${select}) TO STDOUT`)) {
     const fields = decodeLine(line);
     if (fields.length !== spec.columns.length) {
       throw new DataError(`${spec.name}: a COPY line with ${String(fields.length)} fields`);

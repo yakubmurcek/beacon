@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { DataError, Digest, formatReal, fromCopy, fromSqlite, rowLine, storageClass, toSqlite } from "../src/values.js";
 
 describe("normalized values", () => {
-  it("formats floats in their shortest exact form, keeping -0", () => {
+  it("formats floats in their shortest exact form, -0 as 0 (SQLite cannot keep it)", () => {
     expect(formatReal(1764012345.1234567)).toBe("1764012345.1234567");
     expect(formatReal(0.1 + 0.2)).toBe("0.30000000000000004");
-    expect(formatReal(-0)).toBe("-0");
+    expect(formatReal(-0)).toBe("0");
     expect(formatReal(1.5e300)).toBe("1.5e+300");
     expect(Number(formatReal(1e-7))).toBe(1e-7);
   });
@@ -25,7 +25,8 @@ describe("normalized values", () => {
     expect(fromCopy(null, "real")).toBeNull();
     expect(fromCopy("9007199254740993", "int")).toBe("9007199254740993");
     expect(fromCopy("1.764012345123457e+09", "real")).toBe("1764012345.123457");
-    expect(fromCopy("-0", "real")).toBe("-0");
+    expect(fromCopy("-0", "real")).toBe("0");
+    expect(fromSqlite(-0, "real", "t.c")).toBe("0");
     expect(fromCopy("a\tb", "text")).toBe("a\tb");
   });
   it("turns normalized values back into SQLite's classes", () => {
@@ -33,6 +34,8 @@ describe("normalized values", () => {
     expect(toSqlite("12", "int")).toBe(12n);
     expect(toSqlite("1.5", "real")).toBe(1.5);
     expect(toSqlite("1", "text")).toBe("1");
+    expect(toSqlite("Infinity", "real")).toBe(Infinity);
+    expect(() => toSqlite("NaN", "real")).toThrow("a NaN, which SQLite stores as NULL");
   });
   it("names storage classes", () => {
     expect([null, 1n, 1.5, "a", new Uint8Array()].map(storageClass)).toEqual([

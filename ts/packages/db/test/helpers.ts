@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Pg } from "../src/pg.js";
 import { SQLITE_DDL } from "../src/sqlite-ddl.js";
+import { TABLES } from "../src/tables.js";
 
 /** A scratch folder, removed by the returned function. */
 export function scratch(): { dir: string; done: () => void } {
@@ -36,11 +37,22 @@ export class FakePg implements Pg {
   readonly sequences = new Map<string, string | null>();
   readonly log: string[] = [];
   failOn: RegExp | undefined;
+  /** The columns information_schema reports: the mirror's, unless a test changes them. */
+  columns = TABLES.flatMap((t) =>
+    t.columns.map((c) => ({
+      table_name: t.name,
+      column_name: c.name,
+      data_type: { int: "bigint", real: "double precision", text: "text" }[c.kind],
+    })),
+  );
 
   query(text: string, values: readonly unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> {
     this.log.push(text);
     if (this.failOn?.test(text) === true) {
       return Promise.reject(new Error(`refused: ${text}`));
+    }
+    if (text.includes("information_schema.columns")) {
+      return Promise.resolve({ rows: [...this.columns] });
     }
     const peek = /^SELECT 1 FROM "(\w+)" LIMIT 1$/.exec(text);
     if (peek?.[1] !== undefined) {
@@ -72,7 +84,7 @@ export class FakePg implements Pg {
   async *copyOut(sql: string): AsyncGenerator<string> {
     this.log.push(sql);
     await Promise.resolve();
-    yield* this.tables.get(/^COPY "(\w+)"/.exec(sql)?.[1] ?? "") ?? [];
+    yield* this.tables.get(/ FROM "(\w+)"/.exec(sql)?.[1] ?? "") ?? [];
   }
 
   end(): Promise<void> {

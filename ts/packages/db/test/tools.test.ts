@@ -1,8 +1,9 @@
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { main } from "../src/cli.js";
-import { copyToPostgres, verify } from "../src/copy.js";
+import { copyToPostgres, undoing, verify } from "../src/copy.js";
 import { reverseToSqlite } from "../src/reverse.js";
 import { dump, openSnapshot } from "../src/sqlite.js";
 import { FakePg, fixtureDb, scratch } from "./helpers.js";
@@ -21,7 +22,8 @@ describe("copy, verify and reverse (against the in-memory stand-in)", () => {
   it("load every table in one transaction, set the sequences, and read back the same", async () => {
     const db = openSnapshot(fixtureDb(file("fixture.db")));
     const loaded = await copyToPostgres(db, pg);
-    expect(pg.log[0]).toBe("BEGIN");
+    expect(pg.log[0]).toContain("information_schema.columns");
+    expect(pg.log[1]).toBe("BEGIN");
     expect(pg.log.filter((l) => l === "COMMIT")).toHaveLength(1);
     expect(loaded.tables.get("tasks")?.rows).toBe(38);
     expect(loaded.sequences.get("notices")).toBe("41"); // the AUTOINCREMENT mark, above the highest id (5)
@@ -80,24 +82,96 @@ describe("copy, verify and reverse (against the in-memory stand-in)", () => {
     const source = openSnapshot(fixtureDb(file("fixture.db")));
     await copyToPostgres(source, pg);
     const out = file("reversed.db");
-    const read = await reverseToSqlite(pg, out);
+    const { read, problems } = await reverseToSqlite(pg, out);
+    expect(problems).toEqual([]);
     expect(read.get("events")?.rows).toBe(3);
+    expect(existsSync(`${out}.partial`)).toBe(false);
     const back = openSnapshot(out);
     expect(dump(back)).toBe(dump(source));
     source.close();
     back.close();
   });
 
-  it("never write over an existing file, and leave no half-filled one behind a failed read", async () => {
+  it("never write over an existing file or one with SQLite sidecars, and leave nothing behind a failed read", async () => {
     const existing = fixtureDb(file("existing.db"));
     await expect(reverseToSqlite(pg, existing)).rejects.toThrow("exists: the reverse copy writes a fresh file only");
+    const target = file("sidecar.db");
+    writeFileSync(`${target}-wal`, "x");
+    await expect(reverseToSqlite(pg, target)).rejects.toThrow("sidecar.db-wal exists");
     pg.failOn = /^SELECT pg_sequence_last_value/;
     const out = file("failed.db");
+    writeFileSync(`${out}.partial`, "a stale partial file from a crashed run");
     await expect(reverseToSqlite(pg, out)).rejects.toThrow("refused");
     expect(pg.log.at(-1)).toBe("ROLLBACK");
-    const db = new DatabaseSync(out);
-    expect(db.prepare("SELECT count(*) AS n FROM tasks").get()?.["n"]).toBe(0);
+    expect(existsSync(out)).toBe(false);
+    expect(existsSync(`${out}.partial`)).toBe(false);
+  });
+
+  it("keep the original error when the rollback fails too", async () => {
+    const db = openSnapshot(fixtureDb(file("fixture.db")));
+    pg.failOn = /^(SELECT setval|ROLLBACK)/;
+    const error: unknown = await copyToPostgres(db, pg).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("refused: SELECT setval");
+    expect(String((error as Error).cause)).toContain("refused: ROLLBACK");
     db.close();
+    const plain = new Error("first");
+    await expect(undoing(plain, () => undefined)).rejects.toBe(plain);
+    await expect(undoing("not an Error", () => Promise.reject(new Error("undo")))).rejects.toBe("not an Error");
+  });
+
+  it("refuse a Postgres database that is not exactly the mirror", async () => {
+    const db = openSnapshot(fixtureDb(file("fixture.db")));
+    const all = [...pg.columns];
+    const drop = (c: (typeof all)[number]) =>
+      c.table_name === "palette" ||
+      (c.table_name === "tasks" && c.column_name === "step") ||
+      (c.table_name === "hosts" && c.column_name === "seen_at");
+    pg.columns = [
+      ...all.filter((c) => !drop(c)),
+      { table_name: "tasks", column_name: "later", data_type: "text" },
+      { table_name: "extra", column_name: "a", data_type: "text" },
+      { table_name: "hosts", column_name: "seen_at", data_type: "text" },
+      { table_name: "hosts", column_name: "seen_at_tz", data_type: "timestamp with time zone" },
+    ];
+    const error = String(await copyToPostgres(db, pg).catch((e: unknown) => e));
+    expect(error).toContain("does not match the mirror schema (run migrate?)");
+    for (const part of [
+      "table extra is not in the mirror schema",
+      "table palette is missing",
+      "tasks.later is not in the mirror schema",
+      "tasks.step is missing",
+      "hosts.seen_at is text, the schema says real",
+      "hosts.seen_at_tz is not in the mirror schema",
+    ]) {
+      expect(error).toContain(part);
+    }
+    await expect(reverseToSqlite(pg, file("never.db"))).rejects.toThrow("does not match the mirror schema");
+    expect(pg.log.includes("BEGIN")).toBe(false);
+    db.close();
+  });
+
+  it("read the snapshot in one transaction, and refuse a source still taking writes", async () => {
+    const path = fixtureDb(file("fixture.db"));
+    const db = openSnapshot(path);
+    await copyToPostgres(db, pg);
+    expect(db.isTransaction).toBe(false);
+    db.close();
+    writeFileSync(`${path}-wal`, "");
+    openSnapshot(path).close(); // an empty -wal is what a read-only open leaves
+    writeFileSync(`${path}-wal`, "pending writes");
+    expect(() => openSnapshot(path)).toThrow("-wal holds writes: copy from a .backup snapshot (or pass --allow-wal)");
+  });
+
+  it("refuse a NaN on the way back, which SQLite would store as NULL", async () => {
+    const db = openSnapshot(fixtureDb(file("fixture.db")));
+    await copyToPostgres(db, pg);
+    db.close();
+    const rows = pg.tables.get("talk_usage") ?? [];
+    rows[0] = (rows[0] ?? "").replace(/^[^\t]*/, "NaN");
+    await expect(reverseToSqlite(pg, file("nan.db"))).rejects.toThrow(
+      "talk_usage.at: a NaN, which SQLite stores as NULL",
+    );
   });
 });
 
@@ -138,7 +212,7 @@ describe("the command line", () => {
     const back = file("cli-back.db");
     const reversed = await run(["reverse", "--sqlite", back, "--database", "postgresql:///y"], pg);
     expect(reversed).toMatchObject({ code: 0, err: [], urls: ["postgresql:///y"] });
-    expect(reversed.out[1]).toBe("verify: the new file matches Postgres (1.50 s)");
+    expect(reversed.out[1]).toBe(`verify: the new file matches Postgres, sqlite_sequence included; written to ${back}`);
     expect(await run(["compare", fixture, back])).toMatchObject({ code: 0, out: ["compare: identical (1.50 s)"] });
     const dumped = await run(["dump", back]);
     expect(dumped.out[0]).toMatch(/^-- alarms \(/);
