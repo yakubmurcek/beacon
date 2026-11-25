@@ -596,7 +596,7 @@ def watchdog(q, now):
 HC_BIN = os.environ.get('HC_BIN') or shutil.which('hc') or '/usr/local/bin/hc'
 MACHINE = socket.gethostname().split('.')[0]
 IDLE = ('idle', 'done')  # hc's agent states that take input; a plain shell has none and is never typed into
-_hc: dict = {}  # this tick's {asker id: terminal} under 'askers', read once per tick
+_hc: dict = {}  # {asker id: terminal} under 'askers', read once per run (one tick each)
 
 
 def hc(*args, timeout=30):
@@ -662,7 +662,8 @@ def hc_deliver(q, term, now, dry):
         print(f"?{q['id']}: typed into hc terminal {term}")
         if q.get('task_id'):
             with contextlib.suppress(SystemExit):
-                note(q['task_id'], f"📨 His answer „{q['answer'][:80]}“ went into the asking agent's terminal (herdr-core {term}).")
+                note(q['task_id'], f"📨 His answer „{q['answer'][:80]}“ went into the asking agent's terminal "
+                                   f"(herdr-core {term}).")
     return True
 
 
@@ -711,7 +712,6 @@ def reopen(q, task):
 
 
 def tick(dry=False):
-    _hc.clear()  # terminals come and go: read them afresh each tick
     now = time.time()
     pending = cli.call('/api/questions?status=answered&pending=1&limit=5000', auth=False).get('questions') or []
     pending.sort(key=lambda q: q.get('answered_at') or 0)  # oldest first: a busy hour never starves an answer
