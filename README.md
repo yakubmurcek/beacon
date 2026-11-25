@@ -493,7 +493,7 @@ task at a time. Claude Code's auto mode refuses to install an unattended agent, 
 timer are made from a session in Ask mode. Each run
 takes the most urgent open `todo` task tagged `claude` (not `parked`, nor one whose body says `Not before YYYY-MM-DD` until that day), marks it `doing`, links the
 session id it is about to run under and notes the pickup, then runs headless Claude Code
-(`claude -p --permission-mode auto`, 80 minutes at most) with the ship-task skill in a fresh git
+(`claude -p --permission-mode auto`, 80 minutes at most) with the senior-engineer steps in its brief in a fresh git
 worktree of the task's repo under `~/agent-work` (cloned into `~/projects` first if
 GitHub has it; never a checkout, which on the home server can be a live app). Unattended rules: code stops
 at an open PR noted on the task (`👉 PR <url>`, left `doing`), work with no code is done and
@@ -523,7 +523,7 @@ Loose ends, every run, quietly (a task note, no Telegram):
   doesn't apply. Stop it with the timer.
 - **A repo's own run**: `.claude/agent/task-agent.json` in the repo (clean-the-snow has one) gives a
   `preflight` command run before the claim (fails = the task stays queued, retried after
-  `preflight_backoff_min`), a `brief` used instead of ship-task, `mcp_config` + `settings` (only those MCP
+  `preflight_backoff_min`), a `brief` used instead of the default one (his global core rules are appended), `mcp_config` + `settings` (only those MCP
   servers, its guard hooks, no Chrome), `env`, `proof_env` (a folder whose images go to Telegram as
   photos) and `from` (the Telegram header).
 - **Its independent checker** (`checker` in that file, task 1744, 2026-11-21): when the run's last note
@@ -560,7 +560,7 @@ Neither needs the Mac on: the hub and gbrain run on the hub's server, so a task 
 context once the Mac sleeps, provided it was awake for those few minutes after filing. Work
 that exists only on the Mac (uncommitted, unpushed) is out of the agent's reach.
 A task with no Done-test gets one written into its body first, or a `⏳` question.
-Before any PR it runs doc-sync and the code-review skill at `low`.
+Before any PR: the repo's check green, a docs pass, and an independent review of the diff by a fresh subagent that never saw its reasoning (or the code-review skill at `medium`), every finding fixed or answered in the PR body.
 
 An older tracker's open tasks were imported once (`source = <tracker>:<id>` keeps them traceable).
 

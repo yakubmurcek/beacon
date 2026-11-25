@@ -318,7 +318,8 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         self.assertNotIn('/loop check', p)
         self.assertIn('on laptop', p)
         self.assertNotIn('has no Done-test', p)
-        self.assertIn('code-review skill at\n`low`', p)
+        self.assertIn('An independent review of your diff', p)
+        self.assertNotIn('ship-task', p)
         self.assertIn('with what he said', self.tasks.get(t['id'])['comments'][0]['text'])
 
     def test_a_task_without_a_done_test_gets_one_first(self):

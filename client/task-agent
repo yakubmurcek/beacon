@@ -15,11 +15,11 @@ never starts a second run while one is going, so one task at a time:
      the task page shows the agent live (state and what it is doing, from /api/live);
   3. gather what he typed in the sessions linked to it (the one that filed it) from the hub, which
      has every machine's prompts, since the agent can't read a session on another machine;
-  4. run headless Claude Code on it with the ship-task skill in a fresh git worktree of the
-     task's repo (never a checkout, which may be a live app), unattended: a task with no
-     Done-test gets one written first (or a question), doc-sync and a `low` code review come
-     before any PR, and it stops at an open PR noted on the task, closes work that needs no
-     code, or notes what it needs from him;
+  4. run headless Claude Code on it with the senior-engineer steps in its brief, in a fresh git
+     worktree of the task's repo (never a checkout, which may be a live app), unattended: a task
+     with no Done-test gets one written first (or a question), the repo's check, a docs pass and
+     an independent review by a fresh subagent come before any PR, and it stops at an open PR
+     noted on the task, closes work that needs no code, or notes what it needs from him;
   5. report back: one Telegram message (telegram-alarm, the Hermes bot) that starts with the
      task number and says what a reply does. A task whose agent asked him something (a `⏳`
      note), or whose run ended without a word on the task, goes back to `todo` without the tag,
@@ -40,7 +40,8 @@ Scoped mode (TASK_AGENT_ONLY=project:tag[,...], 2026-11-21 task 1744): only task
 tag (and `claude`) are worked, nothing is routed, his page answers and PR states are left to him, and the global
 pause doesn't apply (stop the timer to stop it). Today: clean-the-snow:discord, the Discord bug agent.
 A repo with `.claude/agent/task-agent.json` brings its own run: a preflight before the claim (a failure leaves the
-task queued), its own brief instead of ship-task, its own MCP servers and settings (hooks), env, a folder for proof
+task queued), its own brief instead of the default one (his global core rules are appended
+to it), its own MCP servers and settings (hooks), env, a folder for proof
 images that go to Telegram as photos, and the Telegram header (`from`). Its `checker` (task 1744, 2026-11-21): when
 the run claims a fix that works (its last note `⏳ … Otestuj`) and changed the game, a FRESH run that never saw the
 fixer's session verifies it from evidence only (the report, the fixer's shots, the real diff from the Studio gate's
@@ -454,15 +455,23 @@ unattended: nobody is watching this session and nobody can answer a question.
 Task #{task['id']} [{task['project']}]: {task['title']}
 Read it in full first: `tasks show {task['id']}` (body and every note).
 {said}{spec}
-Load the ship-task skill (Skill tool) and follow it from its step 2. Step 1 and 4 are done: you
-were handed this task, it is marked doing, and this session is linked to it so its page shows
-you live. Its quality steps are not optional: the doc-sync skill, then the code-review skill at
-`low` on your diff (fix what it finds), before you open a PR.
+You were handed this task, it is marked doing, and this session is linked to it so its page shows
+you live. Work the way a senior engineer ships, in this order; no step is optional:
+1. No Done-test on the task yet: write one first (`tasks note`), checkable.
+2. A branch off fresh origin (the repo's base: `dev` where it has one, else `main`). Follow the
+   repo's own CLAUDE.md, patterns and tools; the smallest change that meets the Done-test.
+3. The repo's check (else its tests) green, and the outcome tried end to end. Update the docs
+   your change makes wrong.
+4. An independent review of your diff: a fresh subagent (Agent tool) that never saw your reasoning,
+   given only the diff and the Done-test, asked for correctness bugs; without the Agent tool, the
+   code-review skill at `medium`. Fix or answer every finding.
+5. Open the PR: what changed and why, how it was tested, the review's findings and what you did
+   with them, and how to roll it back.
 {place}
 
 - A note links a PR you (an earlier run) opened and he asked for changes: continue on that PR's
   branch (`gh pr checkout <url>`) and push to it, no second PR.
-- Code: ship-task's unattended path. Stop at an open PR, never merge. Note it on the task with
+- Code: stop at an open PR, never merge. Note it on the task with
   `tasks note {task['id']} "👉 PR <url> (<from> → <to>): <what it does>"` and leave it doing.
 - No code needed (a check, research, an answer): do it, then `tasks done {task['id']} -m "✅ <what you found or did>"`.
 - Blocked on him (a password, a decision, a vague task with no clear result): don't guess.
@@ -474,6 +483,16 @@ you live. Its quality steps are not optional: the doc-sync skill, then the code-
   PR is ready." Name a PR by number, never paste its URL. No name prefix, no branch names,
   test counts, file paths or caveats (caveats go in a task note).
 """
+
+
+def core_rules():
+    """His global core rules (~/.claude/CLAUDE.md), HTML comments stripped: a repo's own run skips his
+    user settings, so without this it never saw them. Empty when the file is missing."""
+    try:
+        with open(os.path.join(os.path.expanduser('~'), '.claude', 'CLAUDE.md'), encoding='utf-8') as f:
+            return re.sub(r'<!--.*?-->', '', f.read(), flags=re.S).strip()
+    except OSError:
+        return ''
 
 
 def tasks_in_jail():
@@ -686,6 +705,8 @@ def run_claude(task, sid, where, text, conf=None, proof=None):
         if conf.get('tools'):
             cmd += ['--tools', ','.join(conf['tools'])]
         cmd += ['--no-chrome', '--setting-sources', 'project']  # never his user settings (they authorize push, ssh)
+        if core_rules():  # ...but his global core rules (code quality, nothing personal in repos) still apply
+            cmd += ['--append-system-prompt', core_rules()]
         # Pinned per repo, so a default change in the CLI never silently changes who fixes his bugs.
         if conf.get('model'):
             cmd += ['--model', conf['model']]
