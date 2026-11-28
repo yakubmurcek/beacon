@@ -145,6 +145,8 @@ ROUTE_PER_RUN = 5
 ROUTE_GRACE = int(os.environ.get('TASK_AGENT_ROUTE_GRACE', str(5 * 60)))
 MAX_RUNS_A_DAY = int(os.environ.get('TASK_AGENT_MAX_RUNS', '15'))  # a guard on the plan's quota
 STATE = os.environ.get('TASK_AGENT_STATE', os.path.expanduser('~/.local/state/task-agent'))
+# Every instance's state folder on this box (a glob): their run locks say who is mid-run.
+SIBLINGS = os.environ.get('TASK_AGENT_SIBLINGS', os.path.join(os.path.dirname(STATE.rstrip('/')), 'task-agent*'))
 ROUTE_SCHEMA = json.dumps({'type': 'object', 'required': ['route', 'why'], 'properties': {
     'route': {'type': 'string', 'enum': ['agent', 'human', 'ask']},
     'why': {'type': 'string', 'description': 'one short sentence'},
@@ -167,6 +169,8 @@ TAPPED = re.compile(r'^Beacon move: \S+$', re.M)
 # TASK_AGENT_TAPPED=1: an instance that works only those (task-agent-moves on the home server, its own state and lock),
 # so a tap never waits behind, or depends on, the scoped game agent.
 TAPPED_ONLY = os.environ.get('TASK_AGENT_TAPPED') == '1'
+# The systemd service this instance runs as: the usage brake freezes it by that name.
+SELF_UNIT = os.environ.get('TASK_AGENT_UNIT') or ('task-agent-moves' if TAPPED_ONLY else 'task-agent')
 
 
 def tapped(t):
@@ -539,28 +543,59 @@ def held(unit):
             units = json.load(f).get('units') or {}
     except (OSError, ValueError, AttributeError):
         return False
-    return f'{unit or "task-agent"}.service' in units
+    return f'{unit or SELF_UNIT}.service' in units
 
 
-def run_timed(cmd, timeout, unit=None, **kw):
+STALL = int(os.environ.get('TASK_AGENT_STALL', str(15 * 60)))  # no transcript write this long = a stalled run
+
+
+class Stalled(subprocess.TimeoutExpired):
+    """The run wrote nothing to its transcript for STALL seconds of time it could work."""
+
+
+def transcript_mtime(home, sid):
+    """When the session (or one of its subagents) last wrote its transcript under the Claude config dir `home`."""
+    paths = glob.glob(os.path.join(home, 'projects', '*', f'{sid}.jsonl'))
+    paths += glob.glob(os.path.join(home, 'projects', '*', sid, '**', '*.jsonl'), recursive=True)
+    times = []
+    for p in paths:
+        with contextlib.suppress(OSError):
+            times.append(os.path.getmtime(p))
+    return max(times) if times else None
+
+
+def run_timed(cmd, timeout, unit=None, alive=None, stall=None, **kw):
     """subprocess.run(capture_output, text, timeout) whose timeout counts only the time the run could work:
     minutes the usage brake froze it don't count (2026-11-22 night: three runs frozen by the brake hit their
-    70 min, were called failed and tripped the circuit breaker)."""
+    70 min, were called failed and tripped the circuit breaker). With `alive` (a wall-clock time of its last
+    progress, or None) a run that makes no progress for `stall` seconds of working time is killed as Stalled
+    (2026-11-28: 3 of 3 Clean the Snow reruns hung ~69 min on a stalled model stream)."""
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          stdin=subprocess.DEVNULL, **kw)
     used, last = 0.0, time.monotonic()
+    idle, seen = 0.0, None
+    poll = min(15.0, stall / 2) if alive and stall else 15.0
     while True:
         try:
-            out, err = p.communicate(timeout=max(0.2, min(15.0, timeout - used)))
+            out, err = p.communicate(timeout=max(0.2, min(poll, timeout - used)))
             return subprocess.CompletedProcess(cmd, p.returncode, out, err)
         except subprocess.TimeoutExpired:
             now = time.monotonic()
             if not held(unit):
                 used += now - last
+                idle += now - last
             last = now
-            if used >= timeout:
+            if alive and stall:
+                at = alive()
+                if at is not None and at != seen:
+                    seen, idle = at, 0.0
+                elif seen is None:  # no transcript yet (or a wrong path): never kill on that alone
+                    idle = 0.0
+            if used >= timeout or (alive and stall and idle >= stall):
                 p.kill()
                 p.communicate()
+                if used < timeout:
+                    raise Stalled(cmd, stall) from None
                 raise
 
 
@@ -719,9 +754,10 @@ def run_claude(task, sid, where, text, conf=None, proof=None):
     out = None
     view = agentrun.show(sid, task['title'], trigger, task['id'], home)  # his Herdr app follows it (task 2043)
     try:
-        r = run_timed(cmd, timeout, unit, cwd=where, env=env)
-    except subprocess.TimeoutExpired:
-        return None, f'stopped after {timeout // 60} min'
+        r = run_timed(cmd, timeout, unit, alive=lambda: transcript_mtime(home, sid), stall=STALL, cwd=where, env=env)
+    except subprocess.TimeoutExpired as e:
+        return None, (f'stalled: nothing happened for {STALL // 60} min, stopped' if isinstance(e, Stalled)
+                      else f'stopped after {timeout // 60} min')
     finally:  # only the systemd-run client dies with the timeout: the jailed claude would run on
         if unit:
             stop_unit(unit)
@@ -1133,11 +1169,13 @@ def verify(task, conf, claimed, proof, round_no):
         cmd = jailed(cmd, env, where, dict(cconf['jail'], config_dir=home), timeout, unit)
         whole = None
         try:
-            r = run_timed(cmd, timeout, unit, cwd=where, env=env)
+            r = run_timed(cmd, timeout, unit, alive=lambda: transcript_mtime(home, csid), stall=STALL,
+                          cwd=where, env=env)
             whole = json.loads(r.stdout)
             said = whole.get('structured_output')
-        except subprocess.TimeoutExpired:
-            said = {'verdict': 'cant_verify', 'saw': '', 'why': f'kontrola nestihla doběhnout za {timeout // 60} min'}
+        except subprocess.TimeoutExpired as e:
+            said = {'verdict': 'cant_verify', 'saw': '', 'why': f'kontrola se zasekla: {STALL // 60} min se nic nedělo'
+                    if isinstance(e, Stalled) else f'kontrola nestihla doběhnout za {timeout // 60} min'}
         except (ValueError, AttributeError):
             said = {'verdict': 'cant_verify', 'saw': '', 'why': 'kontrola neodevzdala výsledek'}
         finally:
@@ -1351,6 +1389,7 @@ def writes_line(writes):
 
 
 CZ_WHY = [(re.compile(r'^stopped after (\d+) min'), r'zastaven po \1 min'),
+          (re.compile(r'^stalled: nothing happened for (\d+) min, stopped'), r'zasekl se: \1 min se nic nedělo, zastaven'),
           (re.compile(r'^it ended without a note on the task'), 'skončil bez jediné poznámky na úkolu'),
           (re.compile(r'^it ended without a PR, a question or closing the task'), 'skončil bez otázky a bez uzavření úkolu'),
           (re.compile(r'^the run broke off'), 'běh se přerušil'),
@@ -2054,7 +2093,17 @@ def sweep_orphans():
     the pickup its last word, with nobody on it, for good (#598 sat so for 15 days). Called while
     holding the run lock, so no run of this box is going: such a task is given back. The first
     time, within a day, it goes back in the queue (most deaths are the box, not the task);
-    otherwise to him."""
+    otherwise to him. Another instance on this box (task-agent-moves, its own state and lock) may be
+    mid-run: while it is, nothing is swept (2026-11-28: it reset the main agent's live task 40-60 s
+    after pickup, so every Flashletter run was logged as died although it opened PRs)."""
+    sibs = sibling_locks()
+    if sibs is None:
+        return
+    with sibs:
+        sweep_dead_pickups()
+
+
+def sweep_dead_pickups():
     for t in cli.call('/api/tasks?status=doing&limit=2000', auth=False)['tasks']:
         n = t.get('last_note') or {}
         mid_check = n.get('text', '').startswith(('🔎', '🔁'))  # it died while its fix was being checked
@@ -2267,6 +2316,29 @@ def hold_lock():
         f.close()
         return None
     return f
+
+
+def sibling_locks():
+    """The run locks of this box's other task-agent instances (state folders side by side: task-agent,
+    task-agent-moves …), taken for the sweep so none can pick a task up mid-way: an ExitStack that holds
+    them until closed; None while one is mid-run. Their pickups carry the same author and machine, so
+    only the lock tells whose run is live."""
+    mine, stack = os.path.realpath(STATE), contextlib.ExitStack()
+    for path in glob.glob(os.path.join(SIBLINGS, 'lock')):
+        if os.path.realpath(os.path.dirname(path)) == mine:
+            continue
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND)
+        except OSError as e:  # unreadable: say so, never let it switch the sweep off unseen
+            print(f'task-agent: sibling lock {path} unreadable ({e}); ignored', file=sys.stderr)
+            continue
+        stack.callback(os.close, fd)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            stack.close()
+            return None
+    return stack
 
 
 def main(argv=None):

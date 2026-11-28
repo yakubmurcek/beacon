@@ -506,7 +506,12 @@ again. A run that breaks off (the hub gone mid-run, a bug) gives its task back t
 Loose ends, every run, quietly (a task note, no Telegram):
 - **Dead runs**: a `doing` task whose last note is this box's pickup, while no run holds the
   lock, was left by a run that died (a reboot, a kill). The first time within a day it goes back
-  in the queue; otherwise back to him without the tag.
+  in the queue; otherwise back to him without the tag. While another task-agent instance of the box
+  (task-agent-moves) holds its run lock, nothing is swept: the pickups look the same, and before
+  2026-11-28 it reset the main agent's live task a minute after pickup.
+- **Stalled runs**: a run whose session transcript (or a subagent's) hasn't changed for 15 minutes of
+  working time (`TASK_AGENT_STALL`, seconds; the usage brake's holds don't count) is killed and noted as
+  stalled, instead of waiting out the 80-minute limit. No transcript yet never counts as stalled.
 - **PR check** (every 10 minutes, `gh`): a `doing` task whose newest note names a PR, with none of
   its PRs still open, moves when GitHub says so: merged → `done`, closed unmerged → `todo` without
   the tag. A task with a later note (a review ask, a question) has moved past its PR and is left

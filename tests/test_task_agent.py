@@ -456,6 +456,20 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         self.assertEqual(self.tasks.get(tid)['tags'], [])
         self.assertEqual(self.tasks.get(live)['status'], 'doing')  # it said something since: not an orphan
 
+    def test_a_live_run_of_the_other_instance_is_not_swept(self):
+        import fcntl
+        tid = self.orphan('Being worked by the main agent')
+        state = os.environ['TASK_AGENT_STATE']
+        other = state + '-moves'
+        os.makedirs(other, exist_ok=True)
+        self.agent.SIBLINGS = state + '*'
+        with open(os.path.join(other, 'lock'), 'w') as f:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)  # the other instance is mid-run
+            self.agent.sweep_orphans()
+            self.assertEqual(self.tasks.get(tid)['status'], 'doing')
+        self.agent.sweep_orphans()  # its run is over: now the pickup really is an orphan
+        self.assertEqual(self.tasks.get(tid)['status'], 'todo')
+
     def test_a_run_that_breaks_off_is_given_back_not_left_doing(self):
         t = self.hand('Fix login', 'pr')
         def gone(task):
@@ -783,6 +797,42 @@ class TaskAgentTest(LiveHub, unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         with self.assertRaises(self.agent.subprocess.TimeoutExpired):  # another unit is held, not this one
             self.agent.run_timed(['sleep', '5'], 1, 'cts-agent-10')
+
+    def test_a_run_whose_transcript_stops_moving_is_killed_as_stalled(self):
+        import time
+        start = time.time()
+        with self.assertRaises(self.agent.Stalled):  # wrote once, then nothing for 1 s
+            self.agent.run_timed(['sleep', '30'], 60, alive=lambda: start, stall=1)
+        self.assertLess(time.time() - start, 20)
+        r = self.agent.run_timed(['sleep', '2'], 60, alive=lambda: None, stall=1)  # no transcript yet: never killed for it
+        self.assertEqual(r.returncode, 0)
+        r = self.agent.run_timed(['sleep', '2'], 60, alive=time.time, stall=1)  # keeps writing: runs to its end
+        self.assertEqual(r.returncode, 0)
+
+    def test_a_stalled_run_reads_in_czech_and_the_brake_knows_this_instance(self):
+        self.assertEqual(self.agent.cz_why('stalled: nothing happened for 15 min, stopped'),
+                         'zasekl se: 15 min se nic nedělo, zastaven')
+        brake = os.path.join(self.dir.name, 'brake.json')
+        self.agent.BRAKE_STATE = brake
+        with open(brake, 'w') as f:
+            json.dump({'units': {'task-agent-moves.service': 'soft'}}, f)
+        self.agent.SELF_UNIT = 'task-agent-moves'
+        self.assertTrue(self.agent.held(None))
+        self.agent.SELF_UNIT = 'task-agent'
+        self.assertFalse(self.agent.held(None))
+
+    def test_transcript_time_counts_subagents(self):
+        home = os.path.join(self.dir.name, 'cfg')
+        sid = 'abc-123'
+        os.makedirs(os.path.join(home, 'projects', '-x', sid, 'subagents'))
+        main = os.path.join(home, 'projects', '-x', f'{sid}.jsonl')
+        sub = os.path.join(home, 'projects', '-x', sid, 'subagents', 'agent-1.jsonl')
+        self.assertIsNone(self.agent.transcript_mtime(home, sid))
+        for path, at in ((main, 1000), (sub, 2000)):
+            with open(path, 'w'):
+                pass
+            os.utime(path, (at, at))
+        self.assertEqual(self.agent.transcript_mtime(home, sid), 2000)
 
     def test_leftover_jails_are_stopped_before_a_run(self):
         with open(self.agent.SYSTEMCTL, 'w') as f:
