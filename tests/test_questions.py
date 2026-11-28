@@ -401,6 +401,16 @@ class QuestionsCliTest(LiveHub, unittest.TestCase):
         with open(os.path.join(cfg, 'projects', '-root-projects-x', 'abc-123.jsonl'), 'w') as f:
             f.write('\n'.join(json.dumps(r) for r in rows) + '\n')
 
+    def test_a_note_while_his_step_is_open_says_to_move_the_step(self):
+        # Task 2011: an agent got his pick in its chat and only noted it, so Decisions kept asking him.
+        body = '## Steps\n1. 👤 Jakub says: startup or larger firm.\n2. 🤖 Write the draft.\n3. 👤 Jakub sends it.\n'
+        t = self.server.Handler.tasks.create({'title': 'Cover mail', 'project': 'personal', 'body': body})
+        out = self.run_cli('note', str(t['id']), 'He picked the startup')
+        self.assertIn("still waits on his step 1", out)
+        self.assertIn(f"tasks step {t['id']} 2", out)
+        self.run_cli('step', str(t['id']), '2')
+        self.assertNotIn('still waits', self.run_cli('note', str(t['id']), 'Draft written'))
+
     def ask_and_answer(self, project, task_project):
         t = self.server.Handler.tasks.create({'title': 'Clean up old PRs', 'project': task_project})
         out = self.run_cli('ask', 'Merge the icon PR?', '-o', 'Yes', '-o', 'No', '-k', 'tech-choice', '-p', project,

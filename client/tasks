@@ -3015,6 +3015,19 @@ def cmd_handoff(a):
 def cmd_note(a):
     call(f'/api/tasks/{a.id}/comments', {'text': read_text(a.text), 'author': author()})
     print(f'noted on #{a.id}')
+    nudge = his_step_left(call(f'/api/tasks/{a.id}'))
+    if nudge:
+        print(nudge)
+
+
+def his_step_left(t):
+    """A note while the task still stands on his (👤) step: say so. An agent that got his answer in its chat and
+    only noted it left that step open, so Decisions kept asking him a question he had answered (task 2011)."""
+    plan, at = t.get('plan') or [], t.get('step') or 1
+    if t.get('status') in ('done', 'dropped') or not 0 < at <= len(plan) or not plan[at - 1]['owner']:
+        return None
+    return (f"⚠️ #{t['id']} still waits on his step {at} (👤 {plan[at - 1]['label']}). If he answered or did it, "
+            f"move on: `tasks step {t['id']} {at + 1}`; else Decisions keeps asking him.")
 
 
 def cmd_link(a):
