@@ -683,7 +683,8 @@ def run_claude(task, sid, where, text, conf=None, proof=None):
     env = gh_env()
     env.pop('CLAUDE_CODE_SESSION_ID', None)  # its own id comes from --session-id
     trigger = 'repo' if conf else 'move' if tapped(task) else 'task'
-    cmd = [CLAUDE, '-p', text, '--session-id', sid, *agentrun.flags(trigger), '--output-format', 'json',
+    cmd = [CLAUDE, '-p', text, '--session-id', sid, *agentrun.flags(trigger, effort=(conf or {}).get('effort')),
+           '--output-format', 'json',
            '--json-schema', CONF_SCHEMA if conf else PHONE_SCHEMA,
            '--name', task['title'][:60]]  # the session is called by its task, like `tasks doing` names one
     timeout = TIMEOUT
@@ -701,8 +702,6 @@ def run_claude(task, sid, where, text, conf=None, proof=None):
         # Pinned per repo, so a default change in the CLI never silently changes who fixes his bugs.
         if conf.get('model'):
             cmd += ['--model', conf['model']]
-        if conf.get('effort'):
-            cmd += ['--effort', conf['effort']]
         env.pop('GH_TOKEN', None)
         env.update({k: str(v) for k, v in (conf.get('env') or {}).items()})
         env['_CONF_ENV'] = ' '.join(list(conf.get('env') or {}) + ([conf['proof_env']] if conf.get('proof_env') else []))
@@ -1112,13 +1111,12 @@ def verify(task, conf, claimed, proof, round_no):
             brief = f.read().replace('{id}', str(tid)).replace('{input}', os.path.join(where, CHECK_INPUT))
         csid = str(uuid.uuid4())
         log_run()
-        cmd = [CLAUDE, '-p', brief, '--session-id', csid, *agentrun.flags('check'), '--output-format', 'json',
+        cmd = [CLAUDE, '-p', brief, '--session-id', csid, *agentrun.flags('check', effort=cconf.get('effort')),
+               '--output-format', 'json',
                '--json-schema', CHECK_SCHEMA, '--mcp-config', os.path.join(where, cconf['mcp_config']),
                '--tools', ','.join(cconf.get('tools') or ['Read', 'Glob', 'Grep', 'ToolSearch'])]
         if cconf.get('model'):
             cmd += ['--model', cconf['model']]
-        if cconf.get('effort'):
-            cmd += ['--effort', cconf['effort']]
         env = gh_env()
         for k in ('CLAUDE_CODE_SESSION_ID', 'GH_TOKEN', 'TASKS_TOKEN', 'TASKS_URL'):
             env.pop(k, None)  # no hub at all: it can't read the fixer's notes

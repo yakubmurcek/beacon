@@ -33,6 +33,9 @@ from typing import Any, cast
 J = dict[str, Any]  # one task or one check as JSON gives it
 
 USD = float(os.environ.get('TASK_AGENT_RUN_USD', '40'))  # one run's ceiling, API prices (his call 2026-11-25: 10 too low)
+# Every agent Beacon starts runs at this effort unless a repo's conf pins its own (his call 2026-11-28: was the
+# CLI's default, high).
+EFFORT = os.environ.get('TASK_AGENT_EFFORT', 'medium')
 
 # What each trigger gets. mode: --permission-mode. settings: whose settings load ('user' = his full setup with the
 # studio rules and skills; 'project' = only the repo's own; 'none' = nothing). rules: text appended to the system
@@ -61,11 +64,12 @@ def core_rules() -> str:
         return ''
 
 
-def flags(trigger: str, printed: bool = True) -> list[str]:
-    """The `claude` flags the policy gives this trigger (permission mode, settings, rules, caps). `printed`: the
-    run is `claude -p` (a live chat is not, and takes no budget)."""
+def flags(trigger: str, printed: bool = True, effort: str | None = None) -> list[str]:
+    """The `claude` flags the policy gives this trigger (permission mode, settings, effort, rules, caps).
+    `printed`: the run is `claude -p` (a live chat is not, and takes no budget). `effort`: a repo conf's own pin,
+    else EFFORT."""
     p = POLICY[trigger]
-    out: list[str] = ['--permission-mode', p['mode']]
+    out: list[str] = ['--permission-mode', p['mode'], '--effort', effort or EFFORT]
     if p['settings'] != 'user':
         out += ['--setting-sources', '' if p['settings'] == 'none' else p['settings'], '--strict-mcp-config']
     if p.get('chrome') is False:
