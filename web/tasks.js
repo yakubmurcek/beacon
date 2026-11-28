@@ -282,7 +282,7 @@ function whose(t, today = pragueToday()) {
   if (t.next_step && t.next_step.mine) return 'mine';
   if (withAgent(t) || t.status === 'doing' || t.next_step) return 'agents';
   if (t.due && t.due.slice(0, 10) === today) return 'mine';
-  if (dueBy(t, today)) return 'late';  // its day passed: Clean up > Late gives it a new one, Today stays today's
+  if (dueBy(t, today)) return 'late';  // its day passed: Clean up > Overdue gives it a new one, Today stays today's
   return isStale(t) ? 'stale' : 'later';
 }
 // His say, not his hands: an OK, a pick, an answer, a question mark.
@@ -438,8 +438,8 @@ function viewBacklog(project) {
       section('Yours', pick('mine'), { noProject: true, mine: true }),
       // the agents' tasks, the cards they wait on him with, and sessions no task holds: one list
       workSection(workIn(project, [...pick('agents'), ...pick('decision')])),
-      section('Late', pick('late'), { noProject: true, limit: 5, step: 20 }),
-      section('Later', [...pick('later'), ...pick('stale')], { noProject: true, limit: 15, step: 30 }),
+      section('Overdue', pick('late'), { noProject: true, limit: 5, step: 20 }),
+      section('Backlog', [...pick('later'), ...pick('stale')], { noProject: true, limit: 15, step: 30 }),
     ] : [section(pname(project) || project, live, { noProject: true, always: true, limit: 40, step: 40, empty: 'No open tasks.' }),
       workSection(workIn(project, []), { title: 'Sessions with no task' })],
     !live.length && split && h('p', { class: 'muted empty' }, 'Nothing open here.'),
@@ -453,7 +453,7 @@ const triageSeen = new Set();
 const TRIAGE = {
   stale: { label: 'Untouched', pick: (t) => isStale(t), sort: (a, b) => a.updated_at - b.updated_at,
     why: `Open but nobody touched it for ${STALE_DAYS}+ days.` },
-  late: { label: 'Late', pick: (t) => whose(t) === 'late', sort: (a, b) => a.due.localeCompare(b.due),
+  late: { label: 'Overdue', pick: (t) => whose(t) === 'late', sort: (a, b) => a.due.localeCompare(b.due),
     why: 'Its day passed. Give it a real day, or let it go.' },
   high: { label: 'Marked high', pick: (t) => t.priority && t.priority <= 2 && !isStale(t), sort: (a, b) => a.created_at - b.created_at,
     why: 'Is it really urgent? Keep it high only if it is.' },

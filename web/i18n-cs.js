@@ -93,7 +93,7 @@ window.HUB_CS = {
     'Hand to agent': 'Předat agentovi', 'Hand to the agent': 'Předat agentovi', 'In a week': 'Za týden',
     'Is it really urgent? Keep it high only if it is.': 'Je to fakt urgentní? Vysokou prioritu nech jen tehdy, když ano.',
     'Its day passed. Give it a real day, or let it go.': 'Termín uplynul. Dej mu skutečný den, nebo ho pusť.',
-    'Keys:': 'Klávesy:', 'Last touched': 'Naposledy upraveno', 'Late': 'Po termínu', 'Marked high': 'Označeno jako vysoká',
+    'Keys:': 'Klávesy:', 'Last touched': 'Naposledy upraveno', 'Marked high': 'Označeno jako vysoká',
     'Moved to today': 'Přesunuto na dnes', 'Moved to tomorrow': 'Přesunuto na zítra', 'Newest': 'Nejnovější', 'No date': 'Bez termínu',
     'No details. Click Edit to add some.': 'Bez podrobností. Doplníš je přes Upravit.', 'No open task matches.': 'Žádný otevřený úkol neodpovídá.',
     'No open tasks.': 'Žádné otevřené úkoly.', 'No priority': 'Bez priority', 'No such task.': 'Takový úkol není.', 'Not urgent': 'Není urgentní',
@@ -268,7 +268,7 @@ window.HUB_CS = {
     'No page': 'Bez stránky', 'Not on the tailnet list': 'Není v seznamu tailnetu', 'Offline': 'Offline', 'Online': 'Online', 'Opens': 'Otevře se',
     'Opens: the link works now. No page: the app runs, but it is an API for an app, with nothing to open in a browser.':
       'Otevře se: odkaz teď funguje. Bez stránky: aplikace běží, ale je to API pro jinou aplikaci a v prohlížeči nic neotevřeš.',
-    'Overdue': 'Zpožděné', 'Phones and other devices': 'Telefony a další zařízení', 'Problem': 'Problém', 'Running': 'Běží', 'Sync and backups': 'Synchronizace a zálohy',
+    'Overdue': 'Zpožděné', 'Backlog': 'Zásobník', 'Phones and other devices': 'Telefony a další zařízení', 'Problem': 'Problém', 'Running': 'Běží', 'Sync and backups': 'Synchronizace a zálohy',
     'Tailnet names': 'Názvy v tailnetu', 'The names check has not reported yet.': 'Kontrola názvů se zatím neozvala.', 'Unknown': 'Neznámé', 'Unused': 'Nepoužívané',
     'Claude sign-ins': 'Přihlášení Claude', 'Sign in': 'Přihlásit', 'signed out': 'odhlášeno', 'not checked yet': 'zatím nezjištěno',
     'Getting the sign-in link…': 'Získávám odkaz na přihlášení…', 'Signing in…': 'Přihlašuji…',
