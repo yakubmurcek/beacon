@@ -43,6 +43,14 @@ class PolicyTest(unittest.TestCase):
                 self.assertIn('--max-budget-usd', agentrun.flags(name), name)
         self.assertNotIn('--max-budget-usd', agentrun.flags('live', printed=False))
 
+    def test_every_agent_runs_at_medium_effort_unless_its_repo_pins_one(self):
+        for name in agentrun.POLICY:
+            f = agentrun.flags(name)
+            self.assertEqual(f.count('--effort'), 1, name)
+            self.assertEqual(f[f.index('--effort') + 1], 'medium', name)
+        f = agentrun.flags('repo', effort='high')
+        self.assertEqual(f[f.index('--effort') + 1], 'high')
+
     def test_answer_runs_are_capped_in_money_and_turns(self):
         f = agentrun.flags('answer')
         self.assertEqual(f[f.index('--max-turns') + 1], '80')
