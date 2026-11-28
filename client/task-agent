@@ -683,7 +683,8 @@ def run_claude(task, sid, where, text, conf=None, proof=None):
     env = gh_env()
     env.pop('CLAUDE_CODE_SESSION_ID', None)  # its own id comes from --session-id
     trigger = 'repo' if conf else 'move' if tapped(task) else 'task'
-    cmd = [CLAUDE, '-p', text, '--session-id', sid, *agentrun.flags(trigger, effort=(conf or {}).get('effort')), '--output-format', 'json',
+    cmd = [CLAUDE, '-p', text, '--session-id', sid, *agentrun.flags(trigger, effort=(conf or {}).get('effort')),
+           '--output-format', 'json',
            '--json-schema', CONF_SCHEMA if conf else PHONE_SCHEMA,
            '--name', task['title'][:60]]  # the session is called by its task, like `tasks doing` names one
     timeout = TIMEOUT
@@ -1110,7 +1111,8 @@ def verify(task, conf, claimed, proof, round_no):
             brief = f.read().replace('{id}', str(tid)).replace('{input}', os.path.join(where, CHECK_INPUT))
         csid = str(uuid.uuid4())
         log_run()
-        cmd = [CLAUDE, '-p', brief, '--session-id', csid, *agentrun.flags('check', effort=cconf.get('effort')), '--output-format', 'json',
+        cmd = [CLAUDE, '-p', brief, '--session-id', csid, *agentrun.flags('check', effort=cconf.get('effort')),
+               '--output-format', 'json',
                '--json-schema', CHECK_SCHEMA, '--mcp-config', os.path.join(where, cconf['mcp_config']),
                '--tools', ','.join(cconf.get('tools') or ['Read', 'Glob', 'Grep', 'ToolSearch'])]
         if cconf.get('model'):
