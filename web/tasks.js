@@ -149,8 +149,10 @@ function row(t, opts = {}) {
       onclick: () => save(t.id, { status: 'done' }, { text: `Done: ${t.title}`, fields: { status: t.status } }),
     }),
     h('a', { class: 'body', href: `#/task/${t.id}` },
-      h('span', { class: 'title' }, opts.mine ? moveText(t) : opts.noProject ? t.title : shortTitle(t)),
-      opts.mine && moveText(t) !== shortTitle(t) && h('span', { class: 'for' }, shortTitle(t)),
+      // The task is the headline, his step under it: a step cut to a few words ("Startup or larger firm") means
+      // nothing above a task it doesn't name (2026-11-28, his correction of the step-first rows).
+      h('span', { class: 'title' }, opts.noProject ? t.title : shortTitle(t)),
+      opts.mine && moveText(t) !== shortTitle(t) && h('span', { class: 'for' }, `👤 ${moveText(t)}`),
       h('span', { class: 'meta' },
         !opts.noProject && projChip(t.project),
         !opts.mine && whose(t) === 'agents' && h('span', { class: 'tpill doing' }, withAgent(t) && t.status === 'todo' ? '🤖 Queued' : '🤖 Agent on it'),
@@ -356,16 +358,16 @@ const jump = (href, title, sub) => h('a', { href }, h('strong', {}, title), h('s
 const duePill = (due) => due && h('span', { class: `tpill due${due.overdue ? ' overdue' : due.today ? ' today' : ''}` },
   `${due.overdue ? '⚠️' : '📅'} ${due.text.charAt(0).toUpperCase() + due.text.slice(1)}`);
 
-// His first move, big: the step he does as the headline, the task it moves underneath, and the three moves
-// that matter. "Do now" sits on the card's top edge as a tab (2026-11-22).
+// His first move, big: the task as the headline, the step he does underneath (a cut step alone reads as
+// nonsense, 2026-11-28), and the three moves that matter. "Do now" sits on the card's top edge as a tab (2026-11-22).
 function heroCard(t) {
   const due = dueLabel(t.due);
   const head = moveText(t), title = shortTitle(t);
   return h('section', { class: 'hero now' }, h('span', { class: 'kicker hero-tab' }, 'Your move'),
     h('div', { class: 'hero-top' }, projChip(t.project), duePill(due)),
-    h('a', { class: 'hero-title', href: `#/task/${t.id}` }, head),
-    // Only the task it moves, never the plan's inner words (paths, kill criteria) on the first screen.
-    head !== title && h('p', { class: 'hero-for' }, 'for ', h('a', { href: `#/task/${t.id}` }, title)),
+    h('a', { class: 'hero-title', href: `#/task/${t.id}` }, title),
+    // Only the step's few words, never the plan's inner words (paths, kill criteria) on the first screen.
+    head !== title && h('p', { class: 'hero-for' }, `👤 ${head}`),
     h('div', { class: 'hero-actions' },
       h('button', { class: 'primary', onclick: () => done(t) }, '✓ Done'),
       h('button', { onclick: () => snooze(t, 1, 'Moved to tomorrow') }, 'Tomorrow'),
